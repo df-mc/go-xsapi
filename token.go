@@ -13,8 +13,6 @@ type Token interface {
 	// DisplayClaims returns the DisplayClaims, which contains an information for a user.
 	// It is usually claimed from the response body returned from the authorization.
 	DisplayClaims() DisplayClaims
-
-	// PrivateKey() *ecdsa.PrivateKey
 }
 
 // TokenSource implements a Token method that returns a Token.

@@ -5,6 +5,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// MemberDescription represents a read only reference to member in a multiplayer session.
 type MemberDescription struct {
 	Constants  *MemberConstants  `json:"constants,omitempty"`
 	Properties *MemberProperties `json:"properties,omitempty"`
@@ -30,7 +31,8 @@ type MemberPropertiesSystem struct {
 }
 
 type MemberPropertiesSystemSubscription struct {
-	ID          string   `json:"id,omitempty"`
+	ID string `json:"id,omitempty"`
+	// ChangeTypes defines values that indicate change types for a multiplayer session.
 	ChangeTypes []string `json:"changeTypes,omitempty"`
 }
 
@@ -48,10 +50,12 @@ const (
 
 type MemberConstants struct {
 	System *MemberConstantsSystem `json:"system,omitempty"`
-	Custom json.RawMessage        `json:"custom,omitempty"`
+	// Custom is a JSON string that specify the custom constants for the member.
+	Custom json.RawMessage `json:"custom,omitempty"`
 }
 
 type MemberConstantsSystem struct {
+	// XUID is the user ID of the member. Only known if the member has accepted.
 	XUID       string `json:"xuid,omitempty"`
 	Initialize bool   `json:"initialize,omitempty"`
 }
