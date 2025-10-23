@@ -54,6 +54,7 @@ func (d Dialer) DialContext(ctx context.Context, src xsapi.TokenSource) (*Conn, 
 		conn:          c,
 		log:           d.ErrorLog,
 		subscriptions: make(map[uint32]*Subscription),
+		closed:        make(chan struct{}),
 	}
 	for i := 0; i < cap(conn.expected); i++ {
 		conn.expected[i] = make(map[uint32]chan<- *handshake)
