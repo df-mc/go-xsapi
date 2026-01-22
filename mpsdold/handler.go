@@ -1,4 +1,4 @@
-package mpsd2
+package mpsdold
 
 import "github.com/google/uuid"
 

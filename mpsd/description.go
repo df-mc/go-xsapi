@@ -1,4 +1,4 @@
-package internal
+package mpsd
 
 import (
 	"encoding/json"
@@ -7,9 +7,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// Endpoint is the base URL used for making request calls with the Multiplayer
+// endpoint is the base URL used for making request calls with the Multiplayer
 // Session Directory (MPSD) for Xbox Live.
-var Endpoint = &url.URL{
+var endpoint = &url.URL{
 	Scheme: "https",
 	Host:   "sessiondirectory.xboxlive.com",
 }
@@ -240,7 +240,7 @@ type MemberProperties struct {
 	// Custom contains title-defined properties for the member.
 	//
 	// The format and semantics of this field are specific to the title.
-	Custom json.RawMessage `json:"custom"`
+	Custom json.RawMessage `json:"custom,omitempty"`
 }
 
 // MemberConstants contains immutable constants for a member in a multiplayer session.
@@ -296,7 +296,7 @@ type MemberPropertiesSystem struct {
 	//
 	// The value is base64-encoded and contains device and connection information
 	// for session hosting. This field is not used by most modern games.
-	SecureDeviceAddress []byte
+	SecureDeviceAddress []byte `json:"secureDeviceAddress,omitempty"`
 }
 
 // MemberPropertiesSystemSubscription specifies which portions in the multiplayer session
