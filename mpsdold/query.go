@@ -1,4 +1,4 @@
-package mpsd
+package mpsd2
 
 import (
 	"encoding/json"
