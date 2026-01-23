@@ -36,7 +36,7 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 		return nil, err
 	}
 
-	d := &SessionDescription{
+	d := SessionDescription{
 		Properties: &SessionProperties{
 			System: &SessionPropertiesSystem{
 				JoinRestriction: config.JoinRestriction,
@@ -75,7 +75,8 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 	return s, nil
 }
 
-func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url.URL, d *SessionDescription) (*Session, error) {
+// createSession creates a multiplayer session on the directory using the URL.
+func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url.URL, d SessionDescription) (*Session, error) {
 	s := &Session{
 		client: c,
 		log: c.api.Log().With(
@@ -87,7 +88,7 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url
 		),
 
 		ref:   ref,
-		cache: d,
+		cache: &d,
 	}
 	s.ctx, s.cancel = context.WithCancelCause(context.Background())
 
@@ -95,8 +96,23 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url
 		return nil, fmt.Errorf("write session description: %w", err)
 	}
 	if err := s.writeActivity(ctx); err != nil {
-		return nil, fmt.Errorf("write activity for session: %w", err)
+		return nil, fmt.Errorf("write session activity: %w", err)
 	}
 
+	fmt.Println("written session activity")
+
+	c.sessionsMu.Lock()
+	c.sessions[ref.URL().String()] = s
+	c.sessionsMu.Unlock()
+
 	return s, nil
+}
+
+// handleSessionClosure handles closure of a multiplayer session.
+// It releases the multiplayer session from the client so it can no
+// longer receive notifications from the RTA subscription.
+func (c *Client) handleSessionClose(s *Session) {
+	c.sessionsMu.Lock()
+	delete(c.sessions, s.ref.URL().String())
+	c.sessionsMu.Unlock()
 }

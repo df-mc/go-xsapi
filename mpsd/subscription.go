@@ -36,7 +36,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	if err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	// The custom data includes a connection ID which can be used later for the
+	// The custom data includes a connection ID which can be used for the
 	// Connection field in the member constants for receiving notifications for
 	// the changes to its participating multiplayer session.
 	if err := json.Unmarshal(c.subscription.Custom, &c.subscriptionData); err != nil {
@@ -99,15 +99,18 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 	for _, tap := range event.ShoulderTaps {
 		ref, err := h.parseReference(tap.Resource)
 		if err != nil {
-			h.log.Error("error parsing session reference from shoulder tap in subscription event")
+			h.log.Error("error parsing resource identifier in subscription event as session reference",
+				slog.Any("error", err), slog.String("resource", tap.Resource))
 			continue
 		}
-		h.sessionsMu.Lock() // TODO
+
+		h.sessionsMu.Lock()
 		for _, s := range h.sessions {
 			if s.ref == ref {
 				go func() {
 					ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
 					defer cancel()
+
 					if err := s.Sync(ctx); err != nil {
 						h.log.Error("error synchronizing multiplayer session",
 							slog.Any("error", err))
@@ -117,22 +120,6 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			}
 		}
 		h.sessionsMu.Unlock()
-		// fmt.Println(ref)
-		/*if ref != h.ref {
-			h.log.Warn("session reference mismatch in shoulder tap of subscription event",
-				slog.Any("expected", h.ref), slog.Any("received", ref),
-			)
-			continue
-		}
-		go func() {
-			ctx, cancel := context.WithTimeout(h.Context(), time.Second*15)
-			defer cancel()
-			if err := h.Sync(ctx); err != nil {
-				h.log.Error("error synchronizing multiplayer session",
-					slog.Any("error", err))
-				return
-			}
-		}()*/
 	}
 }
 

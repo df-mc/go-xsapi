@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"sync"
@@ -31,9 +33,9 @@ type Session struct {
 	// ref contains a reference to the multiplayer session.
 	ref SessionReference
 
-	etag  atomic.Pointer[string]
-	cache *SessionDescription
-	mu    sync.Mutex
+	etag    atomic.Pointer[string]
+	cache   *SessionDescription
+	cacheMu sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -48,7 +50,7 @@ func (s *Session) Close() error {
 
 func (s *Session) CloseContext(ctx context.Context) (err error) {
 	s.once.Do(func() {
-		d := &SessionDescription{
+		d := SessionDescription{
 			Members: map[string]*MemberDescription{
 				// Set myself to nil to leave or close the multiplayer session.
 				"me": nil,
@@ -57,17 +59,19 @@ func (s *Session) CloseContext(ctx context.Context) (err error) {
 		if err2 := s.write(ctx, s.ref.URL(), d); err2 != nil {
 			err = errors.Join(err, err2)
 		}
+		s.client.handleSessionClose(s)
 	})
 	return err
 }
 
-func (s *Session) write(ctx context.Context, u *url.URL, changes *SessionDescription) error {
-	var d *SessionDescription
+func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescription) error {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
 	ctx = context.WithValue(ctx, internal.ETag, &s.etag)
-	if err := s.client.do(ctx, http.MethodPut, u.String(), changes, &d); err != nil {
+	if err := s.client.do(ctx, http.MethodPut, u.String(), changes, &s.cache); err != nil {
 		return err
 	}
-	s.sync(d)
 	return nil
 }
 
@@ -80,23 +84,16 @@ func (s *Session) Sync(ctx context.Context) error {
 	case <-s.ctx.Done():
 		return context.Cause(s.ctx)
 	default:
+		s.cacheMu.Lock()
+		defer s.cacheMu.Unlock()
+
 		ctx = context.WithValue(ctx, internal.ETag, &s.etag)
-		d, err := s.client.SessionByReference(ctx, s.ref)
+		err := s.client.do(ctx, http.MethodGet, s.ref.URL().String(), nil, &s.cache)
 		if err != nil {
 			return err
 		}
-		s.sync(d)
 		return nil
 	}
-}
-
-func (s *Session) sync(d *SessionDescription) {
-	if d == nil {
-		return
-	}
-	s.mu.Lock()
-	s.cache = d
-	s.mu.Unlock()
 }
 
 // SetCustomProperties commits the custom properties to the multiplayer session.
@@ -104,17 +101,16 @@ func (s *Session) sync(d *SessionDescription) {
 // commonly used to expose session metadata such as display names or
 // server details.
 func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessage) error {
-	d := &SessionDescription{
+	return s.write(ctx, s.ref.URL(), SessionDescription{
 		Properties: &SessionProperties{
 			Custom: custom,
 		},
-	}
-	return s.write(ctx, s.ref.URL(), d)
+	})
 }
 
 func (s *Session) Constants() SessionConstants {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 
 	constants := s.cache.Constants
 	if constants == nil {
@@ -124,8 +120,8 @@ func (s *Session) Constants() SessionConstants {
 }
 
 func (s *Session) Properties() SessionProperties {
-	s.mu.Unlock()
-	defer s.mu.Unlock()
+	s.cacheMu.Unlock()
+	defer s.cacheMu.Unlock()
 
 	properties := s.cache.Properties
 	if properties == nil {
@@ -133,6 +129,55 @@ func (s *Session) Properties() SessionProperties {
 	}
 	return *properties
 }
+
+func (s *Session) Reference() SessionReference {
+	return s.ref
+}
+
+func (s *Session) Member(label string) (MemberDescription, bool) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	member, ok := s.cache.Members[label]
+	if !ok || member == nil {
+		return MemberDescription{}, false
+	}
+	return *member, true
+}
+
+func (s *Session) Members() iter.Seq2[string, MemberDescription] {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	if s.cache.Members == nil {
+		return nil
+	}
+	members := maps.Clone(s.cache.Members)
+	return func(yield func(string, MemberDescription) bool) {
+		for label, member := range members {
+			if member == nil {
+				continue
+			}
+			if !yield(label, *member) {
+				break
+			}
+		}
+	}
+}
+
+func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, custom json.RawMessage) error {
+	return s.write(ctx, s.ref.URL(), SessionDescription{
+		Members: map[string]*MemberDescription{
+			label: {
+				Properties: &MemberProperties{
+					Custom: custom,
+				},
+			},
+		},
+	})
+}
+
+const MemberSelf = "me"
 
 // SessionReference encapsulates a reference to a multiplayer session.
 type SessionReference struct {

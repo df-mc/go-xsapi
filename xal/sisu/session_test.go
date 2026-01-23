@@ -72,6 +72,7 @@ func TestSession(t *testing.T) {
 	}
 	t.Logf("XSTS token for %q: %#v", playFabRelyingParty, xsts)
 
+	// go publishSession(t, s)
 	publishSession(t, s)
 }
 
@@ -133,6 +134,7 @@ func publishSession(t testing.TB, src *Session) {
 		if err := session.Close(); err != nil {
 			t.Errorf("error closing multiplayer session: %s", err)
 		}
+		fmt.Println("session closed")
 	})
 
 	<-time.After(time.Second * 5)

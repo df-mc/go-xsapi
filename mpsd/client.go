@@ -18,8 +18,9 @@ import (
 
 func New(api API) *Client {
 	return &Client{
-		api:    api,
-		closed: make(chan struct{}),
+		api:      api,
+		sessions: make(map[string]*Session),
+		closed:   make(chan struct{}),
 	}
 }
 
@@ -88,6 +89,7 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 		}
 		defer buf.Reset()
 		r = buf
+		fmt.Println(buf.String()) // TODO
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, r)

@@ -6,38 +6,66 @@ type Config struct {
 	TitleID   int64
 }
 
-// Device represents the configuration of the device being authenticated in [Authenticate].
+// Device describes the platform and operating system of the device being
+// authenticated in [xasd.Authenticate] method.
 type Device struct {
-	// Type indicates the type of the device.
-	// It is one of the constants below.
+	// Type identifies the category of device being authenticated.
+	//
+	// It must be set to one of the DeviceType* constants defined in this
+	// package
 	Type string
-	// Version is the version of the device.
-	// For example, if the device is running on Android 13, it will be '13'.
+
+	// Version specifies the operating system version of the device.
+	//
+	// The expected format and meaning of this field depend on the value
+	// of Type. In general, this should match the version string reported
+	// by the underlying platform.
 	Version string
 }
 
 const (
-	// DeviceTypeAndroid indicates the Device is running Android.
-	// The Version field for Device is the Android version. e.g. '13'.
-	DeviceTypeAndroid = "Android"
-	// DeviceTypeIOS indicates the Device is running iOS.
-	// The Version field of Device is the version of iOS.
-	DeviceTypeIOS = "iOS"
-	// DeviceTypeNintendo indicates the Device is a Nintendo Switch console.
-	// The Version field of Device is the version of Nintendo Switch OS, aka. Horizon.
+	// DeviceTypeAndroid indicates that the device is running Android.
 	//
-	// Version Changelogs can be viewed here:
-	// Nintendo Switch: https://en-americas-support.nintendo.com/app/answers/detail/a_id/43314
-	// Nintendo Switch 2: https://en-americas-support.nintendo.com/app/answers/detail/a_id/68526
+	// For this device type, Version should be the Android OS version,
+	// typically expressed as a major version number (for example, "13"
+	// or "14").
+	DeviceTypeAndroid = "Android"
+
+	// DeviceTypeIOS indicates that the device is running iOS or iPadOS.
+	//
+	// For this device type, Version should be the iOS version number
+	// (for example, "16.6" or "26.2").
+	DeviceTypeIOS = "iOS"
+
+	// DeviceTypeNintendo indicates that the device is a Nintendo Switch
+	// console.
+	//
+	// For this device type, Version should be the version of the Nintendo
+	// Switch system software (also known as Horizon OS), typically in
+	// dotted numeric form (for example, "17.0.1").
+	//
+	// Official version changelogs:
+	//  - Nintendo Switch: https://en-americas-support.nintendo.com/app/answers/detail/a_id/43314
+	//  - Nintendo Switch 2: https://en-americas-support.nintendo.com/app/answers/detail/a_id/68526
 	DeviceTypeNintendo = "Nintendo"
-	// DeviceTypePlayStation indicates the Device is a PlayStation console.
-	// The Version field of Device is the version of PlayStation 4 OS, aka. Orbis OS.
-	// Version Changelogs can be viewed here:
-	// PlayStation 4: https://www.playstation.com/en-us/support/hardware/ps4/system-software-info/
-	// PlayStation 5: https://www.playstation.com/en-us/support/hardware/ps5/system-software-info/
+
+	// DeviceTypePlayStation indicates that the device is a PlayStation
+	// console.
+	//
+	// For this device type, Version should be the system software version
+	// of the console. This corresponds to Orbis OS on PlayStation 4 and
+	// PlayStation 5.
+	//
+	// Official version changelogs:
+	//   - PlayStation 4: https://www.playstation.com/en-us/support/hardware/ps4/system-software-info/
+	//   - PlayStation 5: https://www.playstation.com/en-us/support/hardware/ps5/system-software-info/
 	DeviceTypePlayStation = "PlayStation"
-	// DeviceTypeWin32 indicates the Device is running either Windows 10/11.
-	// The [Device.Version] field will be the version of Windows NT kernel running on the device,
-	// which is starting from 10.00 for both Windows 10 and 11 devices.
+
+	// DeviceTypeWin32 indicates that the device is running Microsoft Windows.
+	//
+	// This includes both Windows 10 and Windows 11 systems. For this device
+	// type, Version should be the Windows NT kernel version, which begins
+	// at "10.0" for both Windows 10 and Windows 11 (for example,
+	// "10.0.19045" or "10.0.22621").
 	DeviceTypeWin32 = "Win32"
 )

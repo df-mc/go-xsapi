@@ -51,6 +51,7 @@ func (r TokenRequest) Do(ctx context.Context, config xal.Config, proofKey *ecdsa
 	return t, nil
 }
 
+// TokenProperties represents the wire structure for the token request.
 type TokenProperties struct {
 	SandboxID             string   `json:"SandboxId,omitempty"`
 	DeviceToken           string   `json:"DeviceToken,omitempty"`
