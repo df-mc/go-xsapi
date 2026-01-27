@@ -2,6 +2,7 @@ package sisu
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/df-mc/go-xsapi/mpsd"
 	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
@@ -23,7 +25,7 @@ func TestSession(t *testing.T) {
 	if err := os.MkdirAll(testdataDir, os.ModePerm); err != nil {
 		t.Fatalf("error making parent directories for %q: %s", testdataDir, err)
 	}
-	msa := msaToken(t, filepath.Join(testdataDir, "msa.token"))
+	msa := msaToken(t, tokenPath)
 
 	dt, proofKey := readDevice(t, deviceTokenPath)
 	deviceSource := xasd.ReuseTokenSource(MinecraftAndroid.Config, dt, proofKey)
@@ -263,4 +265,49 @@ var (
 	}
 
 	serviceConfigID = uuid.MustParse("4fc10100-5f7a-4470-899b-280835760c07")
+)
+
+func readDevice(t testing.TB, path string) (*xasd.Token, *ecdsa.PrivateKey) {
+	if stat, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		t.Fatalf("stat %q: %s", path, err)
+	} else if stat.IsDir() {
+		t.Fatalf("%q is a directory", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("error reading device snapshot: %s", err)
+	}
+	var snapshot *deviceTokenSnapshot
+	if err := json.Unmarshal(b, &snapshot); err != nil {
+		t.Fatalf("error decoding device snapshot: %s", err)
+	}
+	return snapshot.DeviceToken, snapshot.ProofKey.Key.(*ecdsa.PrivateKey)
+}
+
+func writeDevice(t testing.TB, path string, token *xasd.Token, proofKey *ecdsa.PrivateKey) {
+	b, err := json.Marshal(&deviceTokenSnapshot{
+		ProofKey: jose.JSONWebKey{
+			Key:       proofKey,
+			Algorithm: string(jose.ES256),
+			Use:       "sig",
+		},
+		DeviceToken: token,
+	})
+	if err != nil {
+		t.Fatalf("error encoding device token snapshot: %s", err)
+	}
+	if err := os.WriteFile(path, b, os.ModePerm); err != nil {
+		t.Fatalf("error writing device token snapshot: %s", err)
+	}
+}
+
+type deviceTokenSnapshot struct {
+	ProofKey    jose.JSONWebKey
+	DeviceToken *xasd.Token
+}
+
+var (
+	deviceTokenPath = filepath.Join(testdataDir, "device.token")
 )

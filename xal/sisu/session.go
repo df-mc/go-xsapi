@@ -147,6 +147,9 @@ func (s *Session) Snapshot() *Snapshot {
 // or 'rp' scheme, which indicates the endpoint that the token must be
 // used for.
 func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error) {
+	s.xstsMu.Lock()
+	defer s.xstsMu.Unlock()
+
 	token, ok := s.xsts[relyingParty]
 	if ok && token.Valid() {
 		// Re-use the cached XSTS token as possible.
