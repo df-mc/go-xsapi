@@ -42,8 +42,13 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 	if err != nil {
 		return fmt.Errorf("make request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("x-contract-version", "2")
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	}
+	if respBody != nil {
+		req.Header.Set("User-Agent", "XboxServicesAPI/2024.03.20240404.1 c")
+	}
+	req.Header.Set("x-xbl-contract-version", "2")
 
 	resp, err := c.api.HTTPClient().Do(req)
 	if err != nil {
@@ -59,6 +64,6 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 		}
 		return nil
 	default:
-		return fmt.Errorf("%s %s: %s", req.Method, req.URL, err)
+		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
 }

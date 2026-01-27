@@ -170,6 +170,14 @@ func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Tok
 // requestXSTS requests an XSTS (Xbox Servicing Token Service) token that relies on the provided party.
 // It uses the device, title, and user token for filling a request for the XSTS token.
 func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.Token, error) {
+	if relyingParty == "http://xboxlive.com" {
+		resp, err := s.authorize(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("xal/sisu: authorize: %w", err)
+		}
+		return resp.AuthorizationToken, nil
+	}
+
 	device, err := s.DeviceToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("xal/sisu: request device token for XSTS token request: %w", err)

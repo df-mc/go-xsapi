@@ -96,6 +96,21 @@ func TestSession(t *testing.T) {
 	publishSession(t, s)
 }
 
+func testProfile(t testing.TB, client *xsapi.Client, xuid string) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second*15)
+	defer cancel()
+
+	profiles, err := client.Social().Profiles(ctx, []string{xuid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 1 {
+		t.Fatal(len(profiles))
+	}
+	t.Logf("%#v", profiles[0])
+	t.Log(string(profiles[0].Settings))
+}
+
 func publishSession(t testing.TB, src *Session) {
 	client, err := xsapi.NewClient(src, &xsapi.ClientConfig{})
 	if err != nil {
@@ -103,6 +118,8 @@ func publishSession(t testing.TB, src *Session) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
+
+	testProfile(t, client, client.UserInfo().XUID)
 
 	t.Logf("logged in as %s (%s)", client.UserInfo().GamerTag, client.UserInfo().XUID)
 

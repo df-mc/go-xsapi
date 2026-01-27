@@ -2,6 +2,7 @@ package social
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,21 +11,21 @@ import (
 // TODO: Handle and map fields automatically to Profile rather than using an array of key-value struct
 
 func (c *Client) Profiles(ctx context.Context, xuids []string, settings ...string) ([]Profile, error) {
-	if len(xuids) == 0 || len(settings) == 0 {
-		return nil, fmt.Errorf("xsapi/social: invalid request: %d XUIDs and %d settings specified", len(xuids), len(settings))
-	}
 	if len(settings) == 0 {
 		settings = ProfileFields
 	}
+	if len(xuids) == 0 || len(settings) == 0 {
+		return nil, fmt.Errorf("xsapi/social: invalid request: %d XUIDs and %d settings specified", len(xuids), len(settings))
+	}
 
 	var (
-		profiles   = make([]Profile, 0, len(xuids))
+		resp       batchResponse
 		requestURL = profileEndpoint.JoinPath("/users/batch/profile/settings").String()
 	)
-	return profiles, c.do(ctx, http.MethodPost, requestURL, batchRequest{
+	return resp.Profiles, c.do(ctx, http.MethodPost, requestURL, batchRequest{
 		UserIDs:  xuids,
 		Settings: settings,
-	}, &profiles)
+	}, &resp)
 }
 
 type batchRequest struct {
@@ -37,6 +38,7 @@ type batchResponse struct {
 }
 
 type Profile struct {
+	Settings json.RawMessage `json:"settings"`
 }
 
 var profileEndpoint = &url.URL{

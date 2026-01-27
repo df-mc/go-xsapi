@@ -137,7 +137,7 @@ func (t *TitleData) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy
 
 			// Endpoint with HostTypeFQDN should be preferred over
 			// HostTypeWildcard. If we match an endpoint for this,
-			// we immediately break return the matching endpoint.
+			// we immediately break and return the matching endpoint.
 			if e.HostType == HostTypeFQDN {
 				break
 			}

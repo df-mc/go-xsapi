@@ -15,6 +15,7 @@ import (
 	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/mpsd"
 	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/social"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
@@ -63,6 +64,7 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 		return nil, fmt.Errorf("dial RTA: %w", err)
 	}
 	c.mpsd = mpsd.New(c)
+	c.social = social.New(c)
 	return c, nil
 }
 
@@ -85,8 +87,9 @@ type Client struct {
 	defaultTitle, currentTitle *nsal.TitleData
 	userInfo                   xsts.UserInfo
 
-	mpsd *mpsd.Client
-	rta  *rta.Conn
+	mpsd   *mpsd.Client
+	social *social.Client
+	rta    *rta.Conn
 }
 
 func (c *Client) HTTPClient() *http.Client {
@@ -152,6 +155,8 @@ func (c *Client) TokenSource() TokenSource {
 func (c *Client) MPSD() *mpsd.Client {
 	return c.mpsd
 }
+
+func (c *Client) Social() *social.Client { return c.social }
 
 func (c *Client) RTA() *rta.Conn {
 	return c.rta
