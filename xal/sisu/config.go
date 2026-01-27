@@ -19,6 +19,8 @@ type Config struct {
 	// RedirectURI is the URI defined by the title to be used as the redirect URL
 	// of the OAuth2 WebView authentication flow. Callers should listen or handle
 	// redirections in the webview and match the URI with this URI.
+	// RedirectURI may start with 'ms-xal-<number>://', which requires the caller
+	// to handle redirections in the WebView displayed to sign in to the user.
 	RedirectURI string
 
 	// Sandbox is the sandbox used to authenticate or authorize a session in Xbox Live.

@@ -116,6 +116,11 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 							slog.Any("error", err))
 						return
 					}
+					h.log.Info("synchronized multiplayer session",
+						slog.Group("session",
+							slog.String("ref", s.Reference().URL().String()),
+						),
+					)
 				}()
 			}
 		}

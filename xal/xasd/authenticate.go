@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"strings"
 
@@ -51,11 +50,7 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 			ID:         id,
 			DeviceType: config.Device.Type,
 			Version:    config.Device.Version,
-			ProofKey: jose.JSONWebKey{
-				Key:       proofKey.Public(),
-				Algorithm: string(jose.ES256),
-				Use:       "sig",
-			},
+			ProofKey:   internal.ProofKey(proofKey),
 		},
 	}); err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)
@@ -70,8 +65,6 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 	req.Header.Set("User-Agent", config.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey)
-
-	fmt.Println(string(buf.Bytes()))
 
 	resp, err := c.Do(req)
 	if err != nil {
@@ -88,21 +81,28 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 	return t, nil
 }
 
-func padTo32Bytes(i *big.Int) []byte {
-	b := make([]byte, 32)
-	i.FillBytes(b)
-	return b
-}
-
 type (
-	request    internal.TokenRequest[properties]
+	// request represents the wire structure used for requesting a device token.
+	request internal.TokenRequest[properties]
+
+	// properties represents the properties used to request a device token.
 	properties struct {
+		// AuthMethod is either 'ProofOfPossession' or 'RPS'.
+		// When 'RPS', the access token for the user in Windows
+		// should be present in the RPSTicket.
 		AuthMethod string
-		ID         string `json:"Id"`
+		// ID is the unique ID used to associate a device.
+		ID string `json:"Id"`
+		// DeviceType is the [xal.Device.Type].
 		DeviceType string
-		Version    string
-		ProofKey   jose.JSONWebKey
+		// Version is the [xal.Device.Version].
+		Version string
+		// ProofKey is the proof key used to sign requests.
+		ProofKey jose.JSONWebKey
+		// RPSTicket is the access token for the Microsoft Account
+		// of the user. It is used in Windows devices.
+		// RPSTicket should either contain a prefix with 'd=' (Delegated Token?)
+		// or 't=' (Compact Token?).
+		RPSTicket string `json:",omitempty"`
 	}
 )
-
-const relyingParty = "http://auth.xboxlive.com"

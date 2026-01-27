@@ -11,13 +11,30 @@ import (
 	"time"
 )
 
+// SignaturePolicy encapsulates a policy for signing requests in NSAL.
 type SignaturePolicy struct {
-	Version             uint32
+	// Version is the version for the SignaturePolicy. It is typically 0
+	// for most SignaturePolicy listed in a TitleData.
+	Version uint32
+	// SupportedAlgorithms is a list of algorithms supported for signing
+	// the request. The meanings or semantics of this field is currently
+	// unknown. Known values are 'XBL' and 'DPoP'.
 	SupportedAlgorithms []string
-	MaxBodyBytes        int
-	ExtraHeaders        []string
+	// MaxBodyBytes is the maximum length of request body that can be signed
+	// in a single request when using this policy. If 0, the whole request
+	// body will be signed.
+	MaxBodyBytes int
+	// ExtraHeaders specifies additional headers that should be signed.
+	// It is typically empty, but used rarely used in some titles.
+	// Note that the 'Authorization' header of the request is always
+	// signed.
+	ExtraHeaders []string
 }
 
+// Sign signs the request and sets the 'Signature' header. The provided request
+// body will be used for computing an SHA-256 hash. The ECDSA private key will
+// be used to sign the request, which must be same from the ProofKey field of
+// authentication requests.
 func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecdsa.PrivateKey) {
 	currentTime := windowsTimestamp(time.Now())
 	hash := sha256.New()

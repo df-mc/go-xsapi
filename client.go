@@ -111,13 +111,13 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	req2 := req.Clone(ctx)
 	token.SetAuthHeader(req2)
-	if reqBody != nil && req.ContentLength < 0 {
+	if reqBody != nil && req.ContentLength > 0 {
 		signingBuffer := &bytes.Buffer{}
 		if _, err := signingBuffer.ReadFrom(reqBody); err != nil {
 			signingBuffer.Reset()
 			return nil, fmt.Errorf("clone request body: %w", err)
 		}
-		policy.Sign(req, signingBuffer.Bytes(), c.src.ProofKey())
+		policy.Sign(req2, signingBuffer.Bytes(), c.src.ProofKey())
 		req2.Body = io.NopCloser(signingBuffer)
 	}
 
@@ -133,7 +133,7 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 			return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
 		}
 	}
-	fmt.Printf("resolved XSTS token that relies on the party %q for %s\n", endpoint.RelyingParty, u)
+	fmt.Printf("resolved an XSTS token that relies on the party %q for %s\n", endpoint.RelyingParty, u)
 	token, err := c.src.XSTSToken(ctx, endpoint.RelyingParty)
 	if err != nil {
 		return nil, policy, fmt.Errorf("request XSTS token: %w", err)

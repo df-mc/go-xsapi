@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/df-mc/go-xsapi/xal/internal"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/df-mc/go-xsapi/xal/xast"
@@ -34,25 +33,17 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 	s := &Session{
 		config: conf,
 		msa:    src,
+		device: sc.DeviceTokenSource,
 	}
 	if c := sc.Snapshot; c != nil {
-		if c.ProofKey == nil {
-			panic("xal/sisu: Snapshot.ProofKey is required for reusing a Snapshot")
-		}
-		s.proofKey, s.device = c.ProofKey, c.DeviceToken
-
 		s.title = c.TitleToken
 		s.user = c.UserToken
 		s.xsts = c.XSTSTokens // will be filled if nil
 	}
-
-	if s.proofKey == nil {
-		var err error
-		s.proofKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			panic(fmt.Sprintf("xal/sisu: cannot generate proof key: %s", err))
-		}
+	if s.device == nil {
+		s.device = xasd.ReuseTokenSource(conf.Config, nil, nil)
 	}
+
 	if s.client == nil {
 		s.client = &http.Client{}
 	}
@@ -63,27 +54,22 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 }
 
 type SessionConfig struct {
-	Snapshot *Snapshot
+	Snapshot          *Snapshot
+	DeviceTokenSource xasd.TokenSource
 }
 
 type Snapshot struct {
-	ProofKey *ecdsa.PrivateKey
-
-	DeviceToken *xasd.Token
-	TitleToken  *xast.Token
-	UserToken   *xasu.Token
+	TitleToken *xast.Token
+	UserToken  *xasu.Token
 
 	XSTSTokens map[string]*xsts.Token
 }
 
 type Session struct {
-	config   Config
-	proofKey *ecdsa.PrivateKey
+	config Config
 
-	msa oauth2.TokenSource
-
-	device   *xasd.Token
-	deviceMu sync.Mutex
+	msa    oauth2.TokenSource
+	device xasd.TokenSource
 
 	title   *xast.Token
 	user    *xasu.Token
@@ -105,22 +91,7 @@ type Session struct {
 // That being said, it is recommended to use [Session.Snapshot] to cache the device token
 // and re-using them in [Config.New].
 func (s *Session) DeviceToken(ctx context.Context) (*xasd.Token, error) {
-	s.deviceMu.Lock()
-	defer s.deviceMu.Unlock()
-
-	if s.device != nil && s.device.Valid() {
-		// Re-use the cached device token as possible.
-		return s.device, nil
-	}
-	var err error
-	s.device, err = xasd.Authenticate(ctx, s.config.Config, s.proofKey)
-	if err != nil {
-		return nil, fmt.Errorf("authenticate device: %w", err)
-	}
-	if s.device == nil || !s.device.Valid() {
-		return nil, errors.New("sisu: invalid XASD token result")
-	}
-	return s.device, nil
+	return s.device.DeviceToken(ctx)
 }
 
 // TitleToken requests an XAST (Xbox Authentication Services for TitleData) token
@@ -165,11 +136,9 @@ func (s *Session) Snapshot() *Snapshot {
 	defer s.tokenMu.Unlock()
 
 	return &Snapshot{
-		ProofKey:    s.ProofKey(),
-		DeviceToken: s.device,
-		TitleToken:  s.title,
-		UserToken:   s.user,
-		XSTSTokens:  maps.Clone(s.xsts),
+		TitleToken: s.title,
+		UserToken:  s.user,
+		XSTSTokens: maps.Clone(s.xsts),
 	}
 }
 
@@ -222,14 +191,14 @@ func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.T
 			UserTokens:  []string{user.Token},
 		},
 	}
-	return req.Do(ctx, s.config.Config, s.proofKey)
+	return req.Do(ctx, s.config.Config, s.ProofKey())
 }
 
 // ProofKey returns the ECDSA private key as the proof key of the token, and also to sign
 // requests for various Xbox Live services, and other related services like PlayFab or game-specific
 // APIs like Minecraft.
 func (s *Session) ProofKey() *ecdsa.PrivateKey {
-	return s.proofKey
+	return s.device.ProofKey()
 }
 
 // authorize authorizes with SISU services to obtain title, user, or the authorization
@@ -262,11 +231,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		UseModernGamerTag: true,
 		SiteName:          "user.auth.xboxlive.com",
 		RelyingParty:      "http://xboxlive.com",
-		ProofKey: jose.JSONWebKey{
-			Key:       s.proofKey.Public(),
-			Algorithm: string(jose.ES256),
-			Use:       "sig",
-		},
+		ProofKey:          internal.ProofKey(s.ProofKey()),
 	}); err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)
 	}
@@ -360,6 +325,7 @@ func (resp *authorizationResponse) Valid() bool {
 	return resp != nil && resp.TitleToken.Valid() && resp.UserToken.Valid() && resp.AuthorizationToken.Valid()
 }
 
+// endpoint is the base URL for the SISU.
 var endpoint = &url.URL{
 	Scheme: "https",
 	Host:   "sisu.xboxlive.com",

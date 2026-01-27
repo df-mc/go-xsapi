@@ -2,7 +2,6 @@ package sisu
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,23 +14,10 @@ import (
 	"github.com/df-mc/go-xsapi"
 	"github.com/df-mc/go-xsapi/mpsd"
 	"github.com/df-mc/go-xsapi/xal"
-	"github.com/go-jose/go-jose/v4"
+	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
-
-// s, err := MinecraftAndroid.TokenSource()
-
-// &sisu.RedirectError{}
-
-// RedirectError is an error returned to redirect the webview of the user into another resource.
-// It is returned for redirecting the user to newly create an Xbox Live account.
-// Callers should handle this error as possible to succeed Xbox Live sign in.
-
-// MinecraftAndroid.AuthCodeURL()
-// MinecraftAndroid.DeviceCode()
-
-// s, err := MinecraftAndroid.New(src, nil)
 
 func TestSession(t *testing.T) {
 	if err := os.MkdirAll(testdataDir, os.ModePerm); err != nil {
@@ -39,15 +25,27 @@ func TestSession(t *testing.T) {
 	}
 	msa := msaToken(t, filepath.Join(testdataDir, "msa.token"))
 
-	sc := &SessionConfig{}
-	sc.Snapshot = readCache(t, snapshotPath)
+	dt, proofKey := readDevice(t, deviceTokenPath)
+	deviceSource := xasd.ReuseTokenSource(MinecraftAndroid.Config, dt, proofKey)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+		defer cancel()
+		token, err := deviceSource.DeviceToken(ctx)
+		if err != nil {
+			t.Fatalf("error requesting device token: %s", err)
+		}
+		writeDevice(t, deviceTokenPath, token, deviceSource.ProofKey())
+	})
+
+	sc := &SessionConfig{DeviceTokenSource: deviceSource}
+	sc.Snapshot = readSnapshot(t, snapshotPath)
 	s := MinecraftAndroid.New(oauth2.StaticTokenSource(msa), sc)
 	t.Cleanup(func() {
 		cache := s.Snapshot()
 		if cache == nil {
 			t.Fatal("Session.Snapshot must return non-nil SessionState")
 		}
-		writeCache(t, snapshotPath, cache)
+		writeSnapshot(t, snapshotPath, cache)
 	})
 
 	device, err := s.DeviceToken(tokenContext(t))
@@ -68,6 +66,7 @@ func TestSession(t *testing.T) {
 
 	xsts, err := s.XSTSToken(tokenContext(t), playFabRelyingParty)
 	if err != nil {
+		fmt.Println(err)
 		t.Fatalf("error requesting XSTS token for %q: %s", playFabRelyingParty, err)
 	}
 	t.Logf("XSTS token for %q: %#v", playFabRelyingParty, xsts)
@@ -163,7 +162,7 @@ func appearOnline(t testing.TB, c *xsapi.Client) {
 
 }
 
-func readCache(t testing.TB, path string) *Snapshot {
+func readSnapshot(t testing.TB, path string) *Snapshot {
 	if stat, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
 	} else if stat.IsDir() {
@@ -173,15 +172,15 @@ func readCache(t testing.TB, path string) *Snapshot {
 	if err != nil {
 		t.Fatalf("error reading session cache: %s", path)
 	}
-	var cache *jsonCache
-	if err := json.Unmarshal(b, &cache); err != nil {
+	var snapshot *Snapshot
+	if err := json.Unmarshal(b, &snapshot); err != nil {
 		t.Fatalf("error decoding session cache: %s", err)
 	}
-	return cache.Snapshot
+	return snapshot
 }
 
-func writeCache(t testing.TB, path string, cache *Snapshot) {
-	b, err := json.Marshal(&jsonCache{Snapshot: cache})
+func writeSnapshot(t testing.TB, path string, cache *Snapshot) {
+	b, err := json.Marshal(cache)
 	if err != nil {
 		t.Fatalf("error encoding Snapshot: %s", err)
 	}
@@ -189,33 +188,6 @@ func writeCache(t testing.TB, path string, cache *Snapshot) {
 		t.Fatalf("error writing session snapshot to %s: %s", path, err)
 	}
 	t.Logf("Session.Snapshot: %s", b)
-}
-
-type jsonCache struct {
-	*Snapshot
-	ProofKey jose.JSONWebKey
-}
-
-func (c *jsonCache) MarshalJSON() ([]byte, error) {
-	type Alias jsonCache
-	a := Alias{
-		Snapshot: c.Snapshot,
-		ProofKey: jose.JSONWebKey{
-			Key:       c.Snapshot.ProofKey,
-			Algorithm: string(jose.ES256),
-			Use:       "sig",
-		},
-	}
-	return json.Marshal(a)
-}
-
-func (c *jsonCache) UnmarshalJSON(b []byte) error {
-	type Alias jsonCache
-	if err := json.Unmarshal(b, (*Alias)(c)); err != nil {
-		return err
-	}
-	c.Snapshot.ProofKey = c.ProofKey.Key.(*ecdsa.PrivateKey)
-	return nil
 }
 
 func msaToken(t testing.TB, path string) *oauth2.Token {
