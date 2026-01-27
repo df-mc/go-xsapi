@@ -135,6 +135,9 @@ func (s *Session) Snapshot() *Snapshot {
 	s.tokenMu.Lock()
 	defer s.tokenMu.Unlock()
 
+	s.xstsMu.Lock()
+	defer s.xstsMu.Unlock()
+
 	return &Snapshot{
 		TitleToken: s.title,
 		UserToken:  s.user,
