@@ -25,9 +25,26 @@ func TestSession(t *testing.T) {
 	if err := os.MkdirAll(testdataDir, os.ModePerm); err != nil {
 		t.Fatalf("error making parent directories for %q: %s", testdataDir, err)
 	}
-	msa := msaToken(t, tokenPath)
+	msa := MinecraftAndroid.TokenSource(t.Context(), msaToken(t, tokenPath))
+	t.Cleanup(func() {
+		token, err := msa.Token()
+		if err != nil {
+			t.Errorf("error requesting Microsoft Account token: %s", err)
+			return
+		}
+		b, err := json.Marshal(token)
+		if err != nil {
+			t.Errorf("error encoding Microsoft Account token for saving: %s", err)
+			return
+		}
+		if err := os.WriteFile(tokenPath, b, os.ModePerm); err != nil {
+			t.Errorf("error writing Microsoft Account token to %s: %s", tokenPath, err)
+			return
+		}
+		t.Logf("cleanup: saved Microsoft Account token to %s", tokenPath)
+	})
 
-	dt, proofKey := readDevice(t, deviceTokenPath)
+	dt, proofKey := readDevice(t, deviceSnapshotPath)
 	deviceSource := xasd.ReuseTokenSource(MinecraftAndroid.Config, dt, proofKey)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
@@ -36,18 +53,20 @@ func TestSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error requesting device token: %s", err)
 		}
-		writeDevice(t, deviceTokenPath, token, deviceSource.ProofKey())
+		writeDevice(t, deviceSnapshotPath, token, deviceSource.ProofKey())
+		t.Logf("cleanup: saved device to: %s", deviceSnapshotPath)
 	})
 
 	sc := &SessionConfig{DeviceTokenSource: deviceSource}
 	sc.Snapshot = readSnapshot(t, snapshotPath)
-	s := MinecraftAndroid.New(oauth2.StaticTokenSource(msa), sc)
+	s := MinecraftAndroid.New(msa, sc)
 	t.Cleanup(func() {
 		cache := s.Snapshot()
 		if cache == nil {
 			t.Fatal("Session.Snapshot must return non-nil SessionState")
 		}
 		writeSnapshot(t, snapshotPath, cache)
+		t.Logf("cleanup: written session snapshot")
 	})
 
 	device, err := s.DeviceToken(tokenContext(t))
@@ -135,7 +154,7 @@ func publishSession(t testing.TB, src *Session) {
 		if err := session.Close(); err != nil {
 			t.Errorf("error closing multiplayer session: %s", err)
 		}
-		fmt.Println("session closed")
+		t.Logf("cleanup: session closed")
 	})
 
 	<-time.After(time.Second * 5)
@@ -309,5 +328,5 @@ type deviceTokenSnapshot struct {
 }
 
 var (
-	deviceTokenPath = filepath.Join(testdataDir, "device.token")
+	deviceSnapshotPath = filepath.Join(testdataDir, "device.token")
 )
