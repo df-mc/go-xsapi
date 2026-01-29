@@ -99,8 +99,6 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url
 		return nil, fmt.Errorf("write session activity: %w", err)
 	}
 
-	fmt.Println("written session activity")
-
 	c.sessionsMu.Lock()
 	c.sessions[ref.URL().String()] = s
 	c.sessionsMu.Unlock()

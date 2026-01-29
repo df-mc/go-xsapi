@@ -10,6 +10,7 @@ import (
 
 	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
 func New(api API) *Client {
@@ -21,13 +22,14 @@ func New(api API) *Client {
 type API interface {
 	rta.Provider
 	internal.HTTPClient
+	xsts.UserInfoProvider
 }
 
 type Client struct {
 	api API
 }
 
-func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any) error {
+func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any, opts []internal.RequestOption) error {
 	var r io.Reader
 	if reqBody != nil {
 		buf := &bytes.Buffer{}
@@ -45,10 +47,7 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 	if reqBody != nil {
 		req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	}
-	if respBody != nil {
-		req.Header.Set("User-Agent", "XboxServicesAPI/2024.03.20240404.1 c")
-	}
-	req.Header.Set("x-xbl-contract-version", "2")
+	internal.Apply(req, opts)
 
 	resp, err := c.api.HTTPClient().Do(req)
 	if err != nil {
@@ -58,7 +57,8 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 	switch resp.StatusCode {
 	case http.StatusOK:
 		if respBody != nil {
-			if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+			b, _ := io.ReadAll(resp.Body)
+			if err := json.NewDecoder(bytes.NewReader(b)).Decode(&respBody); err != nil {
 				return fmt.Errorf("decode response body: %w", err)
 			}
 		}

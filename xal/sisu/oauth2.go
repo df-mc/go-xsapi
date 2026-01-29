@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/df-mc/go-xsapi/xal/internal"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"golang.org/x/oauth2"
@@ -156,7 +155,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 	defer buf.Reset()
 
 	requestURL := endpoint.JoinPath("authenticate").String()
-	req, err := http.NewRequest(http.MethodPost, requestURL, buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, buf)
 	if err != nil {
 		return "", fmt.Errorf("make request: %w", err)
 	}
@@ -164,7 +163,13 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 	req.Header.Set("x-xbl-contract-version", "1")
 	nsal.AuthPolicy.Sign(req, buf.Bytes(), device.ProofKey())
 
-	resp, err := internal.ContextClient(ctx).Do(req)
+	var client *http.Client
+	if hc, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
+		client = hc
+	} else {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}

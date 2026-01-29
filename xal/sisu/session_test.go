@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -87,7 +88,6 @@ func TestSession(t *testing.T) {
 
 	xsts, err := s.XSTSToken(tokenContext(t), playFabRelyingParty)
 	if err != nil {
-		fmt.Println(err)
 		t.Fatalf("error requesting XSTS token for %q: %s", playFabRelyingParty, err)
 	}
 	t.Logf("XSTS token for %q: %#v", playFabRelyingParty, xsts)
@@ -100,15 +100,17 @@ func testProfile(t testing.TB, client *xsapi.Client, xuid string) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second*15)
 	defer cancel()
 
-	profiles, err := client.Social().Profiles(ctx, []string{xuid})
+	users, err := client.Social().UsersByXUIDs(ctx, []string{xuid})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profiles) != 1 {
-		t.Fatal(len(profiles))
+	t.Logf("%#v", users)
+
+	searchResult, err := client.Social().Search(ctx, "Lactyy")
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("%#v", profiles[0])
-	t.Log(string(profiles[0].Settings))
+	t.Logf("%#v", searchResult)
 }
 
 func publishSession(t testing.TB, src *Session) {
@@ -150,8 +152,8 @@ func publishSession(t testing.TB, src *Session) {
 				"ConnectionType": 7,
 				"HostIpAddress":  "",
 				"HostPort":       0,
-				"NetherNetId":    uint64(15831069647900212779),
-				"PmsgId":         "0ebaf7bc-b99e-23df-56b9-17c650aa2584",
+				"NetherNetId":    rand.Uint64(),
+				"PmsgId":         uuid.NewString(),
 			},
 		},
 	})
@@ -284,6 +286,7 @@ const (
 var (
 	snapshotPath = filepath.Join(testdataDir, "session.snapshot")
 	tokenPath    = filepath.Join(testdataDir, "msa.token")
+	profilePath  = filepath.Join(testdataDir, "profile.json")
 
 	MinecraftAndroid = Config{
 		Config: xal.Config{

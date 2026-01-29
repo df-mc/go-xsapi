@@ -173,14 +173,6 @@ func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Tok
 // requestXSTS requests an XSTS (Xbox Servicing Token Service) token that relies on the provided party.
 // It uses the device, title, and user token for filling a request for the XSTS token.
 func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.Token, error) {
-	if relyingParty == "http://xboxlive.com" {
-		resp, err := s.authorize(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("xal/sisu: authorize: %w", err)
-		}
-		return resp.AuthorizationToken, nil
-	}
-
 	device, err := s.DeviceToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("xal/sisu: request device token for XSTS token request: %w", err)
@@ -222,6 +214,10 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 	s.respMu.Lock()
 	defer s.respMu.Unlock()
 
+	if s.resp != nil && s.resp.Valid() {
+		return s.resp, nil
+	}
+
 	device, err := s.DeviceToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("xal/sisu: request device token for authorization: %w", err)
@@ -244,7 +240,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		Sandbox:           s.config.Sandbox,
 		UseModernGamerTag: true,
 		SiteName:          "user.auth.xboxlive.com",
-		RelyingParty:      "http://xboxlive.com",
+		RelyingParty:      defaultRelyingParty,
 		ProofKey:          internal.ProofKey(s.ProofKey()),
 	}); err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)
@@ -277,14 +273,24 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 			return nil, errors.New("xal/sisu: invalid authorization response")
 		}
 		s.resp = r
+
+		s.xstsMu.Lock()
+		if _, ok := s.xsts[defaultRelyingParty]; !ok {
+			s.xsts[defaultRelyingParty] = s.resp.AuthorizationToken
+		}
+		s.xstsMu.Unlock()
 		return r, nil
 	default:
 		for k, v := range resp.Header {
-			fmt.Println(k, strings.Join(v, ", "))
+			fmt.Println(k, strings.Join(v, ","))
 		}
 		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
 }
+
+const (
+	defaultRelyingParty = "http://xboxlive.com"
+)
 
 // authorizationRequest describes the wire representation used to authorize with SISU services.
 type authorizationRequest struct {
