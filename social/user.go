@@ -43,8 +43,8 @@ func (c *Client) UserByXUID(ctx context.Context, xuid string, opts ...internal.R
 }
 
 func (c *Client) UsersByXUIDs(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "me", "batch", map[string]any{
-		"xuids": xuids,
+	return c.users(ctx, "me", "batch", batchRequest{
+		XUIDs: xuids,
 	}, opts)
 }
 
@@ -82,13 +82,14 @@ func (c *Client) users(ctx context.Context, perspective, selector string, reqBod
 	))
 }
 
-type batchRequest struct {
-	XUIDs []string `json:"xuids"`
-}
-
-type batchResponse struct {
-	Users []User `json:"people"`
-}
+type (
+	batchRequest struct {
+		XUIDs []string `json:"xuids"`
+	}
+	batchResponse struct {
+		Users []User `json:"people"`
+	}
+)
 
 var (
 	peopleHubEndpoint = &url.URL{

@@ -198,9 +198,9 @@ func addFriend(t testing.TB, c *xsapi.Client, xuid string) {
 	t.Log(string(b))
 }
 
-func appearOnline(t testing.TB, c *xsapi.Client) {
+/*func appearOnline(t testing.TB, c *xsapi.Client) {
 
-}
+}*/
 
 func readSnapshot(t testing.TB, path string) *Snapshot {
 	if stat, err := os.Stat(path); os.IsNotExist(err) {
@@ -286,7 +286,6 @@ const (
 var (
 	snapshotPath = filepath.Join(testdataDir, "session.snapshot")
 	tokenPath    = filepath.Join(testdataDir, "msa.token")
-	profilePath  = filepath.Join(testdataDir, "profile.json")
 
 	MinecraftAndroid = Config{
 		Config: xal.Config{
