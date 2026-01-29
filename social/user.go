@@ -202,14 +202,14 @@ func (u *User) UnmarshalJSON(b []byte) error {
 	}
 	if data.FriendedDateTimeUTC != "" {
 		var err error
-		u.FriendedAt, err = time.Parse(utcLayout, data.FriendedDateTimeUTC)
+		u.FriendedAt, err = time.ParseInLocation(utcLayout, data.FriendedDateTimeUTC, time.UTC)
 		if err != nil {
 			return fmt.Errorf("xsapi/social: parse User.FriendedAt: %w", err)
 		}
 	}
 	if data.LastSeenDateTimeUTC != "" {
 		var err error
-		u.LastSeenAt, err = time.Parse(utcLayout, data.LastSeenDateTimeUTC)
+		u.LastSeenAt, err = time.ParseInLocation(utcLayout, data.LastSeenDateTimeUTC, time.UTC)
 		if err != nil {
 			return fmt.Errorf("xsapi/social: parse User.LastSeenAt: %w", err)
 		}
