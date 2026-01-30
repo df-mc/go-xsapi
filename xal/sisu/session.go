@@ -273,12 +273,6 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 			return nil, errors.New("xal/sisu: invalid authorization response")
 		}
 		s.resp = r
-
-		s.xstsMu.Lock()
-		if _, ok := s.xsts[defaultRelyingParty]; !ok {
-			s.xsts[defaultRelyingParty] = s.resp.AuthorizationToken
-		}
-		s.xstsMu.Unlock()
 		return r, nil
 	default:
 		for k, v := range resp.Header {
