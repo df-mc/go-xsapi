@@ -27,7 +27,7 @@ func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.Req
 
 func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
-		"/users/xuid(2535428765332540)/people/friends/v2",
+		"/users/me/people/friends/v2",
 		"xuid("+xuid+")",
 	).String()
 	return c.do(ctx, http.MethodPut, requestURL, nil, nil, opts)
@@ -39,11 +39,7 @@ func (c *Client) RemoveFriend(ctx context.Context, xuid string, opts ...internal
 
 func (c *Client) deleteRelationships(ctx context.Context, xuid, typ string, opts []internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
-		"users",
-		"me",
-		"people",
-		"friends",
-		"v2",
+		"/users/me/people/friends/v2",
 		"xuid("+xuid+")",
 	)
 	q := requestURL.Query()
