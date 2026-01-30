@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,21 +22,11 @@ import (
 // is returned, that is usable for starting a SISU authorization flow,
 // or to request a final XSTS token along with the user token.
 func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.PrivateKey) (*Token, error) {
-	c := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Renegotiation:      tls.RenegotiateOnceAsClient,
-				InsecureSkipVerify: true,
-			},
-		},
-	}
-	defer c.CloseIdleConnections()
-
 	id := uuid.NewString()
 	switch config.Device.Type {
-	case "Android":
+	case xal.DeviceTypeAndroid:
 		id = "{" + id + "}"
-	case "Win32":
+	case xal.DeviceTypeWin32:
 		id = strings.ToUpper(id)
 	}
 
@@ -66,7 +55,7 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 	req.Header.Set("Content-Type", "application/json")
 	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey)
 
-	resp, err := c.Do(req)
+	resp, err := internal.ContextClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}

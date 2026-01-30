@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/df-mc/go-xsapi/internal"
@@ -87,9 +88,11 @@ type Client struct {
 	defaultTitle, currentTitle *nsal.TitleData
 	userInfo                   xsts.UserInfo
 
+	rta    *rta.Conn
 	mpsd   *mpsd.Client
 	social *social.Client
-	rta    *rta.Conn
+
+	once sync.Once
 }
 
 func (c *Client) HTTPClient() *http.Client {
@@ -164,4 +167,22 @@ func (c *Client) RTA() *rta.Conn {
 
 func (c *Client) UserInfo() xsts.UserInfo {
 	return c.userInfo
+}
+
+func (c *Client) Close() (err error) {
+	c.once.Do(func() {
+		err = errors.Join(
+			c.mpsd.Close(),
+			c.social.Close(),
+
+			c.rta.Close(),
+		)
+	})
+	return err
+}
+
+type AcceptLanguage = internal.AcceptLanguage
+
+func RequestHeader(key, value string) internal.RequestOption {
+	return internal.RequestHeader(key, value)
 }

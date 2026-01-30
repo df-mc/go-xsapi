@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/rta"
@@ -23,10 +26,17 @@ type API interface {
 	rta.Provider
 	internal.HTTPClient
 	xsts.UserInfoProvider
+	internal.Logger
 }
 
 type Client struct {
 	api API
+
+	subscriptionMu       sync.Mutex
+	subscription         *rta.Subscription
+	subscriptionHandlers []SubscriptionHandler
+
+	once sync.Once
 }
 
 func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any, opts []internal.RequestOption) error {
@@ -66,4 +76,24 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 	default:
 		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
+}
+
+func (c *Client) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	return c.CloseContext(ctx)
+}
+
+func (c *Client) CloseContext(ctx context.Context) (err error) {
+	c.once.Do(func() {
+		c.subscriptionMu.Lock()
+		defer c.subscriptionMu.Unlock()
+
+		if c.subscription != nil {
+			if err2 := c.api.RTA().Unsubscribe(ctx, c.subscription); err2 != nil {
+				err = errors.Join(err, fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err))
+			}
+		}
+	})
+	return err
 }

@@ -18,7 +18,6 @@ import (
 
 func Authenticate(ctx context.Context, config xal.Config, token *xasd.Token, proofKey *ecdsa.PrivateKey) (*Token, error) {
 	client := internal.ContextClient(ctx)
-	defer client.CloseIdleConnections()
 
 	buf := &bytes.Buffer{}
 	if err := json.NewEncoder(buf).Encode(request{

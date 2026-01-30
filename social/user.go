@@ -26,7 +26,7 @@ func (c *Client) Search(ctx context.Context, query string, opts ...internal.Requ
 	requestURL.RawQuery = q.Encode()
 	return resp.Users, c.do(ctx, http.MethodGet, requestURL.String(), nil, &resp, append(
 		opts,
-		internal.ContractVersion("7"),
+		peopleHubContractVersion,
 		defaultLanguage,
 	))
 }
@@ -37,7 +37,7 @@ func (c *Client) UserByXUID(ctx context.Context, xuid string, opts ...internal.R
 		return u, err
 	}
 	if n := len(users); n != 1 {
-		return u, fmt.Errorf("xsapi/social: UserByXUID(%s): expected single user, got %d", xuid, n)
+		return u, fmt.Errorf("xsapi/social: UserByXUID(%s): %d users returned", xuid, n)
 	}
 	return users[0], nil
 }
@@ -77,7 +77,7 @@ func (c *Client) users(ctx context.Context, perspective, selector string, reqBod
 	}
 	return resp.Users, c.do(ctx, method, requestURL, reqBody, &resp, append(
 		opts,
-		internal.ContractVersion("7"),
+		peopleHubContractVersion,
 		defaultLanguage,
 	))
 }
@@ -96,6 +96,7 @@ var (
 		Scheme: "https",
 		Host:   "peoplehub.xboxlive.com",
 	}
+	peopleHubContractVersion = internal.ContractVersion("7")
 
 	decorations = strings.Join([]string{
 		"bio",

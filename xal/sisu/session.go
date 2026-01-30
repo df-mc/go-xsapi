@@ -34,6 +34,7 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 		config: conf,
 		msa:    src,
 		device: sc.DeviceTokenSource,
+		client: sc.HTTPClient,
 	}
 	if c := sc.Snapshot; c != nil {
 		s.title = c.TitleToken
@@ -45,7 +46,7 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 	}
 
 	if s.client == nil {
-		s.client = &http.Client{}
+		s.client = http.DefaultClient
 	}
 	if s.xsts == nil {
 		s.xsts = make(map[string]*xsts.Token)
@@ -56,6 +57,7 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 type SessionConfig struct {
 	Snapshot          *Snapshot
 	DeviceTokenSource xasd.TokenSource
+	HTTPClient        *http.Client
 }
 
 type Snapshot struct {
@@ -173,6 +175,16 @@ func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Tok
 // requestXSTS requests an XSTS (Xbox Servicing Token Service) token that relies on the provided party.
 // It uses the device, title, and user token for filling a request for the XSTS token.
 func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.Token, error) {
+	if relyingParty == defaultRelyingParty {
+		resp, err := s.authorize(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("authorize: %w", err)
+		}
+		if resp.AuthorizationToken.Valid() {
+			return resp.AuthorizationToken, nil
+		}
+	}
+
 	device, err := s.DeviceToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("xal/sisu: request device token for XSTS token request: %w", err)
@@ -282,9 +294,9 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 	}
 }
 
-const (
-	defaultRelyingParty = "http://xboxlive.com"
-)
+// defaultRelyingParty is the default relying party desired on the Authorization Token present in
+// SISU authorization response.
+const defaultRelyingParty = "http://xboxlive.com"
 
 // authorizationRequest describes the wire representation used to authorize with SISU services.
 type authorizationRequest struct {

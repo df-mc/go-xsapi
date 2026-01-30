@@ -72,7 +72,7 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 
 		if c.subscription != nil {
 			if err2 := c.api.RTA().Unsubscribe(ctx, c.subscription); err2 != nil {
-				err = errors.Join(err, fmt.Errorf("mpsd: unsubscribe: %w", err))
+				err = errors.Join(err, fmt.Errorf("mpsd: unsubscribe: %w", err2))
 			}
 		}
 		c.subscription, c.subscriptionData = nil, nil
@@ -89,7 +89,6 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 		}
 		defer buf.Reset()
 		r = buf
-		fmt.Println(buf.String()) // TODO
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, r)
@@ -134,6 +133,4 @@ type Provider interface {
 	MPSD() *Client
 }
 
-const (
-	contractVersion = "107"
-)
+const contractVersion = "107"

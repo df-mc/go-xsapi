@@ -1,5 +1,9 @@
 package xal
 
+import "github.com/df-mc/go-xsapi/xal/internal"
+
+var HTTPClient = internal.HTTPClient
+
 type Config struct {
 	Device    Device
 	UserAgent string

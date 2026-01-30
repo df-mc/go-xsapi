@@ -4,10 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"fmt"
-	"io"
 	"math/rand"
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +12,7 @@ import (
 
 	"github.com/df-mc/go-xsapi"
 	"github.com/df-mc/go-xsapi/mpsd"
+	"github.com/df-mc/go-xsapi/social"
 	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
@@ -92,41 +90,46 @@ func TestSession(t *testing.T) {
 	}
 	t.Logf("XSTS token for %q: %#v", playFabRelyingParty, xsts)
 
-	// go publishSession(t, s)
-	publishSession(t, s)
-}
-
-func testProfile(t testing.TB, client *xsapi.Client, xuid string) {
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second*15)
-	defer cancel()
-
-	users, err := client.Social().UsersByXUIDs(ctx, []string{xuid})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("%#v", users)
-
-	searchResult, err := client.Social().Search(ctx, "Lactyy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("%#v", searchResult)
-}
-
-func publishSession(t testing.TB, src *Session) {
-	client, err := xsapi.NewClient(src, &xsapi.ClientConfig{})
+	client, err := xsapi.NewClient(s, nil)
 	if err != nil {
 		t.Fatalf("error creating API client: %s", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-	defer cancel()
-
-	testProfile(t, client, client.UserInfo().XUID)
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("error closing API client: %s", err)
+		}
+	})
 
 	t.Logf("logged in as %s (%s)", client.UserInfo().GamerTag, client.UserInfo().XUID)
 
-	addFriend(t, client, "2535428765332540")
+	// go publishSession(t, s)
+	publishSession(t, client)
+	subscribeSocial(t, client)
+}
 
+func subscribeSocial(t testing.TB, client *xsapi.Client) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second*15)
+	defer cancel()
+	if err := client.Social().Subscribe(ctx, socialSubscriptionHandler{t}); err != nil {
+		t.Fatalf("error subscribing with social: %s", err)
+	}
+
+	if err := client.Social().AddFriend(ctx, "2535428765332540"); err != nil {
+		t.Fatalf("error adding friend: %s", err)
+	}
+}
+
+type socialSubscriptionHandler struct{ testing.TB }
+
+func (h socialSubscriptionHandler) HandleRelationshipChange(change social.RelationshipChange) {
+	h.Logf("HandleRelationshipChange(%#v)", change)
+}
+
+func (h socialSubscriptionHandler) HandleFriendRequestCountChange(count int) {
+	h.Logf("HandleFriendRequestCountChange(%d)", count)
+}
+
+func publishSession(t testing.TB, client *xsapi.Client) {
 	custom, err := json.Marshal(map[string]any{
 		"Joinability":             "joinable_by_friends",
 		"hostName":                client.UserInfo().GamerTag,
@@ -160,6 +163,9 @@ func publishSession(t testing.TB, src *Session) {
 	if err != nil {
 		t.Fatalf("error encoding custom properties: %s", err)
 	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second*15)
+	defer cancel()
 	session, err := client.MPSD().Publish(ctx, mpsd.SessionReference{
 		ServiceConfigID: serviceConfigID,
 		TemplateName:    "MinecraftLobby",
@@ -175,32 +181,7 @@ func publishSession(t testing.TB, src *Session) {
 		}
 		t.Logf("cleanup: session closed")
 	})
-
-	<-time.After(time.Second * 5)
 }
-
-func addFriend(t testing.TB, c *xsapi.Client, xuid string) {
-	requestURL := fmt.Sprintf("https://social.xboxlive.com/users/xuid(%s)/people/friends/v2/xuid(%s)", c.UserInfo().XUID, xuid)
-	req, err := http.NewRequest(http.MethodPut, requestURL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("x-xbl-contract-version", "3")
-
-	resp, err := c.HTTPClient().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("%s: %s", req.URL, resp.Status)
-	}
-	b, _ := io.ReadAll(resp.Body)
-	t.Log(string(b))
-}
-
-/*func appearOnline(t testing.TB, c *xsapi.Client) {
-
-}*/
 
 func readSnapshot(t testing.TB, path string) *Snapshot {
 	if stat, err := os.Stat(path); os.IsNotExist(err) {
