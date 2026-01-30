@@ -13,13 +13,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/df-mc/go-xsapi/xal/internal"
-	"github.com/df-mc/go-xsapi/xal/nsal"
-	"github.com/df-mc/go-xsapi/xal/xasd"
-	"github.com/df-mc/go-xsapi/xal/xast"
-	"github.com/df-mc/go-xsapi/xal/xasu"
-	"github.com/df-mc/go-xsapi/xal/xsts"
 	"github.com/go-jose/go-jose/v4"
+	"github.com/yomoggies/xsapi-go/xal/internal"
+	"github.com/yomoggies/xsapi-go/xal/nsal"
+	"github.com/yomoggies/xsapi-go/xal/xasd"
+	"github.com/yomoggies/xsapi-go/xal/xast"
+	"github.com/yomoggies/xsapi-go/xal/xasu"
+	"github.com/yomoggies/xsapi-go/xal/xsts"
 	"golang.org/x/oauth2"
 )
 
@@ -197,6 +197,16 @@ func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.T
 	if err != nil {
 		return nil, fmt.Errorf("xal/sisu: request user token for XSTS token request: %w", err)
 	}
+
+	// xasd.TokenRequest{
+	//	Device: device,
+	//	ProofKey: internal.ProofKey(key)
+	// }.Do(ctx, s.config.Config)
+
+	// xast.TokenRequest{}
+	// xasu.TokenRequest{}
+
+	// xasu.Authenticate(ctx,
 
 	// ここらへんくっそ適当なのは許して
 	req := &xsts.TokenRequest{

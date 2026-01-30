@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/df-mc/go-xsapi/rta"
 	"github.com/google/uuid"
+	"github.com/yomoggies/xsapi-go/rta"
 )
 
 // subscribe subscribes with the RTA (Real-Time Activity) Services in Xbox Live.

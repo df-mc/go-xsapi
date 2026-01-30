@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/df-mc/go-xsapi/xal"
+	"github.com/yomoggies/xsapi-go/xal"
 )
 
 // TestAndroid simulates an Android phone on the XASD.

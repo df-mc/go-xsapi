@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/df-mc/go-xsapi/internal"
-	"github.com/df-mc/go-xsapi/mpsd"
-	"github.com/df-mc/go-xsapi/rta"
-	"github.com/df-mc/go-xsapi/social"
-	"github.com/df-mc/go-xsapi/xal/nsal"
-	"github.com/df-mc/go-xsapi/xal/xsts"
+	"github.com/yomoggies/xsapi-go/internal"
+	"github.com/yomoggies/xsapi-go/mpsd"
+	"github.com/yomoggies/xsapi-go/rta"
+	"github.com/yomoggies/xsapi-go/social"
+	"github.com/yomoggies/xsapi-go/xal/nsal"
+	"github.com/yomoggies/xsapi-go/xal/xsts"
 )
 
 func NewClient(src TokenSource, config *ClientConfig) (*Client, error) {
@@ -169,11 +169,17 @@ func (c *Client) UserInfo() xsts.UserInfo {
 	return c.userInfo
 }
 
-func (c *Client) Close() (err error) {
+func (c *Client) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	return c.CloseContext(ctx)
+}
+
+func (c *Client) CloseContext(ctx context.Context) (err error) {
 	c.once.Do(func() {
 		err = errors.Join(
-			c.mpsd.Close(),
-			c.social.Close(),
+			c.mpsd.CloseContext(ctx),
+			c.social.CloseContext(ctx),
 
 			c.rta.Close(),
 		)

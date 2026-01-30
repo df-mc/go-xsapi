@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/df-mc/go-xsapi/internal"
+	"github.com/yomoggies/xsapi-go/internal"
 )
 
 // Dialer represents the options for establishing a Conn with real-time activity services with DialContext or Dial.

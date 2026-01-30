@@ -67,7 +67,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		return
 	case RelationshipChangeTypeAdded, RelationshipChangeTypeRemoved, RelationshipChangeTypeChanged:
 		if len(data.XUIDs) == 0 {
-			h.api.Log().Error("XUIDs is absent from subscription event data",
+			h.api.Log().Error("XUIDs are absent from subscription event data",
 				slog.String("custom", string(custom)),
 			)
 			return

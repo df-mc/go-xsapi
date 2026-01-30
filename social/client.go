@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/df-mc/go-xsapi/internal"
-	"github.com/df-mc/go-xsapi/rta"
-	"github.com/df-mc/go-xsapi/xal/xsts"
+	"github.com/yomoggies/xsapi-go/internal"
+	"github.com/yomoggies/xsapi-go/rta"
+	"github.com/yomoggies/xsapi-go/xal/xsts"
 )
 
 func New(api API) *Client {
@@ -65,13 +65,15 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
-	case http.StatusOK:
+	case http.StatusOK, http.StatusCreated:
 		if respBody != nil {
 			b, _ := io.ReadAll(resp.Body)
 			if err := json.NewDecoder(bytes.NewReader(b)).Decode(&respBody); err != nil {
 				return fmt.Errorf("decode response body: %w", err)
 			}
 		}
+		return nil
+	case http.StatusNoContent:
 		return nil
 	default:
 		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)

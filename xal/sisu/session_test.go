@@ -5,18 +5,19 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"math/rand"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/df-mc/go-xsapi"
-	"github.com/df-mc/go-xsapi/mpsd"
-	"github.com/df-mc/go-xsapi/social"
-	"github.com/df-mc/go-xsapi/xal"
-	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
+	"github.com/yomoggies/xsapi-go"
+	"github.com/yomoggies/xsapi-go/mpsd"
+	"github.com/yomoggies/xsapi-go/social"
+	"github.com/yomoggies/xsapi-go/xal"
+	"github.com/yomoggies/xsapi-go/xal/xasd"
 	"golang.org/x/oauth2"
 )
 
@@ -100,9 +101,21 @@ func TestSession(t *testing.T) {
 		}
 	})
 
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	u, err := url.Parse("https://20ca2.playfabapi.com")
+	if err != nil {
+		t.Fatalf("error parsing URL: %s", err)
+	}
+	token, _, err := client.TokenAndSignature(ctx, u)
+	if err != nil {
+		t.Fatalf("error retrieving token and signature: %s", err)
+	}
+
+	t.Log(token.String())
+
 	t.Logf("logged in as %s (%s)", client.UserInfo().GamerTag, client.UserInfo().XUID)
 
-	// go publishSession(t, s)
 	publishSession(t, client)
 	subscribeSocial(t, client)
 }
@@ -116,6 +129,9 @@ func subscribeSocial(t testing.TB, client *xsapi.Client) {
 
 	if err := client.Social().AddFriend(ctx, "2535428765332540"); err != nil {
 		t.Fatalf("error adding friend: %s", err)
+	}
+	if err := client.Social().Follow(ctx, "2535428765332540"); err != nil {
+		t.Fatalf("error following: %s", err)
 	}
 }
 

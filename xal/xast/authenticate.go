@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/df-mc/go-xsapi/xal"
-	"github.com/df-mc/go-xsapi/xal/internal"
-	"github.com/df-mc/go-xsapi/xal/nsal"
-	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
+	"github.com/yomoggies/xsapi-go/xal"
+	"github.com/yomoggies/xsapi-go/xal/internal"
+	"github.com/yomoggies/xsapi-go/xal/nsal"
+	"github.com/yomoggies/xsapi-go/xal/xasd"
 )
 
 func Authenticate(ctx context.Context, config xal.Config, token *xasd.Token, proofKey *ecdsa.PrivateKey) (*Token, error) {

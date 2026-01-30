@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/df-mc/go-xsapi/xal"
+	"github.com/yomoggies/xsapi-go/xal"
 )
 
 type TokenSource interface {

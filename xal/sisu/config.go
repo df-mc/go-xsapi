@@ -1,7 +1,7 @@
 package sisu
 
 import (
-	"github.com/df-mc/go-xsapi/xal"
+	"github.com/yomoggies/xsapi-go/xal"
 )
 
 // Config represents a configuration for a title using SISU for authenticating or

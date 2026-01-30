@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/df-mc/go-xsapi/internal"
-	"github.com/df-mc/go-xsapi/rta"
-	"github.com/df-mc/go-xsapi/xal/xsts"
+	"github.com/yomoggies/xsapi-go/internal"
+	"github.com/yomoggies/xsapi-go/rta"
+	"github.com/yomoggies/xsapi-go/xal/xsts"
 )
 
 func New(api API) *Client {

@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/df-mc/go-xsapi/internal"
 	"github.com/google/uuid"
+	"github.com/yomoggies/xsapi-go/internal"
 )
 
 type Session struct {

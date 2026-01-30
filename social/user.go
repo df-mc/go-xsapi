@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/df-mc/go-xsapi/internal"
+	"github.com/yomoggies/xsapi-go/internal"
 	"golang.org/x/text/language"
 )
 
