@@ -77,8 +77,8 @@ type (
 	// properties represents the properties used to request a device token.
 	properties struct {
 		// AuthMethod is either 'ProofOfPossession' or 'RPS'.
-		// When 'RPS', the access token for the user in Windows
-		// should be present in the RPSTicket.
+		// When 'RPS', the RPSTicket must be present, which
+		// contains the access token for user in Windows.
 		AuthMethod string
 		// ID is the unique ID used to associate a device.
 		ID string `json:"Id"`

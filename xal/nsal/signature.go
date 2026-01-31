@@ -60,8 +60,7 @@ func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecds
 	hash.Write([]byte{0})
 
 	// Authorization header and extra headers if present, otherwise an empty string + 0 byte.
-	headers := append([]string{"Authorization"}, policy.ExtraHeaders...)
-	for _, header := range headers {
+	for _, header := range append([]string{"Authorization"}, policy.ExtraHeaders...) {
 		hash.Write([]byte(request.Header.Get(header)))
 		hash.Write([]byte{0})
 	}
