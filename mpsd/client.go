@@ -49,6 +49,11 @@ type Client struct {
 	once sync.Once
 }
 
+// SessionByReference looks up for a multiplayer session identified by the reference.
+// If one is found, SessionDescription will be returned, which contains metadata for
+// the multiplayer session which can be used to participate the session in the future.
+// An error is returned, if the [context.Context] exceeds a deadline, or if the API call
+// was unsuccessful.
 func (c *Client) SessionByReference(ctx context.Context, ref SessionReference) (_ *SessionDescription, err error) {
 	var d *SessionDescription
 	defer func() {
@@ -59,12 +64,20 @@ func (c *Client) SessionByReference(ctx context.Context, ref SessionReference) (
 	return d, c.do(ctx, http.MethodGet, ref.URL().String(), nil, d)
 }
 
+// Close closes the Client with a context of 15 seconds timeout.
+// It unsubscribes from the RTA service if any subscription is present on the Client.
+// Although Close can be called many times, it is recommended to use the client-set's
+// [github.com/yomoggies/xsapi-go.Client.Close] method.
 func (c *Client) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
 	return c.CloseContext(ctx)
 }
 
+// CloseContext closes the Client with the [context.Context].
+// It unsubscribes from the RTA service if any subscription is present on the Client.
+// Although CloseContext can be called many times, it is recommended to use the client-set's
+// [github.com/yomoggies/xsapi-go.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) (err error) {
 	c.once.Do(func() {
 		c.subscriptionMu.Lock()
@@ -80,6 +93,10 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 	return err
 }
 
+// do is a tiny wrapper around HTTP requests for API calls to the session directory.
+// If reqBody is non-nil, it will be JSON-encoded then used as the request body.
+// If respBody is non-nil, it will be JSON-decoded from the response body.
+// The [context.Context] is used for making a request call using the underlying HTTP client.
 func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody any) error {
 	var r io.Reader
 	if reqBody != nil {

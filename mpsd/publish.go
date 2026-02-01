@@ -90,8 +90,6 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url
 		ref:   ref,
 		cache: &d,
 	}
-	s.ctx, s.cancel = context.WithCancelCause(context.Background())
-
 	if err := s.write(ctx, u, d); err != nil {
 		return nil, fmt.Errorf("write session description: %w", err)
 	}
