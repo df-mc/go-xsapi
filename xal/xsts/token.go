@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yomoggies/xsapi-go/xal/internal"
-	"github.com/yomoggies/xsapi-go/xal/xasu"
+	"github.com/df-mc/go-xsapi/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/xasu"
 )
 
 // Token represents an XSTS (Xbox Secure Token Service) token issued for a

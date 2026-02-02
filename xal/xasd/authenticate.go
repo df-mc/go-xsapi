@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
-	"github.com/yomoggies/xsapi-go/xal"
-	"github.com/yomoggies/xsapi-go/xal/internal"
-	"github.com/yomoggies/xsapi-go/xal/nsal"
 )
 
 // Authenticate requests a Token representing the device in Xbox Live.

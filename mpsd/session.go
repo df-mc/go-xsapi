@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/df-mc/go-xsapi/internal"
 	"github.com/google/uuid"
-	"github.com/yomoggies/xsapi-go/internal"
 )
 
 // Session represents a multiplayer session in MPSD (Multiplayer Session Directory) in Xbox Live.

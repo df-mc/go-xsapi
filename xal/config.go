@@ -1,6 +1,6 @@
 package xal
 
-import "github.com/yomoggies/xsapi-go/xal/internal"
+import "github.com/df-mc/go-xsapi/xal/internal"
 
 var HTTPClient = internal.HTTPClient
 

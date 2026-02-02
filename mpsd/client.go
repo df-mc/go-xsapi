@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yomoggies/xsapi-go/internal"
-	"github.com/yomoggies/xsapi-go/rta"
-	"github.com/yomoggies/xsapi-go/xal/xsts"
+	"github.com/df-mc/go-xsapi/internal"
+	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
 func New(api API) *Client {
@@ -150,4 +150,6 @@ type Provider interface {
 	MPSD() *Client
 }
 
+// contractVersion is the value for the 'x-xbl-contract-version' request header.
+// Request calls to MPSD endpoint should always contain this header.
 const contractVersion = "107"

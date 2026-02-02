@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yomoggies/xsapi-go/xal/nsal"
-	"github.com/yomoggies/xsapi-go/xal/xasd"
+	"github.com/df-mc/go-xsapi/xal/nsal"
+	"github.com/df-mc/go-xsapi/xal/xasd"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/microsoft"
 )

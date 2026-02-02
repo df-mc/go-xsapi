@@ -1,7 +1,7 @@
 package xasd
 
 import (
-	"github.com/yomoggies/xsapi-go/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/internal"
 )
 
 // Token represents an Xbox Authorization Services for Device (XASD) token.

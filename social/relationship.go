@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/yomoggies/xsapi-go/internal"
+	"github.com/df-mc/go-xsapi/internal"
 )
 
 func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/yomoggies/xsapi-go/xal/nsal"
-	"github.com/yomoggies/xsapi-go/xal/xsts"
+	"github.com/df-mc/go-xsapi/xal/nsal"
+	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
 type HTTPClient interface {

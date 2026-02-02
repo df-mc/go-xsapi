@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi"
+	"github.com/df-mc/go-xsapi/mpsd"
+	"github.com/df-mc/go-xsapi/social"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
-	"github.com/yomoggies/xsapi-go"
-	"github.com/yomoggies/xsapi-go/mpsd"
-	"github.com/yomoggies/xsapi-go/social"
-	"github.com/yomoggies/xsapi-go/xal"
-	"github.com/yomoggies/xsapi-go/xal/xasd"
 	"golang.org/x/oauth2"
 )
 

@@ -1,4 +1,4 @@
-module github.com/yomoggies/xsapi-go
+module github.com/df-mc/go-xsapi
 
 go 1.25
 

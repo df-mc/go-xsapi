@@ -3,7 +3,7 @@ package xast
 import (
 	"context"
 
-	"github.com/yomoggies/xsapi-go/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/internal"
 )
 
 type Token = internal.Token[DisplayClaims]

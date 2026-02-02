@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/yomoggies/xsapi-go/xal"
-	"github.com/yomoggies/xsapi-go/xal/internal"
-	"github.com/yomoggies/xsapi-go/xal/nsal"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/nsal"
 )
 
 type TokenRequest internal.TokenRequest[TokenProperties]

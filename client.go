@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yomoggies/xsapi-go/internal"
-	"github.com/yomoggies/xsapi-go/mpsd"
-	"github.com/yomoggies/xsapi-go/rta"
-	"github.com/yomoggies/xsapi-go/social"
-	"github.com/yomoggies/xsapi-go/xal/nsal"
-	"github.com/yomoggies/xsapi-go/xal/xsts"
+	"github.com/df-mc/go-xsapi/internal"
+	"github.com/df-mc/go-xsapi/mpsd"
+	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/social"
+	"github.com/df-mc/go-xsapi/xal/nsal"
+	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
 func NewClient(src TokenSource, config *ClientConfig) (*Client, error) {

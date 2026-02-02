@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/yomoggies/xsapi-go/xal"
-	"github.com/yomoggies/xsapi-go/xal/sisu"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/sisu"
 )
 
 func ExampleClient() {
@@ -27,7 +27,7 @@ func ExampleClient() {
 	}
 
 	// We print out the verification URI and the user code to [os.Stderr]
-	// so it doesn't need to be captured by Output: in this example.
+	// so it doesn't need to be captured by Output: line in this example.
 	_, _ = fmt.Fprintf(os.Stderr, "Sign in to your Microsoft Account at %s using the code %s.", da.VerificationURI, da.UserCode)
 
 	// Make a context for polling access token while user is signing in to their Microsoft Account
