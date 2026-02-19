@@ -250,6 +250,20 @@ func (s *Session) Member(label string) (MemberDescription, bool) {
 	return *member, true
 }
 
+// MemberByXUID returns the cached description of the member identified by their XUID.
+//
+// The returned [MemberDescription] is a copy of the cached state. The
+// boolean result reports whether a non-nil member with the given XUID
+// exists in the member list iterator returned from [Session.Members].
+func (s *Session) MemberByXUID(xuid string) (MemberDescription, bool) {
+	for _, member := range s.Members() {
+		if member.Constants != nil && member.Constants.System != nil && member.Constants.System.XUID == xuid {
+			return member, true
+		}
+	}
+	return MemberDescription{}, false
+}
+
 // Members returns an iterator that yields non-nil members from the cached session state.
 // The returned seq operates over a snapshot of the member map taken at the time
 // of the call, so it is safe to iterate without holding internal locks.
