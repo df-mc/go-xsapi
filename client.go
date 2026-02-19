@@ -124,8 +124,9 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 			signingBuffer.Reset()
 			return nil, fmt.Errorf("clone request body: %w", err)
 		}
+		_ = reqBody.Close()
 		policy.Sign(req2, signingBuffer.Bytes(), c.src.ProofKey())
-		req2.Body = io.NopCloser(signingBuffer)
+		req2.Body, reqBodyClosed = io.NopCloser(signingBuffer), true
 	}
 
 	reqBodyClosed = true

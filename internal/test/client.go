@@ -1,4 +1,4 @@
-package xsapi
+package test
 
 import (
 	"context"
@@ -7,11 +7,12 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/df-mc/go-xsapi"
 	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/sisu"
 )
 
-func ExampleClient() {
+func Client() *xsapi.Client {
 	// Notify for Ctrl+C and other interrupt signals so the user can abort
 	// the device authorization flow or other operations at any time.
 	signals, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
@@ -45,30 +46,29 @@ func ExampleClient() {
 	session := MinecraftAndroid.New(msa, nil)
 
 	// Log in to Xbox Live services using the SISU session.
-	client, err := NewClient(session, nil)
+	client, err := xsapi.NewClient(session, nil)
 	if err != nil {
 		panic(fmt.Sprintf("error creating API client: %s", err))
 	}
-	// Make sure to close the client when it's done.
-	defer func() {
-		if err := client.Close(); err != nil {
-			panic(fmt.Sprintf("error closing API client: %s", err))
-		}
-	}()
+	return client
+}
 
-	// Use social (peoplehub) endpoint to search a user using the query.
-	ctx, cancel := context.WithTimeout(signals, time.Second*15)
-	defer cancel()
-	users, err := client.Social().Search(ctx, "Lactyy")
-	if err != nil {
-		panic(fmt.Sprintf("error searching for users: %s", err))
-	}
-	if len(users) == 0 {
-		panic("no users found")
-	}
+// MinecraftAndroid is the SISU configuration used in Minecraft: Bedrock Edition for Android.
+// It is used for authenticating and authorizing with Xbox Live services.
+var MinecraftAndroid = sisu.Config{
+	Config: xal.Config{
+		// This indicates the device is running Android 13.
+		Device: xal.Device{
+			Type:    xal.DeviceTypeAndroid,
+			Version: "13",
+		},
+		UserAgent: "XAL Android 2025.04.20250326.000",
+		TitleID:   1739947436,
+	},
 
-	// Use the first user present in the result.
-	user := users[0]
-	fmt.Println(user.GamerTag)
-	// Output: Lactyy
+	// Those fields are title-specific and cannot be easily changed.
+	// Treat them like constants that are specific to the title being authenticated for the user.
+	ClientID:    "0000000048183522",               // Client ID used for authenticating and authorizing with Xbox Live
+	RedirectURI: "ms-xal-0000000048183522://auth", // Used for Authorization Code Flow
+	Sandbox:     "RETAIL",                         // Usually 'RETAIL' for most games available in the market
 }

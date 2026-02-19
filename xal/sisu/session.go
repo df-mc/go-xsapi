@@ -198,17 +198,6 @@ func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.T
 		return nil, fmt.Errorf("xal/sisu: request user token for XSTS token request: %w", err)
 	}
 
-	// xasd.TokenRequest{
-	//	Device: device,
-	//	ProofKey: internal.ProofKey(key)
-	// }.Do(ctx, s.config.Config)
-
-	// xast.TokenRequest{}
-	// xasu.TokenRequest{}
-
-	// xasu.Authenticate(ctx,
-
-	// ここらへんくっそ適当なのは許して
 	req := &xsts.TokenRequest{
 		RelyingParty: relyingParty,
 		TokenType:    "JWT",

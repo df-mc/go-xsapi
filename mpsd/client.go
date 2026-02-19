@@ -62,7 +62,7 @@ type Client struct {
 // was unsuccessful.
 func (c *Client) SessionByReference(ctx context.Context, ref SessionReference) (_ *SessionDescription, err error) {
 	var d *SessionDescription
-	if err := c.do(ctx, http.MethodGet, ref.URL().String(), &d, nil); err != nil {
+	if err := c.do(ctx, http.MethodGet, ref.URL().String(), nil, &d); err != nil {
 		return nil, err
 	}
 	if d == nil {
