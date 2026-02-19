@@ -196,7 +196,7 @@ func (e Endpoint) Match(u *url.URL) bool {
 	var matchHost bool
 	switch e.HostType {
 	case HostTypeFQDN:
-		matchHost = u.Host == e.Host
+		matchHost = u.Hostname() == e.Host
 	case HostTypeWildcard:
 		matchHost = e.matchWildcard(u.Host)
 	case HostTypeCIDR:
