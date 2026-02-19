@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -16,21 +17,20 @@ import (
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
-func New(api API) *Client {
+func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	return &Client{
-		api: api,
+		client:   client,
+		rta:      conn,
+		userInfo: userInfo,
+		log:      log,
 	}
 }
 
-type API interface {
-	rta.Provider
-	internal.HTTPClient
-	xsts.UserInfoProvider
-	internal.Logger
-}
-
 type Client struct {
-	api API
+	client   *http.Client
+	rta      *rta.Conn
+	userInfo xsts.UserInfo
+	log      *slog.Logger
 
 	subscriptionMu       sync.Mutex
 	subscription         *rta.Subscription
@@ -59,7 +59,7 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 	}
 	internal.Apply(req, opts)
 
-	resp, err := c.api.HTTPClient().Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,7 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 		defer c.subscriptionMu.Unlock()
 
 		if c.subscription != nil {
-			if err2 := c.api.RTA().Unsubscribe(ctx, c.subscription); err2 != nil {
+			if err2 := c.rta.Unsubscribe(ctx, c.subscription); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err2))
 			}
 		}

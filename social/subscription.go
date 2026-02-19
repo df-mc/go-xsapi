@@ -21,10 +21,10 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 
 	resourceURI := socialEndpoint.JoinPath(
 		"users",
-		"xuid("+c.api.UserInfo().XUID+")",
+		"xuid("+c.userInfo.XUID+")",
 		"friends",
 	).String()
-	c.subscription, err = c.api.RTA().Subscribe(ctx, resourceURI)
+	c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
 	if err != nil {
 		return err
 	}
@@ -48,13 +48,13 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		XUIDs []string `json:"Xuids"`
 	}
 	if err := json.Unmarshal(custom, &data); err != nil {
-		h.api.Log().Error("error decoding subscription custom", slog.Any("error", err))
+		h.log.Error("error decoding subscription custom", slog.Any("error", err))
 		return
 	}
 	switch data.Type {
 	case "IncomingFriendRequestCountChanged":
 		if data.Count == nil {
-			h.api.Log().Error("friend request count is absent in subscription event data",
+			h.log.Error("friend request count is absent in subscription event data",
 				slog.String("custom", string(custom)),
 			)
 			return
@@ -67,7 +67,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		return
 	case RelationshipChangeTypeAdded, RelationshipChangeTypeRemoved, RelationshipChangeTypeChanged:
 		if len(data.XUIDs) == 0 {
-			h.api.Log().Error("XUIDs are absent from subscription event data",
+			h.log.Error("XUIDs are absent from subscription event data",
 				slog.String("custom", string(custom)),
 			)
 			return
@@ -81,7 +81,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		}
 		h.subscriptionMu.Unlock()
 	default:
-		h.api.Log().Warn("unexpected subscription notification type",
+		h.log.Warn("unexpected subscription notification type",
 			slog.String("type", data.Type),
 		)
 	}

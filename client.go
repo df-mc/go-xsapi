@@ -66,7 +66,7 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 		return nil, fmt.Errorf("dial RTA: %w", err)
 	}
 	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log())
-	c.social = social.New(c)
+	c.social = social.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log())
 	return c, nil
 }
 
