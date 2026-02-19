@@ -275,7 +275,7 @@ type UserPresenceDetail struct {
 
 type UserTitleHistory struct {
 	LastTimePlayed     time.Time `json:"lastTimePlayed"`
-	LastTimePlayedText time.Time `json:"lastTimePlayedText"`
+	LastTimePlayedText string    `json:"lastTimePlayedText"`
 }
 
 type UserPreferredColor struct {
