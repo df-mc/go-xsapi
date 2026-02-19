@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/df-mc/go-xsapi/social"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xsts"
+	"golang.org/x/text/language"
 )
 
 func NewClient(src TokenSource, config *ClientConfig) (*Client, error) {
@@ -186,7 +188,15 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 	return err
 }
 
-type AcceptLanguage = internal.AcceptLanguage
+func AcceptLanguage(tags []language.Tag) internal.RequestOption {
+	s := make([]string, len(tags))
+	for i, tag := range tags {
+		s[i] = tag.String()
+	}
+	return func(req *http.Request) {
+		req.Header.Add("Accept-Language", strings.Join(s, ", "))
+	}
+}
 
 func RequestHeader(key, value string) internal.RequestOption {
 	return internal.RequestHeader(key, value)
