@@ -26,7 +26,7 @@ func Authenticate(ctx context.Context, config xal.Config, token *xasd.Token, pro
 		Properties: properties{
 			DeviceToken: token.Token,
 			ProofKey: jose.JSONWebKey{
-				Key: proofKey,
+				Key: proofKey.Public(),
 				Use: "sig",
 			},
 			TitleID: config.TitleID,
