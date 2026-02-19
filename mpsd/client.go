@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -16,17 +17,23 @@ import (
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
-func New(api API) *Client {
+func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	return &Client{
-		api:      api,
+		client:   client,
+		rta:      conn,
+		userInfo: userInfo,
+		log:      log,
+
 		sessions: make(map[string]*Session),
 		closed:   make(chan struct{}),
 	}
 }
 
 type Client struct {
-	// api represents the underlying XSAPI Client used to create this Client.
-	api API
+	client   *http.Client
+	rta      *rta.Conn
+	userInfo xsts.UserInfo
+	log      *slog.Logger
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.
@@ -84,7 +91,7 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 		defer c.subscriptionMu.Unlock()
 
 		if c.subscription != nil {
-			if err2 := c.api.RTA().Unsubscribe(ctx, c.subscription); err2 != nil {
+			if err2 := c.rta.Unsubscribe(ctx, c.subscription); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("mpsd: unsubscribe: %w", err2))
 			}
 		}
@@ -118,7 +125,7 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 	}
 	req.Header.Set("X-Xbl-Contract-Version", contractVersion)
 
-	resp, err := c.api.HTTPClient().Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -127,7 +134,7 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
 		if respBody != nil {
-			if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+			if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
 				return fmt.Errorf("decode response body: %w", err)
 			}
 		}

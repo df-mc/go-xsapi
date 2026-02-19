@@ -214,7 +214,7 @@ func (s *Session) Constants() SessionConstants {
 // The returned value is a copy of the cached session state and is safe
 // to modify by the caller.
 func (s *Session) Properties() SessionProperties {
-	s.cacheMu.Unlock()
+	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 
 	properties := s.cache.Properties
@@ -272,7 +272,7 @@ func (s *Session) Members() iter.Seq2[string, MemberDescription] {
 	defer s.cacheMu.Unlock()
 
 	if s.cache.Members == nil {
-		return nil
+		return func(func(string, MemberDescription) bool) {}
 	}
 	members := maps.Clone(s.cache.Members)
 	return func(yield func(string, MemberDescription) bool) {

@@ -64,7 +64,7 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 	if err != nil {
 		return nil, fmt.Errorf("dial RTA: %w", err)
 	}
-	c.mpsd = mpsd.New(c)
+	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log())
 	c.social = social.New(c)
 	return c, nil
 }
@@ -139,7 +139,6 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 			return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
 		}
 	}
-	fmt.Printf("resolved an XSTS token that relies on the party %q for %s\n", endpoint.RelyingParty, u)
 	token, err := c.src.XSTSToken(ctx, endpoint.RelyingParty)
 	if err != nil {
 		return nil, policy, fmt.Errorf("request XSTS token: %w", err)

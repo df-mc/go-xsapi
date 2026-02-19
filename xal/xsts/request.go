@@ -33,13 +33,13 @@ func (r TokenRequest) Do(ctx context.Context, config xal.Config, proofKey *ecdsa
 	req.Header.Set("Content-Type", "application/json")
 	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, err)
+		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
 	var t *Token
 	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {

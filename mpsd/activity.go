@@ -66,7 +66,7 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 			XUIDs: xuids,
 			People: searchRequestPeople{
 				SocialGroup:     "people",
-				SocialGroupXUID: c.api.UserInfo().XUID,
+				SocialGroupXUID: c.userInfo.XUID,
 			},
 		},
 	}, &responseBody)

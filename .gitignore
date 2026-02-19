@@ -69,5 +69,3 @@ fabric.properties
 .idea/httpRequests
 
 .vscode
-
-/client_test.go

@@ -3,7 +3,6 @@ package xsapi
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"time"
@@ -70,7 +69,7 @@ func ExampleClient() {
 
 	// Use the first user present in the result.
 	user := users[0]
-	log.Print(user.GamerTag)
+	fmt.Println(user.GamerTag)
 	// Output: Lactyy
 }
 

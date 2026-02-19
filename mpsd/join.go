@@ -26,7 +26,7 @@ func (c *Client) Join(ctx context.Context, activity ActivityHandle, config JoinC
 				Constants: &MemberConstants{
 					System: &MemberConstantsSystem{
 						Initialize: true,
-						XUID:       c.api.UserInfo().XUID,
+						XUID:       c.userInfo.XUID,
 					},
 					Custom: config.CustomMemberConstants,
 				},

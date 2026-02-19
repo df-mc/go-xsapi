@@ -49,7 +49,7 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 				Constants: &MemberConstants{
 					System: &MemberConstantsSystem{
 						Initialize: true,
-						XUID:       c.api.UserInfo().XUID,
+						XUID:       c.userInfo.XUID,
 					},
 					Custom: config.CustomMemberConstants,
 				},
@@ -79,7 +79,7 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url.URL, d SessionDescription) (*Session, error) {
 	s := &Session{
 		client: c,
-		log: c.api.Log().With(
+		log: c.log.With(
 			slog.Group("session",
 				slog.String("scid", ref.ServiceConfigID.String()),
 				slog.String("templateName", ref.TemplateName),

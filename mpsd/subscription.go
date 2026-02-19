@@ -32,7 +32,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 		}
 	}()
 
-	c.subscription, err = c.api.RTA().Subscribe(ctx, resourceURI)
+	c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
@@ -47,7 +47,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	}
 	c.subscription.Handle(&subscriptionHandler{
 		Client: c,
-		log:    c.api.Log().With("src", "subscription handler"),
+		log:    c.log.With("src", "subscription handler"),
 	})
 	return c.subscription, c.subscriptionData, nil
 }
