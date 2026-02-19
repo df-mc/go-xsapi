@@ -25,7 +25,7 @@ type SignaturePolicy struct {
 	// body will be signed.
 	MaxBodyBytes int
 	// ExtraHeaders specifies additional headers that should be signed.
-	// It is typically empty, but used rarely used in some titles.
+	// It is typically empty, but rarely used in some titles.
 	// Note that the 'Authorization' header of the request is always
 	// signed.
 	ExtraHeaders []string

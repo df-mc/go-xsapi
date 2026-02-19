@@ -14,7 +14,7 @@ import (
 func ExampleClient() {
 	// Notify for Ctrl+C and other interrupt signals so the user can abort
 	// the device authorization flow or other operations at any time.
-	signals, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	signals, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	// Use the Device Authorization Flow to sign in to a Microsoft Account.

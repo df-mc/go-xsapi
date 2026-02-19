@@ -21,6 +21,6 @@ type Token[C any] struct {
 }
 
 // Valid returns whether the Token is a valid token.
-func (t Token[C]) Valid() bool {
-	return t.Token != "" && !time.Now().After(t.NotAfter)
+func (t *Token[C]) Valid() bool {
+	return t != nil && t.Token != "" && !time.Now().After(t.NotAfter)
 }

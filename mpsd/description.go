@@ -37,10 +37,10 @@ type SessionDescription struct {
 	// Members is a map whose keys are member identifiers (labels) and whose values
 	// are the corresponding member descriptions.
 	//
-	// In addition to concrete numerical IDs for member, the reserved alias "@me" may
+	// In addition to concrete numerical IDs for member, the reserved alias "me" may
 	// be used as a key to refer to the member associated with the currently authenticated user.
 	//
-	// A member may modify only their own MemberDescription. Use of "@me" is
+	// A member may modify only their own MemberDescription. Use of "me" is
 	// equivalent to specifying the caller's own member ID.
 	Members map[string]*MemberDescription `json:"members,omitempty"`
 }
@@ -255,7 +255,6 @@ type MemberConstants struct {
 }
 
 // MemberConstantsSystem specifies the system-specific constants for a member in a multiplayer session.
-// It contains
 type MemberConstantsSystem struct {
 	// XUID is the user ID of the member.
 	XUID string `json:"xuid,omitempty"`

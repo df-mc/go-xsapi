@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -66,6 +67,9 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 	var t *Token
 	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
 		return nil, fmt.Errorf("decode response body: %w", err)
+	}
+	if !t.Valid() {
+		return nil, errors.New("xasd: invalid token result")
 	}
 	return t, nil
 }

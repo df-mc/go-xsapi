@@ -59,7 +59,7 @@ func (c *Client) Recommendations(ctx context.Context, opts ...internal.RequestOp
 	return c.users(ctx, "me", "recommendations", nil, opts)
 }
 
-func (c *Client) users(ctx context.Context, perspective, selector string, reqBody any, opts []internal.RequestOption) ([]User, error) {
+func (c *Client) users(ctx context.Context, perspective, selector string, postBody any, opts []internal.RequestOption) ([]User, error) {
 	var (
 		requestURL = peopleHubEndpoint.JoinPath(
 			"users",
@@ -73,16 +73,19 @@ func (c *Client) users(ctx context.Context, perspective, selector string, reqBod
 		method string
 		resp   batchResponse
 	)
-	if reqBody != nil {
+	if postBody != nil {
 		method = http.MethodPost
 	} else {
 		method = http.MethodGet
 	}
-	return resp.Users, c.do(ctx, method, requestURL, reqBody, &resp, append(
+	if err := c.do(ctx, method, requestURL, postBody, &resp, append(
 		opts,
 		peopleHubContractVersion,
 		defaultLanguage,
-	))
+	)); err != nil {
+		return nil, err
+	}
+	return resp.Users, nil
 }
 
 type (

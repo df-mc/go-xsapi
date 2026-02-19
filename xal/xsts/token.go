@@ -187,9 +187,15 @@ func (p *Privileges) MarshalJSON() ([]byte, error) {
 // The JSON value must be a string containing a space-delimited list of
 // decimal privilege IDs. Each ID is parsed and appended to the receiver.
 func (p *Privileges) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" || len(b) == 0 {
+		return nil
+	}
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
 		return err
+	}
+	if s == "" {
+		return nil
 	}
 	for char := range strings.SplitSeq(s, " ") {
 		n, err := strconv.ParseUint(char, 10, 32)

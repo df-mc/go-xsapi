@@ -63,7 +63,7 @@ type tokenRefresher struct {
 }
 
 // Token refreshes the [oauth2.Token] using the refresh token
-// rerieved from previous token.
+// retrieved  from previous token.
 // WARNING: Token is not safe for concurrent access, as it
 // updates the tokenRefresher's refreshToken field.
 // Within this package, it is used by reuseTokenSource which
@@ -73,7 +73,7 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 		return nil, errors.New("xal/sisu: token expired and refresh token is not set")
 	}
 
-	req, err := http.NewRequest(http.MethodPost, tf.conf.oauth2().Endpoint.TokenURL, strings.NewReader(url.Values{
+	req, err := http.NewRequestWithContext(tf.ctx, http.MethodPost, tf.conf.oauth2().Endpoint.TokenURL, strings.NewReader(url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {tf.refreshToken},
 		"scope":         {scope},

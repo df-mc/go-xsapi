@@ -53,13 +53,13 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 	}
 
 	var (
-		requestURL   = endpoint.JoinPath("handles/query")
-		responseBody struct {
+		requestURL = endpoint.JoinPath("handles/query")
+		result     struct {
 			Activities []ActivityHandle `json:"results"`
 		}
 	)
 	requestURL.RawQuery = "include=relatedInfo,customProperties"
-	return responseBody.Activities, c.do(ctx, http.MethodPost, requestURL.String(), searchRequest{
+	if err := c.do(ctx, http.MethodPost, requestURL.String(), searchRequest{
 		Type:            "activity",
 		ServiceConfigID: scid,
 		Owners: searchRequestOwners{
@@ -69,7 +69,10 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 				SocialGroupXUID: c.userInfo.XUID,
 			},
 		},
-	}, &responseBody)
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Activities, nil
 }
 
 // writeActivity publishes an activity handle for the multiplayer session.

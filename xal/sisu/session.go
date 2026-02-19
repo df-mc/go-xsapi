@@ -133,11 +133,11 @@ func (s *Session) UserToken(ctx context.Context) (*xasu.Token, error) {
 }
 
 func (s *Session) Snapshot() *Snapshot {
-	s.tokenMu.Lock()
-	defer s.tokenMu.Unlock()
-
 	s.xstsMu.Lock()
 	defer s.xstsMu.Unlock()
+
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
 
 	return &Snapshot{
 		TitleToken: s.title,
