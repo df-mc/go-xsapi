@@ -11,7 +11,9 @@ type RequestOption func(req *http.Request)
 
 func Apply(req *http.Request, opts []RequestOption) {
 	for _, opt := range opts {
-		opt(req)
+		if opt != nil {
+			opt(req)
+		}
 	}
 }
 
