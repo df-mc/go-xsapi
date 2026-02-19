@@ -67,10 +67,7 @@ func (c *Client) do(ctx context.Context, method, u string, reqBody, respBody any
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
 		if respBody != nil {
-			b, _ := io.ReadAll(resp.Body)
-			// fmt.Println(b)
-			// TODO: Remove this and use resp.Body directly in json.NewDecoder
-			if err := json.NewDecoder(bytes.NewReader(b)).Decode(&respBody); err != nil {
+			if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
 				return fmt.Errorf("decode response body: %w", err)
 			}
 		}
