@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
@@ -52,7 +53,7 @@ func (conf Config) TokenSource(ctx context.Context, t *oauth2.Token) oauth2.Toke
 	if t != nil {
 		tkr.refreshToken = t.RefreshToken
 	}
-	return oauth2.ReuseTokenSource(t, tkr)
+	return oauth2.ReuseTokenSourceWithExpiry(t, tkr, time.Hour*3)
 }
 
 type tokenRefresher struct {

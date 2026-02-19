@@ -87,8 +87,9 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url
 			),
 		),
 
-		ref:   ref,
-		cache: &d,
+		ref:    ref,
+		cache:  &d,
+		closed: make(chan struct{}),
 	}
 	if err := s.write(ctx, u, d); err != nil {
 		return nil, fmt.Errorf("write session description: %w", err)

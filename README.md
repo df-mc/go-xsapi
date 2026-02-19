@@ -1,6 +1,10 @@
-# xsapi-go
+# go-xsapi
 
-A Go library for communicating and interacting with Xbox Live APIs.
+[![Go Reference](https://pkg.go.dev/badge/github.com/df-mc/go-xsapi.svg)](https://pkg.go.dev/github.com/df-mc/go-xsapi)
+
+>A Go library for communicating with Xbox Live API.
+
+![Azure_Bit_Gopher.png](https://github.com/ashleymcnamara/gophers/blob/2951dcaac888f5489f762c959b1e1c31af48e92d/Azure_Bit_Gopher.png?raw=true)
 
 ## Example
 
@@ -20,8 +24,6 @@ if err != nil {
   panic(fmt.Sprintf("error requesting device authorization flow: %s", err))
 }
 
-// We print out the verification URI and the user code to [os.Stderr]
-// so it doesn't need to be captured by Output: line in this example.
 _, _ = fmt.Fprintf(os.Stderr, "Sign in to your Microsoft Account at %s using the code %s.", da.VerificationURI, da.UserCode)
 
 // Make a context for polling access token while user is signing in to their Microsoft Account
@@ -65,3 +67,7 @@ if len(users) == 0 {
 user := users[0]
 log.Print(user.GamerTag)
 ```
+
+## Contact
+
+[![Discord Banner 2](https://discordapp.com/api/guilds/623638955262345216/widget.png?style=banner2)](https://discord.gg/U4kFWHhTNR)

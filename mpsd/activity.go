@@ -4,10 +4,73 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// Activities returns activity handles for open multiplayer sessions in the specified
+// Service Configuration ID (SCID) for all users.
+func (c *Client) Activities(ctx context.Context, scid uuid.UUID) ([]ActivityHandle, error) {
+	return c.ActivitiesForUsers(ctx, scid, nil)
+}
+
+// ActivitiesForUsers returns activity handles for open multiplayer sessions
+// associated with the specified XUIDs.
+// The Service Configuration ID (SCID) identifies the game to query.
+// If xuids is nil, it returns all open multiplayer sessions for the SCID.
+func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids []string) ([]ActivityHandle, error) {
+	// searchRequestPeople specifies whose perspective is used when searching
+	// for activity handles to multiplayer sessions.
+	type searchRequestPeople struct {
+		// SocialGroup is the name of the social group used to filter users.
+		// It can be "people" or "favorites".
+		SocialGroup string `json:"moniker,omitempty"`
+		// SocialGroupXUID is the XUID of the user to whom the social group applies.
+		// In most cases, this is the caller's own XUID, since most games send search
+		// requests from the player's own perspective.
+		SocialGroupXUID string `json:"monikerXuid,omitempty"`
+	}
+	type searchRequestOwners struct {
+		// XUIDs is a list that specifies user IDs to find all activities for.
+		XUIDs  []string            `json:"xuids,omitempty"`
+		People searchRequestPeople `json:"people,omitempty"`
+	}
+	// searchRequest represents the on-wire format used for searching
+	// activity handles to open multiplayer sessions in the directory.
+	type searchRequest struct {
+		// Type indicates the type for the request.
+		// For searchRequest, this is always "activity".
+		Type string `json:"type"`
+		// ServiceConfigID is the service configuration ID for this request.
+		// A Service Configuration ID (SCID) may be shared by various titles
+		// available on many platforms.
+		ServiceConfigID uuid.UUID `json:"scid"`
+		// Owner includes parameters used for querying activity handles
+		// for multiplayer sessions in the directory.
+		Owners searchRequestOwners `json:"owners"`
+	}
+
+	var (
+		requestURL   = endpoint.JoinPath("handles/query")
+		responseBody struct {
+			Activities []ActivityHandle `json:"results"`
+		}
+	)
+	requestURL.RawQuery = "include=relatedInfo,customProperties"
+	return responseBody.Activities, c.do(ctx, http.MethodPost, requestURL.String(), searchRequest{
+		Type:            "activity",
+		ServiceConfigID: scid,
+		Owners: searchRequestOwners{
+			XUIDs: xuids,
+			People: searchRequestPeople{
+				SocialGroup:     "people",
+				SocialGroupXUID: c.api.UserInfo().XUID,
+			},
+		},
+	}, &responseBody)
+}
 
 // writeActivity publishes an activity handle for the multiplayer session.
 //
@@ -81,6 +144,14 @@ type ActivityHandle struct {
 
 	// OwnerXUID is the XUID of the user who created the multiplayer session.
 	OwnerXUID string `json:"ownerXuid,omitempty"`
+}
+
+// URL returns the URL locating to the resource for the activity handle.
+func (h ActivityHandle) URL() *url.URL {
+	return endpoint.JoinPath(
+		"handles",
+		h.ID.String(),
+	)
 }
 
 // ActivityHandleRelatedInfo contains additional metadata associated with

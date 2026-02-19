@@ -118,6 +118,14 @@ func TestSession(t *testing.T) {
 
 	publishSession(t, client)
 	subscribeSocial(t, client)
+
+	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
+	if err != nil {
+		t.Fatalf("error searching activity handles: %s", err)
+	}
+	for _, activity := range activities {
+		t.Logf("%#v", activity)
+	}
 }
 
 func subscribeSocial(t testing.TB, client *xsapi.Client) {
