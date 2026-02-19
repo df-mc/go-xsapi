@@ -58,7 +58,7 @@ type Session struct {
 	// Callers can always refresh this cache to the remote state using [Session.Sync] method.
 	cache *SessionDescription
 	// cacheMu guards the cache from concurrent read-write access.
-	cacheMu sync.Mutex
+	cacheMu sync.RWMutex
 
 	// closed is a channel that is closed when the Session is no longer usable.
 	//
@@ -200,8 +200,8 @@ func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessag
 // The returned value is a copy of the cached session state and is safe
 // to modify by the caller.
 func (s *Session) Constants() SessionConstants {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
 
 	constants := s.cache.Constants
 	if constants == nil {
@@ -214,8 +214,8 @@ func (s *Session) Constants() SessionConstants {
 // The returned value is a copy of the cached session state and is safe
 // to modify by the caller.
 func (s *Session) Properties() SessionProperties {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
 
 	properties := s.cache.Properties
 	if properties == nil {
@@ -240,8 +240,8 @@ func (s *Session) Reference() SessionReference {
 // boolean result reports whether a non-nil member with the given label
 // exists in the cached session state.
 func (s *Session) Member(label string) (MemberDescription, bool) {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
 
 	member, ok := s.cache.Members[label]
 	if !ok || member == nil {
@@ -268,8 +268,8 @@ func (s *Session) MemberByXUID(xuid string) (MemberDescription, bool) {
 // The returned seq operates over a snapshot of the member map taken at the time
 // of the call, so it is safe to iterate without holding internal locks.
 func (s *Session) Members() iter.Seq2[string, MemberDescription] {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
 
 	if s.cache.Members == nil {
 		return func(func(string, MemberDescription) bool) {}
