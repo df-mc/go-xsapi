@@ -146,7 +146,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 func (h *subscriptionHandler) parseReference(s string) (ref SessionReference, err error) {
 	segments := strings.Split(s, "~")
 	if len(segments) != 3 {
-		return ref, fmt.Errorf("badly formatted session reference, must consist of three parts separated wth '~' character: %q", s)
+		return ref, fmt.Errorf("badly formatted session reference, must consist of three parts separated with '~' character: %q", s)
 	}
 	ref.ServiceConfigID, err = uuid.Parse(segments[0])
 	if err != nil {
