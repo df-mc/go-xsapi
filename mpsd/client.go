@@ -63,12 +63,13 @@ type Client struct {
 // was unsuccessful.
 func (c *Client) SessionByReference(ctx context.Context, ref SessionReference) (_ *SessionDescription, err error) {
 	var d *SessionDescription
-	defer func() {
-		if d == nil {
-			err = fmt.Errorf("mpsd: invalid session description received from %s", ref.URL())
-		}
-	}()
-	return d, c.do(ctx, http.MethodGet, ref.URL().String(), nil, d)
+	if err := c.do(ctx, http.MethodGet, ref.URL().String(), &d, nil); err != nil {
+		return nil, err
+	}
+	if d == nil {
+		return nil, fmt.Errorf("mpsd: invalid session description received from %s", ref.URL())
+	}
+	return d, nil
 }
 
 // Close closes the Client with a context of 15 seconds timeout.

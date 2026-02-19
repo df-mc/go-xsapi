@@ -95,7 +95,7 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 
 		if c.subscription != nil {
 			if err2 := c.api.RTA().Unsubscribe(ctx, c.subscription); err2 != nil {
-				err = errors.Join(err, fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err))
+				err = errors.Join(err, fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err2))
 			}
 		}
 	})

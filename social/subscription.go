@@ -24,12 +24,12 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		"xuid("+c.api.UserInfo().XUID+")",
 		"friends",
 	).String()
-	subscription, err := c.api.RTA().Subscribe(ctx, resourceURI)
+	c.subscription, err = c.api.RTA().Subscribe(ctx, resourceURI)
 	if err != nil {
 		return err
 	}
 	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
-	subscription.Handle(&subscriptionHandler{c})
+	c.subscription.Handle(&subscriptionHandler{c})
 	return nil
 }
 

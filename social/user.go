@@ -24,11 +24,14 @@ func (c *Client) Search(ctx context.Context, query string, opts ...internal.Requ
 	q := requestURL.Query()
 	q.Set("q", query)
 	requestURL.RawQuery = q.Encode()
-	return resp.Users, c.do(ctx, http.MethodGet, requestURL.String(), nil, &resp, append(
+	if err := c.do(ctx, http.MethodGet, requestURL.String(), nil, &resp, append(
 		opts,
 		peopleHubContractVersion,
 		defaultLanguage,
-	))
+	)); err != nil {
+		return nil, err
+	}
+	return resp.Users, nil
 }
 
 func (c *Client) UserByXUID(ctx context.Context, xuid string, opts ...internal.RequestOption) (u User, err error) {
@@ -165,7 +168,7 @@ func ResizeDisplayPictureURL(u string, options ResizePictureOptions) string {
 		q.Set("format", options.Format)
 	}
 	q.Set("w", strconv.Itoa(options.Size[0]))
-	q.Set("h", strconv.Itoa(options.Size[0]))
+	q.Set("h", strconv.Itoa(options.Size[1]))
 	pictureURL.RawQuery = q.Encode()
 	return pictureURL.String()
 }

@@ -95,6 +95,7 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, u *url
 		return nil, fmt.Errorf("write session description: %w", err)
 	}
 	if err := s.writeActivity(ctx); err != nil {
+		_ = s.Close()
 		return nil, fmt.Errorf("write session activity: %w", err)
 	}
 
