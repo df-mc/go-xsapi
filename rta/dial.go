@@ -3,12 +3,12 @@ package rta
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"slices"
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/df-mc/go-xsapi/internal"
 )
 
 // Dialer represents the options for establishing a Conn with real-time activity services with DialContext or Dial.
@@ -17,28 +17,24 @@ type Dialer struct {
 	ErrorLog *slog.Logger
 }
 
-type API interface {
-	internal.HTTPClient
-}
-
 // Dial calls DialContext with a 15 seconds timeout.
-func (d Dialer) Dial(api API) (*Conn, error) {
+func (d Dialer) Dial(client *http.Client) (*Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
-	return d.DialContext(ctx, api)
+	return d.DialContext(ctx, client)
 }
 
 // DialContext establishes a connection with real-time activity service. A context.Context is used to control the
 // scene real-timely. An authorization token may be used for configuring an HTTP header to Options. An error may be
 // returned during the dial of websocket connection.
-func (d Dialer) DialContext(ctx context.Context, api API) (*Conn, error) {
+func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, error) {
 	if d.ErrorLog == nil {
 		d.ErrorLog = slog.Default()
 	}
 	if d.Options == nil {
 		d.Options = &websocket.DialOptions{}
 	}
-	d.Options.HTTPClient = api.HTTPClient()
+	d.Options.HTTPClient = client
 	if !slices.Contains(d.Options.Subprotocols, subprotocol) {
 		d.Options.Subprotocols = append(d.Options.Subprotocols, subprotocol)
 	}

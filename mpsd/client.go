@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
@@ -145,17 +144,6 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 	default:
 		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
-}
-
-type API interface {
-	rta.Provider
-	xsts.UserInfoProvider
-	internal.HTTPClient
-	internal.Logger
-}
-
-type Provider interface {
-	MPSD() *Client
 }
 
 // contractVersion is the value for the 'x-xbl-contract-version' request header.

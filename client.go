@@ -61,7 +61,7 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 		return nil, fmt.Errorf("request NSAL title data for current authenticated title: %w", err)
 	}
 
-	c.rta, err = config.RTADialer.DialContext(ctx, c)
+	c.rta, err = config.RTADialer.DialContext(ctx, c.HTTPClient())
 	if err != nil {
 		return nil, fmt.Errorf("dial RTA: %w", err)
 	}
