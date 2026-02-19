@@ -109,10 +109,10 @@ var (
 		"presenceDetail",
 	}, ",")
 
-	defaultLanguage = internal.AcceptLanguage{
+	defaultLanguage = internal.AcceptLanguage([]language.Tag{
 		language.AmericanEnglish,
 		language.English,
-	}
+	})
 )
 
 type User struct {
