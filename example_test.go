@@ -72,3 +72,23 @@ func ExampleClient() {
 	fmt.Println(user.GamerTag)
 	// Output: Lactyy
 }
+
+// MinecraftAndroid is the SISU configuration used in Minecraft: Bedrock Edition for Android.
+// It is used for authenticating and authorizing with Xbox Live services.
+var MinecraftAndroid = sisu.Config{
+	Config: xal.Config{
+		// This indicates the device is running Android 13.
+		Device: xal.Device{
+			Type:    xal.DeviceTypeAndroid,
+			Version: "13",
+		},
+		UserAgent: "XAL Android 2025.04.20250326.000",
+		TitleID:   1739947436,
+	},
+
+	// Those fields are title-specific and cannot be easily changed.
+	// Treat them like constants that are specific to the title being authenticated for the user.
+	ClientID:    "0000000048183522",               // Client ID used for authenticating and authorizing with Xbox Live
+	RedirectURI: "ms-xal-0000000048183522://auth", // Used for Authorization Code Flow
+	Sandbox:     "RETAIL",                         // Usually 'RETAIL' for most games available in the market
+}
