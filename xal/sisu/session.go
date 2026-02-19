@@ -10,7 +10,6 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 
 	"github.com/df-mc/go-xsapi/xal/internal"
@@ -286,9 +285,6 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		s.resp = r
 		return r, nil
 	default:
-		for k, v := range resp.Header {
-			fmt.Println(k, strings.Join(v, ","))
-		}
 		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
 }
