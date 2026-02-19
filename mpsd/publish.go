@@ -67,6 +67,11 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 			},
 		},
 	}
+	if config.CustomConstants != nil {
+		d.Constants = &SessionConstants{
+			Custom: config.CustomConstants,
+		}
+	}
 
 	s, err := c.createSession(ctx, ref, ref.URL(), d)
 	if err != nil {
