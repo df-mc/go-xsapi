@@ -22,8 +22,7 @@ func ContextClient(ctx context.Context) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Renegotiation:      tls.RenegotiateOnceAsClient,
-				InsecureSkipVerify: true,
+				Renegotiation: tls.RenegotiateOnceAsClient,
 			},
 		},
 	}
