@@ -98,7 +98,7 @@ type activityHandle struct {
 
 	// SessionReference identifies the multiplayer session associated with
 	// the activity handle.
-	SessionReference SessionReference `json:"sessionRef,omitempty"`
+	SessionReference SessionReference `json:"sessionRef"`
 
 	// Version specifies the activity handle version.
 	//
@@ -114,36 +114,36 @@ type ActivityHandle struct {
 	activityHandle
 
 	// CreateTime is the time at which the activity handle was created.
-	CreateTime time.Time `json:"createTime,omitempty"`
+	CreateTime time.Time `json:"createTime"`
 
 	// CustomProperties contains title-defined metadata associated with the
 	// multiplayer session.
 	//
 	// The format and semantics of this field are specific to the title.
-	CustomProperties json.RawMessage `json:"customProperties,omitempty"`
+	CustomProperties json.RawMessage `json:"customProperties"`
 
 	// GameTypes is currently unknown and unclear how it is used in retail games.
-	GameTypes json.RawMessage `json:"gameTypes,omitempty"`
+	GameTypes json.RawMessage `json:"gameTypes"`
 
 	// ID uniquely identifies the activity handle.
-	ID uuid.UUID `json:"id,omitempty"`
+	ID uuid.UUID `json:"id"`
 
 	// InviteProtocol specifies the protocol used to invite users to the
 	// multiplayer session.
-	InviteProtocol string `json:"inviteProtocol,omitempty"`
+	InviteProtocol string `json:"inviteProtocol"`
 
 	// RelatedInfo contains additional state and metadata associated with
 	// the referenced multiplayer session.
-	RelatedInfo *ActivityHandleRelatedInfo `json:"relatedInfo,omitempty"`
+	RelatedInfo *ActivityHandleRelatedInfo `json:"relatedInfo"`
 
 	// TitleID is the title ID associated with the multiplayer session.
 	//
 	// This value may differ from the title of the authenticated client,
 	// as a single service configuration may be shared across multiple titles.
-	TitleID string `json:"titleId,omitempty"`
+	TitleID string `json:"titleId"`
 
 	// OwnerXUID is the XUID of the user who created the multiplayer session.
-	OwnerXUID string `json:"ownerXuid,omitempty"`
+	OwnerXUID string `json:"ownerXuid"`
 }
 
 // URL returns the URL locating to the resource for the activity handle.
@@ -158,23 +158,23 @@ func (h ActivityHandle) URL() *url.URL {
 // a multiplayer activity handle.
 type ActivityHandleRelatedInfo struct {
 	// Closed indicates whether the multiplayer session is closed to new joins.
-	Closed bool `json:"closed,omitempty"`
+	Closed bool `json:"closed"`
 
 	// InviteProtocol specifies the protocol used when inviting the current
 	// authenticated user.
-	InviteProtocol string `json:"inviteProtocol,omitempty"`
+	InviteProtocol string `json:"inviteProtocol"`
 
 	// JoinRestriction specifies the restriction applied when joining
 	// the multiplayer session.
-	JoinRestriction string `json:"joinRestriction,omitempty"`
+	JoinRestriction string `json:"joinRestriction"`
 
 	// MaxMembersCount is the maximum number of members allowed in the
 	// multiplayer session.
-	MaxMembersCount uint32 `json:"maxMembersCount,omitempty"`
+	MaxMembersCount uint32 `json:"maxMembersCount"`
 
 	// PostedTime is the time at which the multiplayer session was created.
-	PostedTime time.Time `json:"postedTime,omitempty"`
+	PostedTime time.Time `json:"postedTime"`
 
 	// Visibility specifies the visibility of the multiplayer session.
-	Visibility string `json:"visibility,omitempty"`
+	Visibility string `json:"visibility"`
 }
