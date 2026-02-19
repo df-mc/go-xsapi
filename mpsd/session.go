@@ -147,7 +147,7 @@ func (ctx sessionContext) Done() <-chan struct{} {
 	return ctx.closed
 }
 
-// Err returns [net.ErrClosed] if the multiplayer session has been closed, or nil if the
+// Err returns [context.Canceled] if the multiplayer session has been closed, or nil if the
 // underlying multiplayer session is still usable.
 func (ctx sessionContext) Err() error {
 	select {
