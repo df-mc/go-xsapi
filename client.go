@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -189,13 +188,7 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 }
 
 func AcceptLanguage(tags []language.Tag) internal.RequestOption {
-	s := make([]string, len(tags))
-	for i, tag := range tags {
-		s[i] = tag.String()
-	}
-	return func(req *http.Request) {
-		req.Header.Add("Accept-Language", strings.Join(s, ", "))
-	}
+	return internal.AcceptLanguage(tags)
 }
 
 func RequestHeader(key, value string) internal.RequestOption {
