@@ -61,7 +61,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		}
 		h.subscriptionMu.Lock()
 		for _, handler := range h.subscriptionHandlers {
-			handler.HandleFriendRequestCountChange(*data.Count)
+			go handler.HandleFriendRequestCountChange(*data.Count)
 		}
 		h.subscriptionMu.Unlock()
 		return
@@ -74,7 +74,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		}
 		h.subscriptionMu.Lock()
 		for _, handler := range h.subscriptionHandlers {
-			handler.HandleRelationshipChange(RelationshipChange{
+			go handler.HandleRelationshipChange(RelationshipChange{
 				Type:  data.Type,
 				XUIDs: data.XUIDs,
 			})
