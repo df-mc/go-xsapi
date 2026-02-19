@@ -152,7 +152,7 @@ func (ctx sessionContext) Done() <-chan struct{} {
 func (ctx sessionContext) Err() error {
 	select {
 	case <-ctx.closed:
-		return net.ErrClosed
+		return context.Canceled
 	default:
 		return nil
 	}
