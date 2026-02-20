@@ -197,12 +197,14 @@ func (p *Privileges) UnmarshalJSON(b []byte) error {
 	if s == "" {
 		return nil
 	}
-	for char := range strings.SplitSeq(s, " ") {
-		n, err := strconv.ParseUint(char, 10, 32)
+	parts := strings.Split(s, " ")
+	*p = make(Privileges, len(parts))
+	for i, privilege := range parts {
+		n, err := strconv.ParseUint(privilege, 10, 32)
 		if err != nil {
-			return fmt.Errorf("parse %q as uint32: %w", char, err)
+			return fmt.Errorf("xal/xsts: parse %q as privilege (uint32): %w", privilege, err)
 		}
-		*p = append(*p, uint32(n))
+		(*p)[i] = uint32(n)
 	}
 	return nil
 }

@@ -101,13 +101,8 @@ func (c *Client) HTTPClient() *http.Client {
 }
 
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
-	reqBody, reqBodyClosed := req.Body, false
-	if reqBody != nil {
-		defer func() {
-			if !reqBodyClosed {
-				_ = reqBody.Close()
-			}
-		}()
+	if req.Body != nil {
+		defer req.Body.Close()
 	}
 
 	ctx := req.Context()
@@ -116,20 +111,21 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
 	}
 
-	req2 := req.Clone(ctx)
+	var (
+		req2 = req.Clone(ctx)
+		data []byte
+	)
 	token.SetAuthHeader(req2)
-	if reqBody != nil && req.ContentLength > 0 {
+	if req.Body != nil && req.ContentLength > 0 {
 		signingBuffer := &bytes.Buffer{}
-		if _, err := signingBuffer.ReadFrom(reqBody); err != nil {
+		if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
 			signingBuffer.Reset()
 			return nil, fmt.Errorf("clone request body: %w", err)
 		}
-		_ = reqBody.Close()
-		policy.Sign(req2, signingBuffer.Bytes(), c.src.ProofKey())
-		req2.Body, reqBodyClosed = io.NopCloser(signingBuffer), true
+		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 	}
+	policy.Sign(req2, data, c.src.ProofKey())
 
-	reqBodyClosed = true
 	return c.config.Transport.RoundTrip(req2)
 }
 

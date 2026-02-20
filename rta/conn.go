@@ -194,6 +194,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		var subscriptionID uint32
 		if err := json.Unmarshal(payload[0], &subscriptionID); err != nil {
 			c.log.Error("error decoding subscription ID", slog.Any("error", err))
+			return
 		}
 		c.subscriptionsMu.Lock()
 		defer c.subscriptionsMu.Unlock()

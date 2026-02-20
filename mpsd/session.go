@@ -171,6 +171,8 @@ func (s *Session) Sync(ctx context.Context) error {
 	select {
 	case <-s.closed:
 		return net.ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
 	default:
 		s.cacheMu.Lock()
 		defer s.cacheMu.Unlock()

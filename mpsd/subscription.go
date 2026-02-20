@@ -26,15 +26,17 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 
 	defer func() {
 		if err != nil {
-			// If the subscription was unsuccessful, we reset the subscription state
-			// along with the custom data so it can be retried.
-			go func(subscription *rta.Subscription) {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-				defer cancel()
-				if err := c.rta.Unsubscribe(ctx, subscription); err != nil {
-					c.log.Error("error resetting broken subscription", slog.Any("error", err))
-				}
-			}(c.subscription)
+			if c.subscription != nil {
+				// If the subscription was unsuccessful, we reset the subscription state
+				// along with the custom data so it can be retried.
+				go func(subscription *rta.Subscription) {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+					defer cancel()
+					if err := c.rta.Unsubscribe(ctx, subscription); err != nil {
+						c.log.Error("error resetting broken subscription", slog.Any("error", err))
+					}
+				}(c.subscription)
+			}
 			c.subscription, c.subscriptionData = nil, nil
 		}
 	}()

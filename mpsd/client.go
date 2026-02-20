@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
@@ -124,6 +126,11 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 		req.Header.Set("Accept", "application/json")
 	}
 	req.Header.Set("X-Xbl-Contract-Version", contractVersion)
+	if etag, ok := ctx.Value(internal.ETag).(*atomic.Pointer[string]); ok {
+		if s := etag.Load(); s != nil {
+			req.Header.Set("If-None-Match", *s)
+		}
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -133,6 +140,11 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
+		if etag := resp.Header.Get("ETag"); etag != "" {
+			if ptr, ok := ctx.Value(internal.ETag).(*atomic.Pointer[string]); ok {
+				ptr.Store(&etag)
+			}
+		}
 		if respBody != nil {
 			if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
 				return fmt.Errorf("decode response body: %w", err)

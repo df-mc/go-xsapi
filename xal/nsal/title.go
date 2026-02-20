@@ -128,7 +128,7 @@ type TitleData struct {
 func (t *TitleData) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
 	for _, e := range t.Endpoints {
 		if e.Match(u) {
-			if e.SignaturePolicyIndex < len(t.SignaturePolicies) {
+			if e.SignaturePolicyIndex >= 0 && e.SignaturePolicyIndex < len(t.SignaturePolicies) {
 				policy = t.SignaturePolicies[e.SignaturePolicyIndex]
 			} else {
 				policy = AuthPolicy
@@ -231,7 +231,7 @@ func (e Endpoint) matchWildcard(host string) bool {
 		return false
 	}
 	// Convert the host to a regexp pattern, this is also done on the original implementation.
-	pattern := strings.ReplaceAll(regexp.QuoteMeta(e.Host), "\\*", ".*")
+	pattern := "^" + strings.ReplaceAll(regexp.QuoteMeta(e.Host), "\\*", ".*") + "$"
 	ok, _ := regexp.MatchString(pattern, host)
 	return ok
 }
