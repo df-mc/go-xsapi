@@ -102,7 +102,7 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	}
 	var tk *oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&tk); err != nil {
-		return nil, fmt.Errorf("decode response body: %s", err)
+		return nil, fmt.Errorf("decode response body: %w", err)
 	}
 	if tk == nil || !tk.Valid() {
 		return nil, errors.New("xal/sisu: invalid oauth2 token")
