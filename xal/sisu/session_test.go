@@ -25,7 +25,7 @@ func TestSession(t *testing.T) {
 	if err := os.MkdirAll(testdataDir, os.ModePerm); err != nil {
 		t.Fatalf("error making parent directories for %q: %s", testdataDir, err)
 	}
-	msa := MinecraftAndroid.TokenSource(t.Context(), msaToken(t, tokenPath))
+	msa := MinecraftAndroid.TokenSource(context.Background(), msaToken(t, tokenPath))
 	t.Cleanup(func() {
 		token, err := msa.Token()
 		if err != nil {

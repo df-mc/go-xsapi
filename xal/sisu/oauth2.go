@@ -53,7 +53,7 @@ func (conf Config) TokenSource(ctx context.Context, t *oauth2.Token) oauth2.Toke
 	if t != nil {
 		tkr.refreshToken = t.RefreshToken
 	}
-	return oauth2.ReuseTokenSourceWithExpiry(t, tkr, time.Hour*3)
+	return oauth2.ReuseTokenSource(t, tkr)
 }
 
 type tokenRefresher struct {
@@ -106,6 +106,16 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	}
 	if tk == nil || !tk.Valid() {
 		return nil, errors.New("xal/sisu: invalid oauth2 token")
+	}
+	if tk.Expiry.IsZero() {
+		// OAuth2 tokens obtained via the "refresh_token" grant only include
+		// the "expires_in" field and do not provide explicit expiration time.
+		// Therefore, we need to estimate and set the "expiry" field ourselves.
+		//
+		// The [oauth2.Token.expired] method always return false when the
+		// Expiry field is zero. If we do not set it here, the token would continue
+		// to be used even after it has actually expired.
+		tk.Expiry = time.Now().Add(time.Second * time.Duration(tk.ExpiresIn))
 	}
 
 	if tf.refreshToken != tk.RefreshToken {
