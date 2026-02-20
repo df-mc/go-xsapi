@@ -43,7 +43,7 @@ func (t *Token) UserInfo() UserInfo {
 //
 // The returned string has the following format:
 //
-//	XBL3.0 x=[Token.UserInfo.UserHash];[Token.UserInfo.Token]
+//	XBL3.0 x=[Token.UserInfo.UserHash];[Token.Token]
 //
 // This value is used as the HTTP Authorization header when calling Xbox Live
 // services and certain title-specific endpoints. Some third-party services,
