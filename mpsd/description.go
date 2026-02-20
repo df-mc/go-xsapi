@@ -146,7 +146,7 @@ type SessionConstants struct {
 	// System contains system-defined constants for the session.
 	//
 	// Fields defined by a session template cannot be overridden.
-	System *SessionConstantsSystem `json:"system"`
+	System *SessionConstantsSystem `json:"system,omitempty"`
 
 	// Custom contains title-defined constants for the session.
 	Custom json.RawMessage `json:"custom,omitempty"`
