@@ -188,6 +188,7 @@ func (p *Privileges) MarshalJSON() ([]byte, error) {
 // decimal privilege IDs. Each ID is parsed and appended to the receiver.
 func (p *Privileges) UnmarshalJSON(b []byte) error {
 	if string(b) == "null" || len(b) == 0 {
+		*p = nil
 		return nil
 	}
 	var s string
@@ -195,6 +196,7 @@ func (p *Privileges) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if s == "" {
+		*p = nil
 		return nil
 	}
 	parts := strings.Split(s, " ")
