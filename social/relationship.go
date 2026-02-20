@@ -22,10 +22,7 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 }
 
 func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	return c.deleteRelationships(ctx, xuid, "follows", append(
-		opts,
-		socialContractVersion,
-	))
+	return c.deleteRelationships(ctx, xuid, "follows", opts)
 }
 
 func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
@@ -40,10 +37,7 @@ func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.Re
 }
 
 func (c *Client) RemoveFriend(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	return c.deleteRelationships(ctx, xuid, "friends", append(
-		opts,
-		socialContractVersion,
-	))
+	return c.deleteRelationships(ctx, xuid, "friends", opts)
 }
 
 func (c *Client) deleteRelationships(ctx context.Context, xuid, typ string, opts []internal.RequestOption) error {
