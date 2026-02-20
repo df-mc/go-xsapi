@@ -185,7 +185,7 @@ func (p *Privileges) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements [json.Unmarshaler].
 //
 // The JSON value must be a string containing a space-delimited list of
-// decimal privilege IDs. Each ID is parsed and appended to the receiver.
+// decimal privilege IDs. It overwrites the underlying slice on the receiver.
 func (p *Privileges) UnmarshalJSON(b []byte) error {
 	if string(b) == "null" || len(b) == 0 {
 		*p = nil
