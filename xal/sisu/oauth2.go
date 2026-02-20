@@ -209,11 +209,11 @@ type authCodeRequest struct {
 	RedirectURI string `json:"RedirectUri"`
 	DeviceToken string `json:"DeviceToken"`
 	// Sandbox is always 'RETAIL'.
-	Sandbox string
+	Sandbox string `json:"Sandbox"`
 	// TokenType is always 'code'.
-	TokenType string
-	Scopes    []string `json:"Offers"`
-	Query     map[string]string
+	TokenType string            `json:"TokenType"`
+	Scopes    []string          `json:"Offers"`
+	Query     map[string]string `json:"Query"`
 }
 
 type authCodeResponse struct {

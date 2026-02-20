@@ -25,7 +25,7 @@ func Default(ctx context.Context) (*TitleData, error) {
 	defaultTitleMu.Lock()
 	defer defaultTitleMu.Unlock()
 	if defaultTitle != nil {
-		// When the default title has already been cached, we re-use themselves.
+		// When the default title has already been cached, we reuse it.
 		// Currently, there is no revalidation and it just reuses the data forever.
 		return defaultTitle, nil
 	}

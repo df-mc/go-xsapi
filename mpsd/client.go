@@ -151,7 +151,7 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 			}
 		}
 		return nil
-	case http.StatusNoContent:
+	case http.StatusNotModified, http.StatusNoContent:
 		return nil
 	default:
 		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
