@@ -285,7 +285,7 @@ type MemberPropertiesSystem struct {
 	// [rta.Subscription]. Once the member has joined or published the session,
 	// notifications for the session will be delivered over this connection,
 	// subject to the scope specified in [MemberPropertiesSystem.Subscription].
-	Connection uuid.UUID `json:"connection,omitempty"`
+	Connection uuid.UUID `json:"connection"`
 
 	// Subscription specifies which portions of the multiplayer session generate
 	// notifications over the associated RTA subscription.
