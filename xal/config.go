@@ -8,6 +8,9 @@ type Config struct {
 	Device    Device
 	UserAgent string
 	TitleID   int64
+	// Sandbox is the sandbox used to authenticate or authorize a session in Xbox Live.
+	// It is "RETAIL" for most retail games available in Xbox Live.
+	Sandbox string
 }
 
 // Device describes the platform and operating system of the device being

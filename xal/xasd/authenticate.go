@@ -1,18 +1,14 @@
 package xasd
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/internal"
-	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 )
@@ -31,52 +27,32 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 		id = strings.ToUpper(id)
 	}
 
-	buf := &bytes.Buffer{}
-	if err := json.NewEncoder(buf).Encode(request{
-		RelyingParty: "http://auth.xboxlive.com",
-		TokenType:    "JWT",
-		Properties: properties{
-			AuthMethod: "ProofOfPossession",
-			ID:         id,
-			DeviceType: config.Device.Type,
-			Version:    config.Device.Version,
-			ProofKey:   internal.ProofKey(proofKey),
-		},
-	}); err != nil {
-		return nil, fmt.Errorf("encode request body: %w", err)
-	}
-	defer buf.Reset()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://device.auth.xboxlive.com/device/authenticate", buf)
-	if err != nil {
-		return nil, fmt.Errorf("make request: %w", err)
-	}
-	req.Header.Set("x-xbl-contract-version", "1")
-	req.Header.Set("User-Agent", config.UserAgent)
-	req.Header.Set("Content-Type", "application/json")
-	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey)
-
-	resp, err := internal.ContextClient(ctx).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("POST %s: %s", req.URL, resp.Status)
-	}
-	var t *Token
-	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
-		return nil, fmt.Errorf("decode response body: %w", err)
+	var (
+		r = request{
+			RelyingParty: "http://auth.xboxlive.com",
+			TokenType:    "JWT",
+			Properties: properties{
+				AuthMethod: "ProofOfPossession",
+				ID:         id,
+				DeviceType: config.Device.Type,
+				Version:    config.Device.Version,
+				ProofKey:   internal.ProofKey(proofKey),
+			},
+		}
+		t *Token
+	)
+	if err := r.Do(ctx, "https://device.auth.xboxlive.com/device/authenticate", config.UserAgent, proofKey, &t); err != nil {
+		return nil, fmt.Errorf("xal/xasd: authenticate: %w", err)
 	}
 	if !t.Valid() {
-		return nil, errors.New("xasd: invalid token result")
+		return nil, errors.New("xal/xasd: invalid token response")
 	}
 	return t, nil
 }
 
 type (
 	// request represents the wire structure used for requesting a device token.
-	request internal.TokenRequest[properties]
+	request = internal.TokenRequest[properties]
 
 	// properties represents the properties used to request a device token.
 	properties struct {

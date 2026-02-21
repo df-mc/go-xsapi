@@ -45,6 +45,8 @@ func (conf Config) oauth2() *oauth2.Config {
 	}
 }
 
+// TokenSource returns a [oauth2.TokenSource] that returns t until t expires,
+// automatically refreshing it as necessary using the provided context.
 func (conf Config) TokenSource(ctx context.Context, t *oauth2.Token) oauth2.TokenSource {
 	tkr := &tokenRefresher{
 		ctx:  ctx,
@@ -56,9 +58,15 @@ func (conf Config) TokenSource(ctx context.Context, t *oauth2.Token) oauth2.Toke
 	return oauth2.ReuseTokenSource(t, tkr)
 }
 
+// A tokenRefresher continuously refreshes OAuth2 token from the Windows Live endpoint.
+// It is not safe for concurrent access and thus needs to be wrapped by [oauth2.ReuseTokenSource].
 type tokenRefresher struct {
-	ctx          context.Context
-	conf         *Config
+	// ctx should be used as the bag of properties.
+	// It is not used for controlling the deadline.
+	ctx context.Context
+	// conf is the underlying Config used to make refresh requests.
+	conf *Config
+	// refreshToken is the last known refresh token.
 	refreshToken string
 }
 
@@ -73,7 +81,9 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 		return nil, errors.New("xal/sisu: token expired and refresh token is not set")
 	}
 
-	req, err := http.NewRequestWithContext(tf.ctx, http.MethodPost, tf.conf.oauth2().Endpoint.TokenURL, strings.NewReader(url.Values{
+	// tf.ctx should be used as the bag of properties here.
+	// It shouldn't control any deadlines for inflight requests.
+	req, err := http.NewRequestWithContext(context.WithoutCancel(tf.ctx), http.MethodPost, tf.conf.oauth2().Endpoint.TokenURL, strings.NewReader(url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {tf.refreshToken},
 		"scope":         {scope},
@@ -124,7 +134,35 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	return tk, nil
 }
 
+// AuthCodeURL returns a URL to Microsoft's title-themed page that asks
+// the user to log in to their Microsoft Account.
+// It is similar to [oauth2.Config.AuthCodeURL], but requests the URL using
+// a special endpoint. It also reports an error unlike the original method.
+//
+// The device token source is used to identify the device used for login
+// and to sign the request using its proof key. Once the user's [oauth2.Token]
+// has retrieved, it should be also passed to [Config.New] via [SessionConfig.Device]
+// to sign in to Xbox Live with the same device.
+//
+// From [oauth2.Config.AuthCodeURL]:
+// State is an opaque value used by the client to maintain state between the
+// request and callback. The authorization server includes this value when
+// redirecting the user agent back to the client.
+//
+// Opts may include [AccessTypeOnline] or [AccessTypeOffline], as well
+// as [ApprovalForce].
+//
+// To protect against CSRF attacks, opts should include a PKCE challenge
+// (S256ChallengeOption). Not all servers support PKCE. An alternative is to
+// generate a random state parameter and verify it after exchange.
+// See https://datatracker.ietf.org/doc/html/rfc6749#section-10.12 (predating
+// PKCE), https://www.oauth.com/oauth2-servers/pkce/ and
+// https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-09.html#name-cross-site-request-forgery (describing both approaches)
 func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, state string, opts ...oauth2.AuthCodeOption) (string, error) {
+	if conf.TitleID == 0 {
+		return "", errors.New("xal/sisu: Config.TitleID must be present for requesting Authorization Code Flow")
+	}
+
 	dt, err := device.DeviceToken(ctx)
 	if err != nil {
 		return "", fmt.Errorf("request device token: %w", err)
@@ -138,7 +176,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 
 	reqBody := &authCodeRequest{
 		ClientID:    conf.ClientID,
-		TitleID:     strconv.FormatInt(conf.TitleID, 10),
+		TitleID:     json.Number(strconv.FormatInt(conf.TitleID, 10)),
 		RedirectURI: conf.RedirectURI,
 		DeviceToken: dt.Token,
 		Sandbox:     conf.Sandbox,
@@ -198,6 +236,18 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 	return respBody.RedirectURL, nil
 }
 
+// Exchange exchanges an [oauth2.Token] by using an authorization code.
+//
+// It is used after the login page redirects the user back to the RedirectURI.
+//
+// The provided context optionally controls which HTTP client is used.
+//
+// The code will be in the [http.Request.FormValue]("code"). Before
+// calling Exchange, be sure to validate [http.Request.FormValue]("state") if you are
+// using it to protect against CSRF attacks.
+//
+// If using PKCE to protect against CSRF attacks, opts should include a
+// VerifierOption.
 func (conf Config) Exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
 	return conf.oauth2().Exchange(ctx, code, append(opts,
 		oauth2.SetAuthURLParam("scope", scope),
@@ -205,28 +255,50 @@ func (conf Config) Exchange(ctx context.Context, code string, opts ...oauth2.Aut
 	)...)
 }
 
+// scope is the default scope used for requesting [oauth2.Token]
+// for using to request an XASU (Xbox Authentication for Services)
+// token.
 const scope = "service::user.auth.xboxlive.com::MBI_SSL"
 
+// setDefaultParam conditionally sets a value for the key if not present in query.
 func setDefaultParam(query map[string]string, key, value string) {
 	if _, ok := query[key]; !ok {
 		query[key] = value
 	}
 }
 
-type authCodeRequest struct {
-	ClientID    string `json:"AppId"`
-	TitleID     string `json:"TitleId"`
-	RedirectURI string `json:"RedirectUri"`
-	DeviceToken string `json:"DeviceToken"`
-	// Sandbox is always 'RETAIL'.
-	Sandbox string `json:"Sandbox"`
-	// TokenType is always 'code'.
-	TokenType string            `json:"TokenType"`
-	Scopes    []string          `json:"Offers"`
-	Query     map[string]string `json:"Query"`
-}
-
-type authCodeResponse struct {
-	RedirectURL          string          `json:"MsaOauthRedirect"`
-	MSARequestParameters json.RawMessage `json:"MsaRequestParameters"`
-}
+type (
+	// authCodeRequest represents a wire JSON data used to request
+	// Authorization Code Flow using SISU endpoints.
+	authCodeRequest struct {
+		// ClientID is the ID for the application.
+		// It is specific to title.
+		// Typically derived from [Config.ClientID].
+		ClientID string `json:"AppId"`
+		// TitleID is the numeric identifier for the title in string form.
+		// It should be derived from [Config.TitleID].
+		TitleID json.Number `json:"TitleId"`
+		// RedirectURI is the redirect URI bound to the client ID.
+		// It should be derived from [Config.RedirectURI].
+		RedirectURI string `json:"RedirectUri"`
+		// DeviceToken is the XASD token used to identify the device
+		// used for login.
+		DeviceToken string `json:"DeviceToken"`
+		// Sandbox is always 'RETAIL'.
+		Sandbox string `json:"Sandbox"`
+		// TokenType is always 'code'.
+		TokenType string `json:"TokenType"`
+		// Scopes is a list of scopes desired to be granted in the [oauth2.Token]
+		// to be requested using the Authorization Code Flow.
+		Scopes []string `json:"Offers"`
+		// Query is the additional query parameters that should be passed to the resulting URL.
+		Query map[string]string `json:"Query"`
+	}
+	// authCodeResponse represents the on-wire format of the JSON response.
+	authCodeResponse struct {
+		// RedirectURL is the URL to Microsoft's login page that finally redirects
+		// to the RedirectURI specific to the client ID.
+		RedirectURL string `json:"MsaOauthRedirect"`
+		// MSARequestParameters json.RawMessage `json:"MsaRequestParameters"`
+	}
+)

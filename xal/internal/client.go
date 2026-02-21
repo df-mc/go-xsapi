@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"crypto/tls"
 	"net/http"
 )
 
@@ -19,11 +18,5 @@ func ContextClient(ctx context.Context) *http.Client {
 	if value, ok := ctx.Value(HTTPClient).(*http.Client); ok {
 		return value
 	}
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Renegotiation: tls.RenegotiateOnceAsClient,
-			},
-		},
-	}
+	return http.DefaultClient
 }

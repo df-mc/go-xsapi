@@ -22,8 +22,4 @@ type Config struct {
 	// RedirectURI may start with 'ms-xal-<number>://', which requires the caller
 	// to handle redirections in the WebView displayed to sign in to the user.
 	RedirectURI string
-
-	// Sandbox is the sandbox used to authenticate or authorize a session in Xbox Live.
-	// It is "RETAIL" for most retail games available in Xbox Live.
-	Sandbox string
 }

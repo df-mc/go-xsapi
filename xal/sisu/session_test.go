@@ -300,11 +300,11 @@ var (
 			},
 			UserAgent: "XAL Android 2025.04.20250326.000",
 			TitleID:   1739947436,
+			Sandbox:   "RETAIL",
 		},
 
 		ClientID:    "0000000048183522",
 		RedirectURI: "ms-xal-0000000048183522://auth",
-		Sandbox:     "RETAIL",
 	}
 
 	serviceConfigID = uuid.MustParse("4fc10100-5f7a-4470-899b-280835760c07")
