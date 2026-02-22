@@ -18,6 +18,7 @@ import (
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/social"
 	"github.com/df-mc/go-xsapi/xal/nsal"
+	"github.com/df-mc/go-xsapi/xal/xast"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 	"golang.org/x/text/language"
 )
@@ -48,10 +49,22 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 	if err != nil {
 		return nil, fmt.Errorf("request XSTS token: %w", err)
 	}
-	if token.UserInfo().XUID == "" {
+	xui := token.UserInfo()
+	if xui.XUID == "" {
 		return nil, errors.New("xsapi: authorization token does not claim XUID")
 	}
-	c.userInfo = token.UserInfo()
+	c.userInfo = xui
+
+	titleToken, err := src.TitleToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("xsapi: request title token: %w", err)
+	}
+	xti := titleToken.DisplayClaims.TitleInfo
+	if xti.TitleID == "" {
+		return nil, errors.New("xsapi: title token does not claim title ID")
+	}
+	c.titleInfo = xti
+
 	c.defaultTitle, err = nsal.Default(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("request NSAL default title data: %w", err)
@@ -65,13 +78,14 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 	if err != nil {
 		return nil, fmt.Errorf("dial RTA: %w", err)
 	}
-	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log())
+	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.TitleInfo(), c.Log())
 	c.social = social.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log())
 	return c, nil
 }
 
 type TokenSource interface {
 	xsts.TokenSource
+	xast.TokenSource
 	ProofKey() *ecdsa.PrivateKey
 }
 
@@ -89,11 +103,17 @@ type Client struct {
 	defaultTitle, currentTitle *nsal.TitleData
 	userInfo                   xsts.UserInfo
 
+	titleInfo xast.TitleInfo
+
 	rta    *rta.Conn
 	mpsd   *mpsd.Client
 	social *social.Client
 
 	once sync.Once
+}
+
+func (c *Client) TitleInfo() xast.TitleInfo {
+	return c.titleInfo
 }
 
 func (c *Client) HTTPClient() *http.Client {

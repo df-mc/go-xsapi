@@ -15,25 +15,28 @@ import (
 
 	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/xal/xast"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
-func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, titleInfo xast.TitleInfo, log *slog.Logger) *Client {
 	return &Client{
-		client:   client,
-		rta:      conn,
-		userInfo: userInfo,
-		log:      log,
+		client:    client,
+		rta:       conn,
+		userInfo:  userInfo,
+		titleInfo: titleInfo,
+		log:       log,
 
 		sessions: make(map[string]*Session),
 	}
 }
 
 type Client struct {
-	client   *http.Client
-	rta      *rta.Conn
-	userInfo xsts.UserInfo
-	log      *slog.Logger
+	client    *http.Client
+	rta       *rta.Conn
+	userInfo  xsts.UserInfo
+	titleInfo xast.TitleInfo
+	log       *slog.Logger
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.

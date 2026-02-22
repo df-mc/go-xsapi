@@ -3,6 +3,7 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -75,6 +76,109 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 	return result.Activities, nil
 }
 
+// Invite invites the user identified by the XUID to the multiplayer session.
+// If successful, it returns an InviteHandle describing the created invitation.
+// The invite handle includes service-defined metadata such as the expiration time.
+func (s *Session) Invite(ctx context.Context, xuid string) (*InviteHandle, error) {
+	var handle *InviteHandle
+	if err := s.client.do(ctx, http.MethodPost, endpoint.JoinPath("handles").String(), inviteHandle{
+		Type:             "invite",
+		SessionReference: s.ref,
+		Version:          1,
+		InvitedXUID:      xuid,
+		InviteAttributes: InviteAttributes{
+			TitleID: s.client.titleInfo.TitleID,
+		},
+	}, &handle); err != nil {
+		return nil, err
+	}
+	if handle == nil {
+		return nil, errors.New("mpsd: invalid invite response")
+	}
+	return handle, nil
+}
+
+// inviteHandle is the wire representation used to invite a user to the
+// multiplayer session.
+type inviteHandle struct {
+	// Type identifies the handle type.
+	//
+	// It is always "invite".
+	Type string `json:"type"`
+
+	// SessionReference contains a reference to the multiplayer session
+	// to invite the specified XUID.
+	SessionReference SessionReference `json:"sessionRef"`
+
+	// Version is the version of the invite handle.
+	//
+	// It is always 1.
+	Version int `json:"version"`
+
+	// InvitedXUID is the XUID of the user to be invited to
+	// the multiplayer session referenced by this invite handle.
+	InvitedXUID string `json:"invitedXuid"`
+
+	// InviteAttributes contains the attributes associated with the invite handle.
+	InviteAttributes InviteAttributes `json:"inviteAttributes"`
+}
+
+// InviteHandle represents a published handle for an invite to a multiplayer session.
+//
+// An invitation handle is sent by the session participant to the user referenced by XUID.
+type InviteHandle struct {
+	inviteHandle
+
+	// ID is the unique ID associated with the invite handle.
+	ID uuid.UUID `json:"id"`
+
+	// GameTypes is a map whose keys are platform name such as "uwp-desktop" or
+	// "android", and whose values are structs that describes a single title
+	// associated with the invite handle.
+	GameTypes map[string]GameType `json:"gameTypes"`
+
+	// SenderXUID is the XUID of the user that has sent the invite.
+	SenderXUID string `json:"senderXuid"`
+
+	// Expiration indicates the time that this invite handle will expire.
+	Expiration time.Time `json:"expiration"`
+
+	// InviteProtocol is the protocol used for invitation.
+	// It is unknown how it is used. It is always "game".
+	// Supported values might also include "party".
+	InviteProtocol string `json:"inviteProtocol"`
+}
+
+// GameType describes a single title available for a specific platform.
+type GameType struct {
+	// TitleID is the title ID associated with the game type.
+	TitleID string `json:"titleId"`
+
+	// PackageFamilyName is the package family name associated with the game type.
+	PackageFamilyName string `json:"pfn"`
+
+	// BoundPackageFamilyNames lists other package family names associated with the game type.
+	BoundPackageFamilyNames []string `json:"boundPfns"`
+}
+
+// InviteAttributes describes attributes associated with the InviteHandle.
+type InviteAttributes struct {
+	// TitleID is the title ID associated with the invite handle.
+	// For invitation requests, it must be the title authenticated
+	// by the XSTS token.
+	TitleID string `json:"titleId"`
+
+	// ContextStringID is the optional ID used to activate the
+	// invite handle. It is unknown how it is used or how it is
+	// generated during invitation.
+	ContextStringID string `json:"contextString,omitempty"`
+
+	// Context is the optional context associated with the invite
+	// handle, encapsulated in a string. The format and semantics
+	// are specific to the title.
+	Context string `json:"context,omitempty"`
+}
+
 // writeActivity publishes an activity handle for the multiplayer session.
 //
 // Publishing an activity handle makes the session visible to users who are
@@ -103,7 +207,7 @@ type activityHandle struct {
 	// the activity handle.
 	SessionReference SessionReference `json:"sessionRef"`
 
-	// Version specifies the activity handle version.
+	// Version is the version of the activity handle.
 	//
 	// It is always 1.
 	Version int `json:"version"`
