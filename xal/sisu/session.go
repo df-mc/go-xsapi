@@ -22,8 +22,9 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// New creates a Session using the token source that supplies a token for the user's Microsoft
-// Account. The provided session cache may be used to continue from the previous SISU session.
+// New creates a new Session using src as the [oauth2.TokenSource] that provides Microsoft
+// Account (MSA) access tokens. If sc is non nil, it will be used to customize session behavior,
+// including resuming from a previous Session using a Snapshot.
 func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 	if sc == nil {
 		sc = &SessionConfig{}
@@ -56,85 +57,121 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 	return s
 }
 
-// SessionConfig encapsulates configuration for creating a SISU session.
+// SessionConfig configures optional behavior when creating a Session.
 type SessionConfig struct {
-	// Snapshot is the latest state of the previous session.
-	// If present, the Session will try to re-use the contained tokens.
-	// Be sure to note that the same [xasd.DeviceTokenSource] should also
-	// be present in SessionConfig in order to re-use the Snapshot since
-	// it requires the same proof key to sign requests.
+	// Snapshot contains previously issued tokens that may be reused.
+	// When provided, the Session attempts to reuse contained tokens while
+	// they remain valid.
+	//
+	// When reusing a Snapshot, the same DeviceTokenSource (and therefore
+	// the same proof key) must also be provided. Otherwise, signed requests
+	// will fail.
 	Snapshot *Snapshot
-	// DeviceTokenSource is the [xasd.TokenSource] which supplies a device
-	// token along with its proof key used to authenticate with XASD (Xbox
-	// Authentication Services for Devices). It is used for signing requests
-	// using its proof key.
+
+	// DeviceTokenSource provides device tokens and exposes the private key
+	// used to sign requests. If nil, a default token source is created from
+	// [xasd.ReuseTokenSource].
 	DeviceTokenSource xasd.TokenSource
+
 	// HTTPClient is the HTTP client used to make requests.
 	// If not present, [http.DefaultClient] will be used instead.
 	HTTPClient *http.Client
 }
 
-// A Snapshot contains the latest known state for a Session.
-// Callers can store this struct in a safe place so they can
-// continue from the previous Session when they're logging in
-// to Xbox Live services again in the future.
+// Snapshot contains restorable authentication state for a Session.
+//
+// A Snapshot may be persisted and later supplied to SessionConfig
+// to resume a previous session without repeating the full SISU flow.
+//
+// The proof key is not stored in Snapshot. The caller must reuse the
+// same DeviceTokenSource when restoring.
 type Snapshot struct {
-	// TitleToken is the XAST (Xbox Authentication Services for
-	// Titles) token used to authenticate the title.
+	// TitleToken is the XAST token used to authenticate the title.
 	TitleToken *xast.Token
-	// UserToken is the XASU (Xbox Authentication Services for
-	// Users) token used to authenticate the user.
+
+	// UserToken is the XASU token used to authenticate the user.
 	UserToken *xasu.Token
-	// XSTSTokens is a map whose keys are the relying parties
-	// and values are the XSTS tokens that relies on the party.
-	// Each token is scoped to a relying party, which determines
-	// which services the token is valid for and which claims are included.
+
+	// XSTSTokens is a map whose keys are relying parties and whose values are the corresponding XSTS tokens.
+	// Each XSTS token is scoped to a relying party. A relying party is typically a URI (for example, "http"
+	// or "rp" URI) that identifies the Xbox Live service the token is intended for.
 	XSTSTokens map[string]*xsts.Token
 }
 
-// Session implements a SISU session in Xbox Live.
+// Session implements an authentication session for Xbox Live using SISU endpoints.
 //
-// A Session efficiently requests each token for the following Xbox Authentication Services (XAS):
+// A Session coordinates the complete Xbox authentication chain:
 // - XASD (Xbox Authentication Services for Devices)
 // - XAST (Xbox Authentication Services for Titles)
 // - XASU (Xbox Authentication Services for Users)
 // - XSTS (Xbox Secure Token Service)
 //
-// Callers can also re-use the previous Session by storing its Snapshot in a safe place
-// and using them in [SessionConfig.Snapshot] again to continue from the previous session.
-// TODO: Add more docs
+// Tokens are acquired lazily and cached in memory. Expired tokens
+// are refreshed automatically on demand.
+//
+// A Session may be resumed by persisting the result of [Session.Snapshot] and
+// providing it through SessionConfig when creating a new Session.
+// When restoring, the same [xasd.TokenSource] (and proof key) must be reused
+// to ensure request signatures remain valid.
+//
+// Session is safe for concurrent use.
 type Session struct {
+	// config is the configuration for the application used to authenticate with
+	// Xbox Live services. Most of them are constants and specific to the title.
 	config Config
 
-	msa    oauth2.TokenSource
+	// msa is the [oauth2.TokenSource] that supplies user's Microsoft Account
+	// access tokens to authenticate with XASU.
+	msa oauth2.TokenSource
+	// device is the [xasd.TokenSource] that provides the device token and the
+	// proof key used for identifying a device used for authentication and signing
+	// the requests.
 	device xasd.TokenSource
 
-	title   *xast.Token
-	user    *xasu.Token
+	// title is the last XAST token acquired for authenticating a title.
+	title *xast.Token
+	// userToken is the last known XASU token acquired for authenticating
+	// a user.
+	user *xasu.Token
+	// tokenMu guards title and user tokens from concurrent read-write access.
+	// It must be held when token acquisition is happening to avoid duplicate
+	// requests.
 	tokenMu sync.Mutex
 
-	xsts   map[string]*xsts.Token
+	// xsts is the map whose keys are relying parties and whose values are the
+	// corresponding XSTS tokens.
+	xsts map[string]*xsts.Token
+	// xstsMu guards xsts tokens from concurrent read-write access.
 	xstsMu sync.Mutex
 
-	resp   *authorizationResponse
+	// resp is the last known response for SISU authorization request.
+	// It contains title, user, and an XSTS token that relies on the
+	// party "http://xboxlive.com" (aka. Authorization Token).
+	resp *authorizationResponse
+	// respMu guards SISU resp from concurrent read-write access.
+	// It must be held while [authorize] is called to avoid duplicate
+	// inflight requests.
 	respMu sync.Mutex
 
+	// client is the HTTP client used to make authentication requests.
 	client *http.Client
 }
 
-// DeviceToken requests an XASD (Xbox Authentication Services for Device) token
-// for the device specified in the Config using the ProofKey of Session. It re-uses
-// the cached device token in the Session as possible. Device tokens are very long-living
-// and issuing too many times in short criteria may result being rate-limited from XASD.
-// That being said, it is recommended to use [Session.Snapshot] to cache the device token
-// and re-using them in [Config.New].
+// DeviceToken returns an XASD (Xbox Authentication Services for Device) token.
+// The underlying token source is responsible for caching and refreshing the
+// device token. Since device tokens are long-lived rate-limited, reusing a
+// Snapshot together with the same DeviceTokenSource is recommended.
 func (s *Session) DeviceToken(ctx context.Context) (*xasd.Token, error) {
 	return s.device.DeviceToken(ctx)
 }
 
-// TitleToken requests an XAST (Xbox Authentication Services for TitleData) token
-// using the SISU authorization flow. It re-uses the cached title token in the
-// Session as possible.
+// TitleToken returns an XAST (Xbox Authentication Services for Title) token
+// obtained via the SISU flow.
+//
+// The token is cached and reused while valid. If expired or missing,
+// a new authorization request is performed.
+//
+// THe provided context controls request cancellation and deadlines.
 func (s *Session) TitleToken(ctx context.Context) (*xast.Token, error) {
 	s.tokenMu.Lock()
 	defer s.tokenMu.Unlock()
@@ -151,8 +188,13 @@ func (s *Session) TitleToken(ctx context.Context) (*xast.Token, error) {
 	return s.title, nil
 }
 
-// UserToken requests an XASU (Xbox Authentication Services for User) token using the
-// SISU authorization flow. It re-uses the cached user token in Session as possible.
+// UserToken returns an XASU (Xbox Authentication Services for User) token
+// obtained via the SISU flow.
+//
+// The token is cached and reused while valid. If expired or missing,
+// a new authorization request is performed.
+//
+// The provided context controls request cancellation and deadlines.
 func (s *Session) UserToken(ctx context.Context) (*xasu.Token, error) {
 	s.tokenMu.Lock()
 	defer s.tokenMu.Unlock()
@@ -169,10 +211,10 @@ func (s *Session) UserToken(ctx context.Context) (*xasu.Token, error) {
 	return s.user, nil
 }
 
-// Snapshot returns the latest known state for the Session.
-// Caller can store this in a safe place when they're done
-// to continue when they're logging in again from the previous
-// Session.
+// Snapshot returns a copy of the current authentication state.
+//
+// The returned Snapshot may be persisted and later supplied via
+// SessionConfig to resume the session.
 func (s *Session) Snapshot() *Snapshot {
 	// Lock/unlock mutexes in correct order to avoid ABBA deadlocks.
 	s.xstsMu.Lock()
@@ -188,10 +230,13 @@ func (s *Session) Snapshot() *Snapshot {
 	}
 }
 
-// XSTSToken requests an XSTS token that relies on the specific party.
-// The relying-party is specifically a URI composed with either 'http'
-// or 'rp' scheme, which indicates the endpoint that the token must be
-// used for.
+// XSTSToken requests an XSTS (Xbox Secure Token Service) token for
+// the specified relying party.
+//
+// The relying party identifies the Xbox Live service for which the token
+// is valid and determines the claims included in the token.
+//
+// XSTS tokens are cached per relying party and reused until expiration.
 func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error) {
 	s.xstsMu.Lock()
 	defer s.xstsMu.Unlock()
@@ -213,8 +258,13 @@ func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Tok
 	return token, nil
 }
 
-// requestXSTS requests an XSTS (Xbox Servicing Token Service) token that relies on the provided party.
-// It uses the device, title, and user token for filling a request for the XSTS token.
+// requestXSTS obtains a new XSTS token for the relying party.
+//
+// If relyingParty is the default relying party ("http://xboxlive.com"),
+// it may be reused from cached SISU authorization response.
+//
+// Otherwise, it calls [xsts.Authorize] using the current XASD/XAST/XASU
+// tokens, acquiring or refreshing them as necessary.
 func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.Token, error) {
 	if relyingParty == defaultRelyingParty {
 		resp, err := s.authorize(ctx)
@@ -246,16 +296,18 @@ func (s *Session) requestXSTS(ctx context.Context, relyingParty string) (*xsts.T
 	})
 }
 
-// ProofKey returns the ECDSA private key as the proof key of the token, and also to sign
-// requests for various Xbox Live services, and other related services like PlayFab or game-specific
-// APIs like Minecraft.
+// ProofKey returns the ECDSA private key as the proof key of the token. It is used to sign
+// requests for various Xbox Live services.
 func (s *Session) ProofKey() *ecdsa.PrivateKey {
 	return s.device.ProofKey()
 }
 
-// authorize authorizes with SISU services to obtain title, user, or the authorization
-// token (an XSTS token that relies on the party "http://xboxlive.com"). It uses the cache
-// as possible.
+// authorize performs the SISU authorization request.
+//
+// It exchanges Microsoft Account (MSA) access token and XASD token with
+// XAST/XASU and an XSTS token that relies on the party ("http://xboxlive.com").
+//
+// The response is cached while valid.
 func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error) {
 	s.respMu.Lock()
 	defer s.respMu.Unlock()
@@ -329,51 +381,92 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 // SISU authorization response.
 const defaultRelyingParty = "http://xboxlive.com"
 
-// authorizationRequest describes the wire representation used to authorize with SISU services.
+// authorizationRequest describes the JSON payload used to authorize with SISU.
+//
+// The request must be signed using the proof key associated with the XASD token.
+// The public key is embedded in this payload via the ProofKey field.
 type authorizationRequest struct {
-	// AccessToken is the OAuth2 access token for the user's Microsoft Account.
-	// It may be obtained via WebView using SISU authentication flow, or device
-	// code flow for some devices that doesn't support webviews natively, like
-	// Nintendo Switch.
+	// AccessToken is the OAuth2 access token for the user's Microsoft Account (MSA).
+	//
+	// The value is typically prefixed with "t=" or "d=" when sent to SISU.
+	// It is typically obtained via the Authorization Code Flow (interactive login),
+	// or the Device Authorization Flow (device code flow).
+	//
+	// The access token identifies the Microsoft Account being linked to Xbox
+	// services and is exchanged for an XASU token.
 	AccessToken string
-	// ClientID is the OAuth2 Client ID used to authenticate the AccessToken for the user's
-	// Microsoft Account.
+
+	// ClientIS is the OAuth2 Client ID associated with the title.
+	// It must match the client ID used to obtain the Microsoft Account
+	// access token.
 	ClientID string `json:"AppId"`
-	// DeviceToken is the XASD (Xbox Authentication Services for Device) token.
+
+	// DeviceToken is the XASD token associated with the user.
+	// It represents the device initiating the authentication flow and is
+	// bound to the proof key.
 	DeviceToken string
-	// ProofKey is the private key used to sign requests.
+
+	// ProofKey is the JSON Web Key representation of the ECDSA public
+	// key corresponding to the device's private proof key.
+	//
+	// The corresponding private key must be used to sign the request. SISU
+	// verifies the signature using this public key to ensure that request
+	// originates from the device that owns the XASD token.
 	ProofKey jose.JSONWebKey
-	// RelyingParty specifies the party that [authorizationResponse.AuthorizationToken]
-	// should rely on. It is typically "http://xboxlive.com", and other XSTS tokens that
-	// relies on other parties are requested manually by calling [xsts.Authorize].
+
+	// RelyingParty specifies the party for which the returned Authorization Token
+	// should be valid. It is typically "http://xboxlive.com". Additional XSTS tokens
+	// targeting other relying parties must be requested separately via [xsts.Authorize].
 	RelyingParty string
+
 	// Sandbox is the sandbox ID in the configuration used for SISU authorization.
 	// It is typically 'RETAIL' for most retail titles.
 	Sandbox string
+
 	// SessionID is the ID used for SISU authentication flow.
 	// It is only used for devices that use SISU webviews, mainly Android and iOS devices.
 	SessionID string `json:"SessionId,omitempty"`
+
 	// SiteName is unknown, seemingly the site used for authorization.
 	// It is always "user.auth.xboxlive.com".
 	SiteName string `json:"SiteName,omitempty"`
-	// UseModernGamerTag indicates whether to use modern gamertag to sign in to an Xbox Live account.
+
+	// UseModernGamerTag indicates whether the authentication flow should
+	// use the modern gamertag when signing in. This should generally be set
+	// to true for modern titles.
 	UseModernGamerTag bool `json:"UseModernGamertag"`
 }
 
-// authorizationResponse describes the representation for payload format of a successful
-// response body in SISU authorization request.
+// authorizationResponse represents the JSON payload returned by a
+// successful JSON authorization request.
+//
+// A successful response contains XAST/XASU/XSTS tokens.
+// These tokens together establish the authenticated Xbox Live
+// session for the device, title, and user.
 type authorizationResponse struct {
-	// TitleToken is the XAST (Xbox Authentication Service for TitleData) token that belongs
-	// to the title ID bound to the client ID used to authorize with SISU service.
+	// TitleToken is the XAST token bound to the title ID associated with
+	// the specified OAuth2 ClientID used in the authorization request.
 	TitleToken *xast.Token
-	// UserToken is the XASU (Xbox Authentication Service for User) token.
+
+	// UserToken is the XASU token that represented the authenticated
+	// Microsoft Account (MSA) as an Xbox user identity. This token is
+	// required when requesting XSTS tokens for Xbox Live services.
 	UserToken *xasu.Token
+
 	// AuthorizationToken is the XSTS token that relies on the party specified in the
 	// RelyingParty field of an authorizationRequest.
+
+	// AuthorizationToken is the XSTS token issued for the relying party
+	// specified in the corresponding authorizationRequest.
+	//
+	// For SISU authorization, this is typically scoped to the default
+	// relying party ("http://xboxlive.com"). Additional XSTS tokens for
+	// other relying parties must be obtained separately via [xsts.Authorize].
 	AuthorizationToken *xsts.Token
-	// WebPage is the URL locating to a web page that shows the user is signed in to Xbox Live.
-	// It may be a web page endorsing to create an Xbox Live account if none was bound to the
-	// Microsoft Account of the user.
+
+	// WebPage is the URL locating to the SISU's login page.
+	// It may be a web page that indicates the user must complete additional
+	// steps in a browser (for example, account creation or consent).
 	WebPage string
 }
 

@@ -26,7 +26,6 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 		log:      log,
 
 		sessions: make(map[string]*Session),
-		closed:   make(chan struct{}),
 	}
 }
 
@@ -51,8 +50,6 @@ type Client struct {
 	sessions   map[string]*Session // TODO
 	sessionsMu sync.Mutex          // TODO
 
-	// closed is a channel that is closed when the Client is no longer usable.
-	closed chan struct{}
 	// once ensures that the closure of the Client occurs only once.
 	once sync.Once
 }

@@ -64,11 +64,11 @@ var MinecraftAndroid = sisu.Config{
 		},
 		UserAgent: "XAL Android 2025.04.20250326.000",
 		TitleID:   1739947436,
+		Sandbox:   "RETAIL", // Usually 'RETAIL' for most games available in the market
 	},
 
 	// Those fields are title-specific and cannot be easily changed.
 	// Treat them like constants that are specific to the title being authenticated for the user.
 	ClientID:    "0000000048183522",               // Client ID used for authenticating and authorizing with Xbox Live
 	RedirectURI: "ms-xal-0000000048183522://auth", // Used for Authorization Code Flow
-	Sandbox:     "RETAIL",                         // Usually 'RETAIL' for most games available in the market
 }
