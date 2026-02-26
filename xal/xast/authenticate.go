@@ -28,7 +28,7 @@ func Authenticate(ctx context.Context, config xal.Config, deviceToken *xasd.Toke
 		}
 		t *Token
 	)
-	if err := r.Do(ctx, "https://title.auth.xboxlive.com/title/authenticate", config.UserAgent, proofKey, &t); err != nil {
+	if err := r.Do(ctx, config, "https://title.auth.xboxlive.com/title/authenticate", proofKey, &t); err != nil {
 		return nil, fmt.Errorf("xal/xast: authenticate: %w", err)
 	}
 	if !t.Valid() {

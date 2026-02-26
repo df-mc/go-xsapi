@@ -40,12 +40,18 @@ func Authorize(ctx context.Context, config xal.Config, proofKey *ecdsa.PrivateKe
 	}
 	for _, token := range tokens {
 		if !token.Valid() {
-			return nil, fmt.Errorf("xal/xsts: invalid %T", token)
+			return nil, fmt.Errorf("xal/xsts: invalid underlying %T", token)
 		}
 		switch token := token.(type) {
 		case *xasd.Token:
+			if r.Properties.DeviceToken != "" {
+				return nil, errors.New("xal/xsts: duplicate device token")
+			}
 			r.Properties.DeviceToken = token.Token
 		case *xast.Token:
+			if r.Properties.TitleToken != "" {
+				return nil, errors.New("xal/xsts: duplicate title token")
+			}
 			r.Properties.TitleToken = token.Token
 		case *xasu.Token:
 			r.Properties.UserTokens = append(r.Properties.UserTokens, token.Token)
@@ -55,7 +61,7 @@ func Authorize(ctx context.Context, config xal.Config, proofKey *ecdsa.PrivateKe
 	}
 
 	var token *Token
-	if err := r.Do(ctx, "https://xsts.auth.xboxlive.com/xsts/authorize", config.UserAgent, proofKey, &token); err != nil {
+	if err := r.Do(ctx, config, "https://xsts.auth.xboxlive.com/xsts/authorize", proofKey, &token); err != nil {
 		return nil, fmt.Errorf("xal/xsts: authorize: %w", err)
 	}
 	if !token.Valid() {

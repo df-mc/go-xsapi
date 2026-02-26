@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/go-jose/go-jose/v4"
 )
@@ -30,22 +31,23 @@ type TokenRequest[P any] struct {
 	Properties P
 }
 
-func (r TokenRequest[P]) Do(ctx context.Context, reqURL, userAgent string, proofKey *ecdsa.PrivateKey, respBody any) error {
+func (r TokenRequest[P]) Do(ctx context.Context, config xal.Config, reqURL string, proofKey *ecdsa.PrivateKey, respBody any) error {
 	buf := &bytes.Buffer{}
 	if err := json.NewEncoder(buf).Encode(r); err != nil {
 		return fmt.Errorf("encode request body: %w", err)
 	}
+	fmt.Println(buf.String())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, buf)
 	if err != nil {
 		return fmt.Errorf("make request: %w", err)
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", config.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-xbl-contract-version", "1")
 	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey)
 
-	resp, err := ContextClient(ctx).Do(req)
+	resp, err := xal.ContextClient(ctx).Do(req)
 	if err != nil {
 		return err
 	}

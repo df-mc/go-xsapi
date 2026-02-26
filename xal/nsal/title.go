@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/df-mc/go-xsapi/xal"
 )
 
 // Default returns the default TitleData used for generic Xbox Live services.
@@ -89,7 +91,7 @@ func Title(ctx context.Context, token interface{ SetAuthHeader(req *http.Request
 	token.SetAuthHeader(req)
 	AuthPolicy.Sign(req, nil, proofKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := xal.ContextClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}

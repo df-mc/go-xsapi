@@ -1,8 +1,9 @@
 package xal
 
-import "github.com/df-mc/go-xsapi/xal/internal"
-
-var HTTPClient = internal.HTTPClient
+import (
+	"context"
+	"net/http"
+)
 
 type Config struct {
 	Device    Device
@@ -11,6 +12,22 @@ type Config struct {
 	// Sandbox is the sandbox used to authenticate or authorize a session in Xbox Live.
 	// It is "RETAIL" for most retail games available in Xbox Live.
 	Sandbox string
+}
+
+// contextKey is an unexported type for context key used in HTTPClient.
+type contextKey struct{}
+
+// HTTPClient is the context key used for specifying an [http.Client] in a [context.Context]
+// passed to the API call.
+var HTTPClient contextKey
+
+// ContextClient returns an [http.Client] from the [context.Context] if possible,
+// otherwise it returns [http.DefaultClient].
+func ContextClient(ctx context.Context) *http.Client {
+	if value, ok := ctx.Value(HTTPClient).(*http.Client); ok {
+		return value
+	}
+	return http.DefaultClient
 }
 
 // Device describes the platform and operating system of the device being

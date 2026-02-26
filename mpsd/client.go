@@ -115,6 +115,7 @@ func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody a
 		}
 		defer buf.Reset()
 		r = buf
+		fmt.Println(buf.String())
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, r)

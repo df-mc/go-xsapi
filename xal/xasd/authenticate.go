@@ -41,7 +41,7 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 		}
 		t *Token
 	)
-	if err := r.Do(ctx, "https://device.auth.xboxlive.com/device/authenticate", config.UserAgent, proofKey, &t); err != nil {
+	if err := r.Do(ctx, config, "https://device.auth.xboxlive.com/device/authenticate", proofKey, &t); err != nil {
 		return nil, fmt.Errorf("xal/xasd: authenticate: %w", err)
 	}
 	if !t.Valid() {

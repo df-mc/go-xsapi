@@ -79,7 +79,8 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 // Invite invites the user identified by the XUID to the multiplayer session.
 // If successful, it returns an InviteHandle describing the created invitation.
 // The invite handle includes service-defined metadata such as the expiration time.
-func (s *Session) Invite(ctx context.Context, xuid string) (*InviteHandle, error) {
+// The title ID is specific to the game
+func (s *Session) Invite(ctx context.Context, xuid, titleID string) (*InviteHandle, error) {
 	var handle *InviteHandle
 	if err := s.client.do(ctx, http.MethodPost, endpoint.JoinPath("handles").String(), inviteHandle{
 		Type:             "invite",
@@ -87,7 +88,7 @@ func (s *Session) Invite(ctx context.Context, xuid string) (*InviteHandle, error
 		Version:          1,
 		InvitedXUID:      xuid,
 		InviteAttributes: InviteAttributes{
-			TitleID: s.client.titleInfo.TitleID,
+			TitleID: titleID,
 		},
 	}, &handle); err != nil {
 		return nil, err
