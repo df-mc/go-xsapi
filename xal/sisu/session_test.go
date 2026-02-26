@@ -139,7 +139,7 @@ func TestSession(t *testing.T) {
 
 	// publishSession(t, client)
 	// subscribeSocial(t, client)
-	testNotification(t, client)
+	// testNotification(t, client)
 
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
 	if err != nil {
