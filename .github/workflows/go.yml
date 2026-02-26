@@ -18,17 +18,15 @@ jobs:
 
       - name: Get dependencies
         run: |
-          mkdir -p $GOPATH/bin
-          export PATH=$PATH:$GOPATH/bin
+          go mod download
 
       - name: Vet
         run: go vet ./...
 
       - name: Staticcheck
         run: |
-          go get honnef.co/go/tools/cmd/staticcheck
-          GOBIN=$PWD/bin go install honnef.co/go/tools/cmd/staticcheck
-          ./bin/staticcheck ./...
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          $(go env GOPATH)/bin/staticcheck ./...
 
       - name: Build
         run: go build -o go-xsapi_exe -v .
