@@ -4,13 +4,10 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"fmt"
 	"math/rand"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -119,26 +116,8 @@ func TestSession(t *testing.T) {
 
 	t.Logf("logged in as %s (%s)", client.UserInfo().GamerTag, client.UserInfo().XUID)
 
-	if err := client.Social().AddFriend(context.Background(), "2535472859133039"); err != nil {
-		t.Fatal(err)
-	}
-
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://userpresence.xboxlive.com/users/xuids("+client.UserInfo().XUID+")/devices/current", strings.NewReader(`{"state":"Active"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("x-xbl-contract-version", "3")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.HTTPClient().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	fmt.Println(resp.Status)
-
-	// publishSession(t, client)
-	// subscribeSocial(t, client)
+	publishSession(t, client)
+	subscribeSocial(t, client)
 	// testNotification(t, client)
 
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
