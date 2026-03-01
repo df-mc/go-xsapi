@@ -74,6 +74,15 @@ const (
 	SubscriptionTypeUGNConsent      = "UGN.Consent"
 )
 
+var DefaultSubscriptionCategory = []string{
+	SubscriptionCategoryPeople,
+	SubscriptionCategoryMultiplayer,
+	SubscriptionCategoryRewards,
+	SubscriptionCategoryStore,
+	SubscriptionAchievements,
+	SubscriptionTypeUGNConsent,
+}
+
 const (
 	// SubscriptionTypeFollowers is social stuff
 	SubscriptionTypeFollowers = "Followers"

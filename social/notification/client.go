@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -34,6 +35,27 @@ type Client struct {
 	subscriptions   []SubscriptionHandler
 	subscribed      atomic.Bool
 	subscriptionsMu sync.RWMutex
+}
+
+func (c *Client) Inbox(ctx context.Context, categories []string, types []string) (*Inbox, error) {
+	requestURL := endpoint.JoinPath(
+		"users",
+		c.userInfo.XUID,
+		"inbox",
+	)
+	query := make(url.Values)
+	query.Set("SubscriptionCategory", strings.Join(categories, ","))
+	query.Set("SubscriptionType", strings.Join(types, ","))
+	query.Set("maxItems", "75")
+
+	var inbox *Inbox
+	if err := c.do(ctx, http.MethodGet, requestURL, nil, &inbox, contractVersion); err != nil {
+		return nil, err
+	}
+	if inbox == nil {
+		return nil, errors.New("social/notification: invalid inbox response")
+	}
+	return inbox, nil
 }
 
 func (c *Client) do(ctx context.Context, method string, u *url.URL, reqBody, respBody any, opts ...internal.RequestOption) error {
