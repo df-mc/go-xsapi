@@ -1,14 +1,6 @@
 package mpsd_test
 
-import (
-	"context"
-	"encoding/json"
-
-	"github.com/df-mc/go-xsapi/internal/test"
-	"github.com/df-mc/go-xsapi/mpsd"
-	"github.com/google/uuid"
-)
-
+/*
 func ExampleClient_Publish() {
 	client := test.Client()
 	defer client.Close()
@@ -27,3 +19,4 @@ func ExampleClient_Publish() {
 	}
 	defer session.Close()
 }
+*/

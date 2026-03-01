@@ -89,6 +89,6 @@ var MinecraftAndroid = sisu.Config{
 
 	// Those fields are title-specific and cannot be easily changed.
 	// Treat them like constants that are specific to the title being authenticated for the user.
-	ClientID:    "0000000048183522",               // Client ConnectionID used for authenticating and authorizing with Xbox Live
+	ClientID:    "0000000048183522",               // Client ID used for authenticating and authorizing with Xbox Live
 	RedirectURI: "ms-xal-0000000048183522://auth", // Used for Authorization Code Flow
 }

@@ -308,7 +308,7 @@ func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, c
 
 // SessionReference encapsulates a reference to a multiplayer session.
 type SessionReference struct {
-	// ServiceConfigID is the Xbox Live service configuration ConnectionID (SCID)
+	// ServiceConfigID is the Xbox Live service configuration ID (SCID)
 	// associated with the title.
 	//
 	// A single service configuration may be shared by multiple titles

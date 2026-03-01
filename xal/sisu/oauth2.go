@@ -271,14 +271,14 @@ type (
 	// authCodeRequest represents a wire JSON data used to request
 	// Authorization Code Flow using SISU endpoints.
 	authCodeRequest struct {
-		// ClientID is the ConnectionID for the application.
+		// ClientID is the ID for the application.
 		// It is specific to title.
 		// Typically derived from [Config.ClientID].
 		ClientID string `json:"AppId"`
 		// TitleID is the numeric identifier for the title in string form.
 		// It should be derived from [Config.TitleID].
 		TitleID json.Number `json:"TitleId"`
-		// RedirectURI is the redirect URI bound to the client ConnectionID.
+		// RedirectURI is the redirect URI bound to the client ID.
 		// It should be derived from [Config.RedirectURI].
 		RedirectURI string `json:"RedirectUri"`
 		// DeviceToken is the XASD token used to identify the device
@@ -297,7 +297,7 @@ type (
 	// authCodeResponse represents the on-wire format of the JSON response.
 	authCodeResponse struct {
 		// RedirectURL is the URL to Microsoft's login page that finally redirects
-		// to the RedirectURI specific to the client ConnectionID.
+		// to the RedirectURI specific to the client ID.
 		RedirectURL string `json:"MsaOauthRedirect"`
 		// MSARequestParameters json.RawMessage `json:"MsaRequestParameters"`
 	}

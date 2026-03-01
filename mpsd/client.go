@@ -39,7 +39,7 @@ type Client struct {
 	// receive notifications about changes to the session.
 	subscription *rta.Subscription
 	// subscriptionData is a custom payload included in the RTA subscription.
-	// It contains the connection ConnectionID used to associate multiplayer sessions
+	// It contains the connection ID used to associate multiplayer sessions
 	// created by the Client with the RTA subscription to receive changes to
 	// themselves.
 	subscriptionData *subscriptionData

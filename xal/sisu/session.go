@@ -396,8 +396,8 @@ type authorizationRequest struct {
 	// services and is exchanged for an XASU token.
 	AccessToken string
 
-	// ClientIS is the OAuth2 Client ConnectionID associated with the title.
-	// It must match the client ConnectionID used to obtain the Microsoft Account
+	// ClientIS is the OAuth2 Client ID associated with the title.
+	// It must match the client ID used to obtain the Microsoft Account
 	// access token.
 	ClientID string `json:"AppId"`
 
@@ -419,11 +419,11 @@ type authorizationRequest struct {
 	// targeting other relying parties must be requested separately via [xsts.Authorize].
 	RelyingParty string
 
-	// Sandbox is the sandbox ConnectionID in the configuration used for SISU authorization.
+	// Sandbox is the sandbox ID in the configuration used for SISU authorization.
 	// It is typically 'RETAIL' for most retail titles.
 	Sandbox string
 
-	// SessionID is the ConnectionID used for SISU authentication flow.
+	// SessionID is the ID used for SISU authentication flow.
 	// It is only used for devices that use SISU webviews, mainly Android and iOS devices.
 	SessionID string `json:"SessionId,omitempty"`
 
@@ -444,7 +444,7 @@ type authorizationRequest struct {
 // These tokens together establish the authenticated Xbox Live
 // session for the device, title, and user.
 type authorizationResponse struct {
-	// TitleToken is the XAST token bound to the title ConnectionID associated with
+	// TitleToken is the XAST token bound to the title ID associated with
 	// the specified OAuth2 ClientID used in the authorization request.
 	TitleToken *xast.Token
 

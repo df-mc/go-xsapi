@@ -40,7 +40,7 @@ type Conn struct {
 }
 
 // Subscribe attempts to subscribe with the specific resource URI, with the [context.Context]
-// to be used during the handshake. A Subscription may be returned, which contains an ConnectionID
+// to be used during the handshake. A Subscription may be returned, which contains an ID
 // and Custom data as the result of handshake.
 func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
 	sequence := c.sequences[operationSubscribe].Add(1)
@@ -61,7 +61,7 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 			}
 			sub := &Subscription{}
 			if err := json.Unmarshal(h.payload[0], &sub.ID); err != nil {
-				return nil, fmt.Errorf("decode subscription ConnectionID: %w", err)
+				return nil, fmt.Errorf("decode subscription ID: %w", err)
 			}
 			sub.Custom = h.payload[1]
 
@@ -79,7 +79,7 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 	}
 }
 
-// Unsubscribe attempts to unsubscribe with a Subscription associated with an ConnectionID, with
+// Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	sequence := c.sequences[operationUnsubscribe].Add(1)
@@ -193,7 +193,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		}
 		var subscriptionID uint32
 		if err := json.Unmarshal(payload[0], &subscriptionID); err != nil {
-			c.log.Error("error decoding subscription ConnectionID", slog.Any("error", err))
+			c.log.Error("error decoding subscription ID", slog.Any("error", err))
 			return
 		}
 		c.subscriptionsMu.Lock()

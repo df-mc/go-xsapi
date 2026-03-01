@@ -41,7 +41,7 @@ type SessionDescription struct {
 	// be used as a key to refer to the member associated with the currently authenticated user.
 	//
 	// A member may modify only their own MemberDescription. Use of "me" is
-	// equivalent to specifying the caller's own member ConnectionID.
+	// equivalent to specifying the caller's own member ID.
 	Members map[string]*MemberDescription `json:"members,omitempty"`
 }
 
@@ -256,7 +256,7 @@ type MemberConstants struct {
 
 // MemberConstantsSystem specifies the system-specific constants for a member in a multiplayer session.
 type MemberConstantsSystem struct {
-	// XUID is the user ConnectionID of the member.
+	// XUID is the user ID of the member.
 	XUID string `json:"xuid,omitempty"`
 
 	// Initialize indicates whether QoS initialization should be performed for
@@ -281,7 +281,7 @@ type MemberPropertiesSystem struct {
 
 	// Connection identifies the RTA subscription associated with this member.
 	//
-	// The value must match the ConnectionID specified in the corresponding
+	// The value must match the ID specified in the corresponding
 	// [rta.Subscription]. Once the member has joined or published the session,
 	// notifications for the session will be delivered over this connection,
 	// subject to the scope specified in [MemberPropertiesSystem.Subscription].
@@ -306,7 +306,7 @@ type MemberPropertiesSystemSubscription struct {
 	// and the multiplayer session.
 	//
 	// The value must be an uppercase UUID (GUID) and is used exclusively
-	// for this field. It must not be confused with ConnectionID, which
+	// for this field. It must not be confused with ID, which
 	// uses a standard (lowercase) UUID format.
 	ID string `json:"id"`
 

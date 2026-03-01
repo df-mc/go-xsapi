@@ -57,10 +57,10 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) error {
 		)
 		requestURL.RawQuery = "subscriptionCategory=Microsoft.Xbox.Multiplayer,Microsoft.Xbox.People,Microsoft.Xbox.Rewards,Microsoft.Xbox.Achievements&subscriptionType=GameInvites,GamePartyInvites,GamePartyInvitesWithoutHandles,MultiplayerActivityGameInvites,PartyInvites,Followers,AcceptedFriendRequests,IncomingFriendRequests,ClaimReminder,AchievementUnlock"
 
-		fmt.Println("ConnectionID", c.chat.ConnectionID())
+		fmt.Println("ID", c.chat.ID())
 		fmt.Println("Nonce", c.chat.Nonce())
 		if err := c.do(ctx, http.MethodPost, requestURL, subscribeRequest{
-			ConnectionID: c.chat.ConnectionID(),
+			ConnectionID: c.chat.ID(),
 			Nonce:        c.chat.Nonce(),
 		}, nil, contractVersion, internal.DefaultLanguage); err != nil {
 			return err

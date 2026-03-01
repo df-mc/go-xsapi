@@ -12,14 +12,14 @@ import (
 )
 
 // Activities returns activity handles for open multiplayer sessions in the specified
-// Service Configuration ConnectionID (SCID) for all users.
+// Service Configuration ID (SCID) for all users.
 func (c *Client) Activities(ctx context.Context, scid uuid.UUID) ([]ActivityHandle, error) {
 	return c.ActivitiesForUsers(ctx, scid, nil)
 }
 
 // ActivitiesForUsers returns activity handles for open multiplayer sessions
 // associated with the specified XUIDs.
-// The Service Configuration ConnectionID (SCID) identifies the game to query.
+// The Service Configuration ID (SCID) identifies the game to query.
 // If xuids is nil, it returns all open multiplayer sessions for the SCID.
 func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids []string) ([]ActivityHandle, error) {
 	// searchRequestPeople specifies whose perspective is used when searching
@@ -44,8 +44,8 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 		// Type indicates the type for the request.
 		// For searchRequest, this is always "activity".
 		Type string `json:"type"`
-		// ServiceConfigID is the service configuration ConnectionID for this request.
-		// A Service Configuration ConnectionID (SCID) may be shared by various titles
+		// ServiceConfigID is the service configuration ID for this request.
+		// A Service Configuration ID (SCID) may be shared by various titles
 		// available on many platforms.
 		ServiceConfigID uuid.UUID `json:"scid"`
 		// Owner includes parameters used for querying activity handles
@@ -79,7 +79,7 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 // Invite invites the user identified by the XUID to the multiplayer session.
 // If successful, it returns an InviteHandle describing the created invitation.
 // The invite handle includes service-defined metadata such as the expiration time.
-// The title ConnectionID is specific to the game
+// The title ID is specific to the game
 func (s *Session) Invite(ctx context.Context, xuid, titleID string) (*InviteHandle, error) {
 	var handle *InviteHandle
 	if err := s.client.do(ctx, http.MethodPost, endpoint.JoinPath("handles").String(), inviteHandle{
@@ -152,7 +152,7 @@ type InviteHandle struct {
 
 // GameType describes a single title available for a specific platform.
 type GameType struct {
-	// TitleID is the title ConnectionID associated with the game type.
+	// TitleID is the title ID associated with the game type.
 	TitleID string `json:"titleId"`
 
 	// PackageFamilyName is the package family name associated with the game type.
@@ -164,12 +164,12 @@ type GameType struct {
 
 // InviteAttributes describes attributes associated with the InviteHandle.
 type InviteAttributes struct {
-	// TitleID is the title ConnectionID associated with the invite handle.
+	// TitleID is the title ID associated with the invite handle.
 	// For invitation requests, it must be the title authenticated
 	// by the XSTS token.
 	TitleID string `json:"titleId"`
 
-	// ContextStringID is the optional ConnectionID used to activate the
+	// ContextStringID is the optional ID used to activate the
 	// invite handle. It is unknown how it is used or how it is
 	// generated during invitation.
 	ContextStringID string `json:"contextString,omitempty"`

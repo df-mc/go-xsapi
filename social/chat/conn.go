@@ -39,7 +39,7 @@ type Conn struct {
 	once   sync.Once
 }
 
-func (c *Conn) ConnectionID() uuid.UUID {
+func (c *Conn) ID() uuid.UUID {
 	return c.id
 }
 

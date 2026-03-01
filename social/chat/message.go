@@ -81,7 +81,7 @@ func (p *whoAmIResult) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if p.ConnectionID == uuid.Nil {
-		return errors.New("xsapi/chat: whoAmIResult.ConnectionID is nil")
+		return errors.New("xsapi/chat: whoAmIResult.ID is nil")
 	}
 	if p.ServerNonce == "" {
 		return errors.New("xsapi/chat: whoAmIResult.ServerNonce is empty")
