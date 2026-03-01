@@ -192,6 +192,10 @@ func (c *Client) Chat() *chat.Conn {
 	return c.chat
 }
 
+func (c *Client) Notifications() *notification.Client {
+	return c.notification
+}
+
 func (c *Client) UserInfo() xsts.UserInfo {
 	return c.userInfo
 }
