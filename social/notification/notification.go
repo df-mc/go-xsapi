@@ -66,22 +66,13 @@ type Action struct {
 }
 
 const (
-	SubscriptionCategoryPeople      = "Microsoft.Xbox.People"
-	SubscriptionCategoryMultiplayer = "Microsoft.Xbox.Multiplayer"
-	SubscriptionCategoryRewards     = "Microsoft.Xbox.Rewards"
-	SubscriptionCategoryStore       = "Microsoft.Xbox.Store"
-	SubscriptionAchievements        = "Microsoft.Xbox.Achievements"
-	SubscriptionTypeUGNConsent      = "UGN.Consent"
+	SubscriptionCategoryPeople         = "Microsoft.Xbox.People"
+	SubscriptionCategoryMultiplayer    = "Microsoft.Xbox.Multiplayer"
+	SubscriptionCategoryRewards        = "Microsoft.Xbox.Rewards"
+	SubscriptionCategoryStore          = "Microsoft.Xbox.Store"
+	SubscriptionCategoryAchievements   = "Microsoft.Xbox.Achievements"
+	SubscriptionCategoryTypeUGNConsent = "UGN.Consent"
 )
-
-var DefaultSubscriptionCategory = []string{
-	SubscriptionCategoryPeople,
-	SubscriptionCategoryMultiplayer,
-	SubscriptionCategoryRewards,
-	SubscriptionCategoryStore,
-	SubscriptionAchievements,
-	SubscriptionTypeUGNConsent,
-}
 
 const (
 	// SubscriptionTypeFollowers is social stuff
