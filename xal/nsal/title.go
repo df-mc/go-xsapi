@@ -68,7 +68,7 @@ var (
 	defaultTitleMu sync.Mutex
 )
 
-// Title retrieves TitleData for the specified title ID from the NSAL endpoint.
+// Title retrieves TitleData for the specified title ConnectionID from the NSAL endpoint.
 //
 // The titleID identifies the title whose endpoint configuration should
 // be returned. A special value of "current" refers to the title associated
@@ -110,7 +110,7 @@ func Title(ctx context.Context, token interface{ SetAuthHeader(req *http.Request
 }
 
 // Current retrieves TitleData for the title authenticated by the provided XSTS token.
-// Current is equivalent to calling Title with the special title ID "current".
+// Current is equivalent to calling Title with the special title ConnectionID "current".
 //
 // Unlike [Default], Current does not cache the response. Callers that repeatedly
 // access the same title should cache the returned TitleData to reduce latency

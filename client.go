@@ -17,24 +17,23 @@ import (
 	"github.com/df-mc/go-xsapi/mpsd"
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/social"
+	"github.com/df-mc/go-xsapi/social/chat"
+	"github.com/df-mc/go-xsapi/social/notification"
 	"github.com/df-mc/go-xsapi/xal/nsal"
-	"github.com/df-mc/go-xsapi/xal/xast"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 	"golang.org/x/text/language"
 )
 
-func NewClient(src TokenSource, config *ClientConfig) (*Client, error) {
+func NewClient(src TokenSource) (*Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
-	return NewClientWithContext(ctx, src, config)
+	var c ClientConfig
+	return c.New(ctx, src)
 }
 
-func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientConfig) (*Client, error) {
-	if config == nil {
-		config = &ClientConfig{}
-	}
-	if config.Transport == nil {
-		config.Transport = http.DefaultTransport
+func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, error) {
+	if config.HTTPClient == nil {
+		config.HTTPClient = http.DefaultClient
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
@@ -44,7 +43,10 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 		config: config,
 		src:    src,
 	}
-	c.client = &http.Client{Transport: c}
+	c.client = new(http.Client)
+	*c.client = *config.HTTPClient
+	c.client.Transport = c
+
 	token, err := src.XSTSToken(ctx, internal.XBLRelyingParty)
 	if err != nil {
 		return nil, fmt.Errorf("request XSTS token: %w", err)
@@ -54,16 +56,6 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 		return nil, errors.New("xsapi: authorization token does not claim XUID")
 	}
 	c.userInfo = xui
-
-	titleToken, err := src.TitleToken(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("xsapi: request title token: %w", err)
-	}
-	xti := titleToken.DisplayClaims.TitleInfo
-	if xti.TitleID == "" {
-		return nil, errors.New("xsapi: title token does not claim title ID")
-	}
-	c.titleInfo = xti
 
 	c.defaultTitle, err = nsal.Default(ctx)
 	if err != nil {
@@ -78,42 +70,46 @@ func NewClientWithContext(ctx context.Context, src TokenSource, config *ClientCo
 	if err != nil {
 		return nil, fmt.Errorf("dial RTA: %w", err)
 	}
-	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.TitleInfo(), c.Log())
+	if config.EnableChat {
+		c.chat, err = chat.Dial(ctx, c.HTTPClient(), c.Log())
+		if err != nil {
+			return nil, fmt.Errorf("dial chat: %w", err)
+		}
+	}
+	c.notification = notification.New(c.HTTPClient(), c.chat, c.UserInfo(), c.Log())
+	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log())
 	c.social = social.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log())
 	return c, nil
 }
 
 type TokenSource interface {
 	xsts.TokenSource
-	xast.TokenSource
 	ProofKey() *ecdsa.PrivateKey
 }
 
 type ClientConfig struct {
-	Transport http.RoundTripper
-	Logger    *slog.Logger
-	RTADialer rta.Dialer
+	HTTPClient *http.Client
+	Logger     *slog.Logger
+	RTADialer  rta.Dialer
+	EnableChat bool
 }
 
 type Client struct {
-	config *ClientConfig
+	config ClientConfig
 	client *http.Client
 	src    TokenSource
 
 	defaultTitle, currentTitle *nsal.TitleData
 	userInfo                   xsts.UserInfo
 
-	titleInfo xast.TitleInfo
+	rta          *rta.Conn
+	mpsd         *mpsd.Client
+	social       *social.Client
+	notification *notification.Client
 
-	rta    *rta.Conn
-	mpsd   *mpsd.Client
-	social *social.Client
+	chat *chat.Conn
 
 	once sync.Once
-}
-
-func (c *Client) TitleInfo() xast.TitleInfo {
-	return c.titleInfo
 }
 
 func (c *Client) HTTPClient() *http.Client {
@@ -146,7 +142,14 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	policy.Sign(req2, data, c.src.ProofKey())
 
-	return c.config.Transport.RoundTrip(req2)
+	return c.baseTransport().RoundTrip(req2)
+}
+
+func (c *Client) baseTransport() http.RoundTripper {
+	if t := c.config.HTTPClient.Transport; t != nil {
+		return t
+	}
+	return http.DefaultTransport
 }
 
 func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy nsal.SignaturePolicy, _ error) {
@@ -182,6 +185,13 @@ func (c *Client) RTA() *rta.Conn {
 	return c.rta
 }
 
+func (c *Client) Chat() *chat.Conn {
+	if c.chat == nil {
+		panic("xsapi: chat is not enabled")
+	}
+	return c.chat
+}
+
 func (c *Client) UserInfo() xsts.UserInfo {
 	return c.userInfo
 }
@@ -197,6 +207,7 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 		err = errors.Join(
 			c.mpsd.CloseContext(ctx),
 			c.social.CloseContext(ctx),
+			c.chat.Close(),
 
 			c.rta.Close(),
 		)

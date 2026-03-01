@@ -15,7 +15,7 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 		"people",
 		"xuid("+xuid+")",
 	).String()
-	return c.do(ctx, http.MethodPut, requestURL, nil, nil, append(
+	return internal.Do(ctx, c.client, http.MethodPut, requestURL, nil, nil, append(
 		opts,
 		socialContractVersion,
 	))
@@ -30,7 +30,7 @@ func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.Re
 		"/users/me/people/friends/v2",
 		"xuid("+xuid+")",
 	).String()
-	return c.do(ctx, http.MethodPut, requestURL, nil, nil, append(
+	return internal.Do(ctx, c.client, http.MethodPut, requestURL, nil, nil, append(
 		opts,
 		socialContractVersion,
 	))
@@ -48,7 +48,7 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, typ string, opts
 	q := requestURL.Query()
 	q.Set("deleteRelationships", typ)
 	requestURL.RawQuery = q.Encode()
-	return c.do(ctx, http.MethodDelete, requestURL.String(), nil, nil, append(
+	return internal.Do(ctx, c.client, http.MethodDelete, requestURL.String(), nil, nil, append(
 		opts,
 		socialContractVersion,
 	))

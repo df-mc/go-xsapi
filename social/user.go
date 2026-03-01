@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/df-mc/go-xsapi/internal"
-	"golang.org/x/text/language"
 )
 
 func (c *Client) Search(ctx context.Context, query string, opts ...internal.RequestOption) ([]User, error) {
@@ -27,7 +26,7 @@ func (c *Client) Search(ctx context.Context, query string, opts ...internal.Requ
 	if err := c.do(ctx, http.MethodGet, requestURL.String(), nil, &resp, append(
 		opts,
 		peopleHubContractVersion,
-		defaultLanguage,
+		internal.DefaultLanguage,
 	)); err != nil {
 		return nil, err
 	}
@@ -81,7 +80,7 @@ func (c *Client) users(ctx context.Context, perspective, selector string, postBo
 	if err := c.do(ctx, method, requestURL, postBody, &resp, append(
 		opts,
 		peopleHubContractVersion,
-		defaultLanguage,
+		internal.DefaultLanguage,
 	)); err != nil {
 		return nil, err
 	}
@@ -111,11 +110,6 @@ var (
 		"preferredColor",
 		"presenceDetail",
 	}, ",")
-
-	defaultLanguage = internal.AcceptLanguage([]language.Tag{
-		language.AmericanEnglish,
-		language.English,
-	})
 )
 
 type User struct {

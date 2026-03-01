@@ -15,34 +15,31 @@ import (
 
 	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/rta"
-	"github.com/df-mc/go-xsapi/xal/xast"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
-func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, titleInfo xast.TitleInfo, log *slog.Logger) *Client {
+func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	return &Client{
-		client:    client,
-		rta:       conn,
-		userInfo:  userInfo,
-		titleInfo: titleInfo,
-		log:       log,
+		client:   client,
+		rta:      conn,
+		userInfo: userInfo,
+		log:      log,
 
 		sessions: make(map[string]*Session),
 	}
 }
 
 type Client struct {
-	client    *http.Client
-	rta       *rta.Conn
-	userInfo  xsts.UserInfo
-	titleInfo xast.TitleInfo
-	log       *slog.Logger
+	client   *http.Client
+	rta      *rta.Conn
+	userInfo xsts.UserInfo
+	log      *slog.Logger
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.
 	subscription *rta.Subscription
 	// subscriptionData is a custom payload included in the RTA subscription.
-	// It contains the connection ID used to associate multiplayer sessions
+	// It contains the connection ConnectionID used to associate multiplayer sessions
 	// created by the Client with the RTA subscription to receive changes to
 	// themselves.
 	subscriptionData *subscriptionData

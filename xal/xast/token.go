@@ -15,8 +15,8 @@ type DisplayClaims struct {
 }
 
 type TitleInfo struct {
-	// TitleID is the title ID specific to Xbox Live.
-	// It is a numerical ID present as a string.
+	// TitleID is the title ConnectionID specific to Xbox Live.
+	// It is a numerical ConnectionID present as a string.
 	TitleID string `json:"tid"`
 }
 

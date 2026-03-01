@@ -45,7 +45,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	if err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	// The custom data includes a connection ID which can be used for the
+	// The custom data includes a connection ConnectionID which can be used for the
 	// Connection field in the member constants for receiving notifications for
 	// the changes to its participating multiplayer session.
 	if err := json.Unmarshal(c.subscription.Custom, &c.subscriptionData); err != nil {
@@ -152,7 +152,7 @@ func (h *subscriptionHandler) parseReference(s string) (ref SessionReference, er
 	}
 	ref.ServiceConfigID, err = uuid.Parse(segments[0])
 	if err != nil {
-		return ref, fmt.Errorf("parse service config ID: %w", err)
+		return ref, fmt.Errorf("parse service config ConnectionID: %w", err)
 	}
 	ref.TemplateName, ref.Name = segments[1], segments[2]
 	return ref, nil

@@ -44,7 +44,7 @@ msa := MinecraftAndroid.TokenSource(context.Background(), token)
 session := MinecraftAndroid.New(msa, nil)
 
 // Log in to Xbox Live services using the SISU session.
-client, err := NewClient(session, nil)
+client, err := NewClient(session)
 if err != nil {
 	panic(fmt.Sprintf("error creating API client: %s", err))
 }

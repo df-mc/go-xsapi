@@ -36,3 +36,8 @@ func RequestHeader(key, value string) RequestOption {
 func ContractVersion(v string) RequestOption {
 	return RequestHeader("x-xbl-contract-version", v)
 }
+
+var DefaultLanguage = AcceptLanguage([]language.Tag{
+	language.AmericanEnglish,
+	language.English,
+})

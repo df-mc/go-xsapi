@@ -11,7 +11,7 @@ type Config struct {
 	// device tokens.
 	xal.Config
 
-	// ClientID is the OAuth2 application ID used to authenticate the user with
+	// ClientID is the OAuth2 application ConnectionID used to authenticate the user with
 	// a Microsoft account. It is also used to authorize with various Xbox Live
 	// authentication services.
 	ClientID string
