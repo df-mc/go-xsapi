@@ -75,13 +75,11 @@ const (
 )
 
 const (
-	// SubscriptionTypeFollowers is social stuff
 	SubscriptionTypeFollowers = "Followers"
 
 	SubscriptionTypeGameInvites = "GameInvites"
 	// SubscriptionTypeGamePartyInvites = "GamePartyInvites" // untested
 
-	// SubscriptionTypeMultiplayerActivityGameInvites is an MPA (multiplayer activity) API stuff
 	SubscriptionTypeMultiplayerActivityGameInvites = "MultiplayerActivityGameInvites" // This is different from MPSD. it's called MPA
 
 	// sales stuff

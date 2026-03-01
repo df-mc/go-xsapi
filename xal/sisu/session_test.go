@@ -118,9 +118,9 @@ func TestSession(t *testing.T) {
 
 	t.Logf("logged in as %s (%s)", client.UserInfo().GamerTag, client.UserInfo().XUID)
 
-	// publishSession(t, client)
-	// subscribeSocial(t, client)
-	testNotification(t, client)
+	publishSession(t, client)
+	subscribeSocial(t, client)
+	// testNotification(t, client)
 
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
 	if err != nil {
