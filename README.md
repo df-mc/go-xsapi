@@ -26,7 +26,7 @@ if err != nil {
 // so it doesn't need to be captured by Output: line in this example.
 _, _ = fmt.Fprintf(os.Stderr,
 	"Sign in to your Microsoft Account at %s using the code %s.",
-	da.VerificationURI, da.UserCode, 
+	da.VerificationURI, da.UserCode,
 )
 
 // Make a context for polling the access token while the user completes sign-in.

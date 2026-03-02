@@ -80,16 +80,14 @@ const (
 	SubscriptionTypeGameInvites = "GameInvites"
 	// SubscriptionTypeGamePartyInvites = "GamePartyInvites" // untested
 
-	SubscriptionTypeMultiplayerActivityGameInvites = "MultiplayerActivityGameInvites" // This is different from MPSD. it's called MPA
+	SubscriptionTypeMultiplayerActivityGameInvites = "MultiplayerActivityGameInvites"
 
-	// sales stuff
-	// SubscriptionTypeClaimReminder                       = "ClaimReminder" // totally ad
+	// SubscriptionTypeClaimReminder                       = "ClaimReminder"
 	// SubscriptionTypeWishlistSaleDetailsPC               = "WishlistSaleDetailsPC"
 	// SubscriptionTypeWishlistPreorderDetailsPC           = "WishlistPreorderDetailsPC"
 	// SubscriptionTypeWishlistGameEntersGamePassDetailsPC = "WishlistGameEntersGamePassDetailsPC"
 	// SubscriptionTypePriceIncrease = "PriceIncrease"
 
-	// achievements stuff
 	// SubscriptionTypeAchievementUnlock = "AchievementUnlock"
 
 	SubscriptionTypeAcceptedFriendRequests = "AcceptedFriendRequests"

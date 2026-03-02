@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/social/chat"
@@ -32,9 +31,9 @@ type Client struct {
 	userInfo xsts.UserInfo
 	log      *slog.Logger
 
-	subscriptions   []SubscriptionHandler
-	subscribed      atomic.Bool
-	subscriptionsMu sync.RWMutex
+	subscriptionHandlers []SubscriptionHandler
+	subscribed           bool
+	subscriptionsMu      sync.RWMutex
 }
 
 func (c *Client) Inbox(ctx context.Context, categories []string, types []string) (*Inbox, error) {
@@ -67,11 +66,13 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) error {
 		ConnectionID uuid.UUID `json:"ChatConnectionId"`
 		Nonce        string    `json:"ChatNonce"`
 	}
-
 	if c.chat == nil {
 		return errors.New("social/notification: chat is not enabled")
 	}
-	if !c.subscribed.Load() {
+
+	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
+	if !c.subscribed {
 		requestURL := endpoint.JoinPath(
 			"users",
 			c.userInfo.XUID,
@@ -79,21 +80,19 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) error {
 		)
 		requestURL.RawQuery = "subscriptionCategory=Microsoft.Xbox.Multiplayer,Microsoft.Xbox.People,Microsoft.Xbox.Rewards,Microsoft.Xbox.Achievements&subscriptionType=GameInvites,GamePartyInvites,GamePartyInvitesWithoutHandles,MultiplayerActivityGameInvites,PartyInvites,Followers,AcceptedFriendRequests,IncomingFriendRequests,ClaimReminder,AchievementUnlock"
 
-		fmt.Println("ID", c.chat.ID())
+		fmt.Println("ConnectionID", c.chat.ConnectionID())
 		fmt.Println("Nonce", c.chat.Nonce())
 		if err := c.do(ctx, http.MethodPost, requestURL, subscribeRequest{
-			ConnectionID: c.chat.ID(),
+			ConnectionID: c.chat.ConnectionID(),
 			Nonce:        c.chat.Nonce(),
 		}, nil, contractVersion, internal.DefaultLanguage); err != nil {
 			return err
 		}
 		c.chat.AddHandler(&chatHandler{c})
-		c.subscribed.Store(true)
+		c.subscribed = true
 	}
 
-	c.subscriptionsMu.Lock()
-	c.subscriptions = append(c.subscriptions, h)
-	c.subscriptionsMu.Unlock()
+	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
 	return nil
 }
 
