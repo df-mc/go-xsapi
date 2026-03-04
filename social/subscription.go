@@ -14,22 +14,20 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
-	if c.subscription != nil {
-		c.subscriptionHandlers = append(c.subscriptionHandlers, h)
-		return nil
+	if c.subscription == nil {
+		resourceURI := socialEndpoint.JoinPath(
+			"users",
+			"xuid("+c.userInfo.XUID+")",
+			"friends",
+		).String()
+		c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
+		if err != nil {
+			return err
+		}
+		c.subscription.Handle(&subscriptionHandler{c})
 	}
 
-	resourceURI := socialEndpoint.JoinPath(
-		"users",
-		"xuid("+c.userInfo.XUID+")",
-		"friends",
-	).String()
-	c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
-	if err != nil {
-		return err
-	}
 	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
-	c.subscription.Handle(&subscriptionHandler{c})
 	return nil
 }
 

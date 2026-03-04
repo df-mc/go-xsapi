@@ -66,6 +66,9 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) error {
 		ConnectionID uuid.UUID `json:"ChatConnectionId"`
 		Nonce        string    `json:"ChatNonce"`
 	}
+	if h == nil {
+		return errors.New("social/notification: cannot subscribe with a nil SubscriptionHandler")
+	}
 	if c.chat == nil {
 		return errors.New("social/notification: chat is not enabled")
 	}
@@ -80,8 +83,6 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) error {
 		)
 		requestURL.RawQuery = "subscriptionCategory=Microsoft.Xbox.Multiplayer,Microsoft.Xbox.People,Microsoft.Xbox.Rewards,Microsoft.Xbox.Achievements&subscriptionType=GameInvites,GamePartyInvites,GamePartyInvitesWithoutHandles,MultiplayerActivityGameInvites,PartyInvites,Followers,AcceptedFriendRequests,IncomingFriendRequests,ClaimReminder,AchievementUnlock"
 
-		fmt.Println("ConnectionID", c.chat.ConnectionID())
-		fmt.Println("Nonce", c.chat.Nonce())
 		if err := c.do(ctx, http.MethodPost, requestURL, subscribeRequest{
 			ConnectionID: c.chat.ConnectionID(),
 			Nonce:        c.chat.Nonce(),

@@ -192,7 +192,7 @@ func (c *Client) Chat() *chat.Conn {
 	return c.chat
 }
 
-func (c *Client) Notification() *notification.Client {
+func (c *Client) Notifications() *notification.Client {
 	return c.notification
 }
 
