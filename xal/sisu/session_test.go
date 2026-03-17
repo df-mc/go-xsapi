@@ -91,7 +91,7 @@ func TestSession(t *testing.T) {
 	t.Logf("XSTS token for %q: %#v", playFabRelyingParty, xsts)
 
 	client, err := xsapi.ClientConfig{
-		EnableChat: true,
+		// EnableChat: true,
 	}.New(t.Context(), s)
 	if err != nil {
 		t.Fatalf("error creating API client: %s", err)
