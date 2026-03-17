@@ -9,14 +9,19 @@ import (
 	"net/http"
 )
 
-type contextKey struct{}
-
-var ETag contextKey
-
 // XBLRelyingParty is the relying party used for various Xbox Live services.
 // In XSAPI Client, it will be used for requesting NSAL endpoints for current
 // authenticated title.
 const XBLRelyingParty = "http://xboxlive.com"
+
+func NewRequest(ctx context.Context, method, u string, reqBody io.Reader, opts []RequestOption) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, u, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	Apply(req, opts)
+	return req, nil
+}
 
 func Do(ctx context.Context, client *http.Client, method, u string, reqBody, respBody any, opts []RequestOption) error {
 	var r io.Reader

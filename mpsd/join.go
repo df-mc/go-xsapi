@@ -14,7 +14,7 @@ type JoinConfig struct {
 	CustomMemberProperties json.RawMessage
 }
 
-func (c *Client) Join(ctx context.Context, handle ActivityHandle, config JoinConfig) (*Session, error) {
+func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig) (*Session, error) {
 	_, payload, err := c.subscribe(ctx)
 	if err != nil {
 		return nil, err
@@ -45,7 +45,7 @@ func (c *Client) Join(ctx context.Context, handle ActivityHandle, config JoinCon
 		},
 	}
 
-	s, err := c.createSession(ctx, handle.SessionReference, handle.URL().JoinPath("session"), d)
+	s, err := c.createSession(ctx, nil, endpoint.JoinPath("handles", handleID.String(), "session"), d)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}

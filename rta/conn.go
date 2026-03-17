@@ -264,7 +264,3 @@ func unexpectedStatusCode(status int32, payload []json.RawMessage) error {
 	}
 	return err
 }
-
-type Provider interface {
-	RTA() *Conn
-}

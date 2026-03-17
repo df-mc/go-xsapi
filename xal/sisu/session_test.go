@@ -13,7 +13,6 @@ import (
 
 	"github.com/df-mc/go-xsapi"
 	"github.com/df-mc/go-xsapi/mpsd"
-	"github.com/df-mc/go-xsapi/social"
 	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
@@ -121,11 +120,19 @@ func TestSession(t *testing.T) {
 	publishSession(t, client)
 	subscribeSocial(t, client)
 
-	client.Chat().ConnectionID()
-
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
 	if err != nil {
 		t.Fatalf("error searching activity handles: %s", err)
+	}
+	if len(activities) > 0 {
+		activity := activities[0]
+		session, err := client.MPSD().Join(t.Context(), activity.ID, mpsd.JoinConfig{})
+		if err != nil {
+			t.Fatalf("error joining multiplayer session: %s", err)
+		}
+		defer session.Close()
+
+		t.Log(string(session.Properties().Custom))
 	}
 	for _, activity := range activities {
 		t.Logf("%#v", activity)
@@ -145,12 +152,16 @@ func subscribeSocial(t testing.TB, client *xsapi.Client) {
 	if err := client.Social().Follow(ctx, "2535428765332540"); err != nil {
 		t.Fatalf("error following: %s", err)
 	}
+
+	if err := client.Social().AddFriend(ctx, "2535453875771523"); err != nil {
+		t.Fatalf("error adding friend: %s", err)
+	}
 }
 
 type socialSubscriptionHandler struct{ testing.TB }
 
-func (h socialSubscriptionHandler) HandleRelationshipChange(change social.RelationshipChange) {
-	h.Logf("HandleRelationshipChange(%#v)", change)
+func (h socialSubscriptionHandler) HandleRelationshipChange(changeType string, xuids []string) {
+	h.Logf("HandleRelationshipChange(%q, %q)", changeType, xuids)
 }
 
 func (h socialSubscriptionHandler) HandleFriendRequestCountChange(count int) {
@@ -209,6 +220,11 @@ func publishSession(t testing.TB, client *xsapi.Client) {
 		}
 		t.Logf("cleanup: session closed")
 	})
+
+	if _, err := session.Invite(t.Context(), "2535429761408877", "896928775"); err != nil {
+		t.Fatal(err)
+	}
+
 }
 
 func readSnapshot(t testing.TB, path string) *Snapshot {
@@ -249,7 +265,7 @@ func msaToken(t testing.TB, path string) *oauth2.Token {
 		}
 		t.Logf("Sign in to Microsoft Account at %s using the code %s. You have 1 minute to sign in.", da.VerificationURI, da.UserCode)
 
-		ctx, cancel = context.WithTimeout(t.Context(), time.Minute)
+		ctx, cancel = context.WithTimeout(t.Context(), time.Minute*5)
 		defer cancel()
 		msa, err := MinecraftAndroid.DeviceAccessToken(ctx, da)
 		if err != nil {

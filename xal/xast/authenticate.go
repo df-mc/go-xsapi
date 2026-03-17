@@ -1,3 +1,10 @@
+//go:build exclude
+// +build exclude
+
+// It is unclear how we can request a title token using the device token.
+// Windows and some console devices seem to use this endpoint, but it is
+// not well-tested and should not be used at this time.
+
 package xast
 
 import (

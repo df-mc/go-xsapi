@@ -1,17 +1,19 @@
 package mpsd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"iter"
 	"log/slog"
 	"maps"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/internal"
@@ -50,10 +52,8 @@ type Session struct {
 	ref SessionReference
 
 	// etag holds the most recently observed E-Tag for the session resource.
-	//
-	// An atomic pointer is used to allow lock-free reads while supporting
-	// safe concurrent updates.
-	etag atomic.Pointer[string]
+	// When reading or accessing etag, cacheMu must be held for concurrent safety.
+	etag string
 	// cache holds the SessionDescription for the multiplayer session in the last known state.
 	// Callers can always refresh this cache to the remote state using [Session.Sync] method.
 	cache *SessionDescription
@@ -99,7 +99,7 @@ func (s *Session) CloseContext(ctx context.Context) (err error) {
 				"me": nil,
 			},
 		}
-		if err2 := s.write(ctx, s.ref.URL(), d); err2 != nil {
+		if _, err2 := s.write(ctx, s.ref.URL(), d); err2 != nil {
 			err = errors.Join(err, err2)
 		}
 		s.client.handleSessionClose(s)
@@ -113,15 +113,41 @@ func (s *Session) CloseContext(ctx context.Context) (err error) {
 // The [context.Context] is used for making a PUT request call.
 //
 // On success, both the local cache and stored ETag are updated to reflect the server response.
-func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescription) error {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-
-	ctx = context.WithValue(ctx, internal.ETag, &s.etag)
-	if err := s.client.do(ctx, http.MethodPut, u.String(), changes, &s.cache); err != nil {
-		return err
+func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescription, opts ...internal.RequestOption) (*http.Response, error) {
+	buf := &bytes.Buffer{}
+	if err := json.NewEncoder(buf).Encode(changes); err != nil {
+		return nil, fmt.Errorf("encode request body: %w", err)
 	}
-	return nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), buf)
+	if err != nil {
+		return nil, fmt.Errorf("make request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Xbl-Contract-Version", contractVersion)
+	internal.Apply(req, opts)
+
+	resp, err := s.client.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		s.cacheMu.Lock()
+		defer s.cacheMu.Unlock()
+		if err := json.NewDecoder(resp.Body).Decode(&s.cache); err != nil {
+			return nil, fmt.Errorf("decode response body: %w", err)
+		}
+		if e := resp.Header.Get("ETag"); e != "" {
+			s.etag = e
+		}
+		return resp, nil
+	case http.StatusNotModified, http.StatusNoContent:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+	}
 }
 
 // Context returns a [context.Context] bound to the lifecycle of the Session.
@@ -174,15 +200,42 @@ func (s *Session) Sync(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		s.cacheMu.Lock()
-		defer s.cacheMu.Unlock()
+		s.cacheMu.RLock()
+		etag := s.etag
+		s.cacheMu.RUnlock()
 
-		ctx = context.WithValue(ctx, internal.ETag, &s.etag)
-		err := s.client.do(ctx, http.MethodGet, s.ref.URL().String(), nil, &s.cache)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.ref.URL().String(), nil)
+		if err != nil {
+			return fmt.Errorf("make request: %w", err)
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("X-Xbl-Contract-Version", contractVersion)
+		req.Header.Set("If-None-Match", etag)
+
+		resp, err := s.client.client.Do(req)
 		if err != nil {
 			return err
 		}
-		return nil
+		defer resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusOK:
+			s.cacheMu.Lock()
+			defer s.cacheMu.Unlock()
+
+			// I think re-using s.cache may reduce allocations?
+			if err := json.NewDecoder(resp.Body).Decode(&s.cache); err != nil {
+				return fmt.Errorf("decode response body: %w", err)
+			}
+			if e := resp.Header.Get("ETag"); e != "" {
+				s.etag = e // Update the last observed ETag.
+			}
+			return nil
+		case http.StatusNotModified:
+			return nil
+		default:
+			return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		}
 	}
 }
 
@@ -191,11 +244,16 @@ func (s *Session) Sync(ctx context.Context) error {
 // commonly used to expose session metadata such as display names or
 // server details.
 func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessage) error {
-	return s.write(ctx, s.ref.URL(), SessionDescription{
+	_, err := s.write(ctx, s.ref.URL(), SessionDescription{
 		Properties: &SessionProperties{
 			Custom: custom,
 		},
-	})
+	}, internal.RequestHeader("If-Match", "*"))
+
+	// TODO: Should we still use a shared method or split depending on usage? i.e. update()?
+	// TODO: Can we use the current etag for 'If-Match' header?
+
+	return err
 }
 
 // Constants returns the immutable session constants.
@@ -295,7 +353,7 @@ func (s *Session) Members() iter.Seq2[string, MemberDescription] {
 // The [context.Context] is used for making a PUT request call. Changes are commited
 // immediately and reflected in the local cache.
 func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, custom json.RawMessage) error {
-	return s.write(ctx, s.ref.URL(), SessionDescription{
+	_, err := s.write(ctx, s.ref.URL(), SessionDescription{
 		Members: map[string]*MemberDescription{
 			label: {
 				Properties: &MemberProperties{
@@ -304,6 +362,7 @@ func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, c
 			},
 		},
 	})
+	return err
 }
 
 // SessionReference encapsulates a reference to a multiplayer session.
@@ -336,4 +395,30 @@ func (ref SessionReference) URL() *url.URL {
 		"/sessionTemplates", ref.TemplateName,
 		"/sessions", ref.Name,
 	)
+}
+
+// parseSessionReference parses a SessionReference from the path contained in the
+// 'Content-Location' header.
+//
+// The path must refer to a session reference in the form
+//
+//	"/serviceconfigs/<scid>/sessionTemplates/<templateName>/sessions/<name>"
+//
+// If the path does not match this pattern or does not refer to the
+// multiplayer session, an error will be returned.
+func parseSessionReference(path string) (ref SessionReference, err error) {
+	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(segments) != 6 {
+		return ref, fmt.Errorf("malformed path: %q", path)
+	}
+	if !strings.EqualFold(segments[0], "serviceconfigs") || !strings.EqualFold(segments[2], "sessionTemplates") || segments[4] != "sessions" {
+		return ref, fmt.Errorf("invalid path to session: %q", path)
+	}
+
+	ref.ServiceConfigID, err = uuid.Parse(segments[1])
+	if err != nil {
+		return ref, fmt.Errorf("parse service config ID: %w", err)
+	}
+	ref.TemplateName, ref.Name = segments[3], segments[5]
+	return ref, nil
 }
