@@ -60,6 +60,11 @@ type Session struct {
 	// cacheMu guards the cache from concurrent read-write access.
 	cacheMu sync.RWMutex
 
+	// h is the Handler registered to this Session to receive updates from RTA.
+	h Handler
+	// hMu guards h from concurrent read/write access.
+	hMu sync.RWMutex
+
 	// closed is a channel that is closed when the Session is no longer usable.
 	//
 	// Goroutines may select on this channel to be notified when the session has been closed.
@@ -80,6 +85,7 @@ type Session struct {
 func (s *Session) Close() error {
 	ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
 	defer cancel()
+
 	return s.CloseContext(ctx)
 }
 
@@ -108,6 +114,26 @@ func (s *Session) CloseContext(ctx context.Context) (err error) {
 	return err
 }
 
+// Handle registers h as the [Handler] for this session. The registered handler
+// is called when an event is received over the RTA (Real-Time Activity)
+// subscription, such as when a member joins or leaves the session. Passing nil
+// falls back to [NopHandler].
+func (s *Session) Handle(h Handler) {
+	if h == nil {
+		h = NopHandler{}
+	}
+	s.hMu.Lock()
+	s.h = h
+	s.hMu.Unlock()
+}
+
+// handler returns the [Handler] currently registered for this session.
+func (s *Session) handler() Handler {
+	s.hMu.RLock()
+	defer s.hMu.RUnlock()
+	return s.h
+}
+
 // write commits partial changes to the session resource identified by the given URL.
 // The provided [SessionDescription] is treated as a patch and merged server-side.
 // The [context.Context] is used for making a PUT request call.
@@ -118,13 +144,13 @@ func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescript
 	if err := json.NewEncoder(buf).Encode(changes); err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), buf)
+	req, err := internal.NewRequest(ctx, http.MethodPut, u.String(), buf, append(opts,
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.ContractVersion(contractVersion),
+	))
 	if err != nil {
 		return nil, fmt.Errorf("make request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Xbl-Contract-Version", contractVersion)
-	internal.Apply(req, opts)
 
 	resp, err := s.client.client.Do(req)
 	if err != nil {
@@ -204,13 +230,14 @@ func (s *Session) Sync(ctx context.Context) error {
 		etag := s.etag
 		s.cacheMu.RUnlock()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.ref.URL().String(), nil)
+		req, err := internal.NewRequest(ctx, http.MethodGet, s.ref.URL().String(), nil, []internal.RequestOption{
+			internal.RequestHeader("Accept", "application/json"),
+			internal.RequestHeader("If-None-Match", etag),
+			internal.ContractVersion(contractVersion),
+		})
 		if err != nil {
 			return fmt.Errorf("make request: %w", err)
 		}
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("X-Xbl-Contract-Version", contractVersion)
-		req.Header.Set("If-None-Match", etag)
 
 		resp, err := s.client.client.Do(req)
 		if err != nil {

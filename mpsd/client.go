@@ -1,17 +1,15 @@
 package mpsd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
@@ -57,9 +55,11 @@ type Client struct {
 // the multiplayer session which can be used to participate the session in the future.
 // An error is returned, if the [context.Context] exceeds a deadline, or if the API call
 // was unsuccessful.
-func (c *Client) SessionByReference(ctx context.Context, ref SessionReference) (_ *SessionDescription, err error) {
+func (c *Client) SessionByReference(ctx context.Context, ref SessionReference, opts ...internal.RequestOption) (_ *SessionDescription, err error) {
 	var d *SessionDescription
-	if err := c.do(ctx, http.MethodGet, ref.URL().String(), nil, &d); err != nil {
+	if err := internal.Do(ctx, c.client, http.MethodGet, ref.URL().String(), nil, &d, append(opts,
+		internal.ContractVersion(contractVersion),
+	)); err != nil {
 		return nil, err
 	}
 	if d == nil {
@@ -95,50 +95,6 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 		c.subscription, c.subscriptionData = nil, nil
 	})
 	return err
-}
-
-// do is a tiny wrapper around HTTP requests for API calls to the session directory.
-// If reqBody is non-nil, it will be JSON-encoded then used as the request body.
-// If respBody is non-nil, it will be JSON-decoded from the response body.
-// The [context.Context] is used for making a request call using the underlying HTTP client.
-func (c *Client) do(ctx context.Context, method, url string, reqBody, respBody any) error {
-	var r io.Reader
-	if reqBody != nil {
-		buf := &bytes.Buffer{}
-		if err := json.NewEncoder(buf).Encode(reqBody); err != nil {
-			return fmt.Errorf("encode request body: %w", err)
-		}
-		defer buf.Reset()
-		r = buf
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, r)
-	if err != nil {
-		return fmt.Errorf("make request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if respBody != nil {
-		req.Header.Set("Accept", "application/json")
-	}
-	req.Header.Set("X-Xbl-Contract-Version", contractVersion)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated:
-		if respBody != nil {
-			if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
-				return fmt.Errorf("decode response body: %w", err)
-			}
-		}
-		return nil
-	default:
-		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
-	}
 }
 
 // contractVersion is the value for the 'x-xbl-contract-version' request header.

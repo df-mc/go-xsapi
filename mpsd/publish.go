@@ -91,12 +91,13 @@ func (c *Client) createSession(ctx context.Context, knownRef *SessionReference, 
 	s := &Session{
 		client: c,
 
+		h:      NopHandler{}, // fast-path without locking
 		cache:  &d,
 		closed: make(chan struct{}),
 	}
 
 	if knownRef == nil {
-		// Join the multiplayer session by updating the member to add the caller as participant.
+		// Join the multiplayer session by updating the members field to add the caller as participant.
 		// This request call will fail if the multiplayer session does not exist.
 		resp, err := s.write(ctx, u, d, internal.RequestHeader("If-Match", "*"))
 		if err != nil {
@@ -140,6 +141,7 @@ func (c *Client) createSession(ctx context.Context, knownRef *SessionReference, 
 		return nil, fmt.Errorf("write session activity: %w", err)
 	}
 
+	// Bind the session to the client so we can receive updates from RTA subscription.
 	c.sessionsMu.Lock()
 	c.sessions[s.ref.URL().String()] = s
 	c.sessionsMu.Unlock()

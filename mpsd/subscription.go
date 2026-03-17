@@ -66,6 +66,29 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 // get updates in a WebSocket connection.
 const resourceURI = "https://sessiondirectory.xboxlive.com/connections/"
 
+// Handler receives session events delivered over an RTA (Real-Time Activity)
+// subscription. It is primarily used to react to changes made to a remote
+// session in the Multiplayer Session Directory.
+//
+// A Handler can be registered on a session via [Session.Handle].
+// NopHandler provides a no-op implementation of Handler.
+type Handler interface {
+	// HandleSessionChange is called when a change is made to a remote session
+	// in the directory. This includes events such as a member joining the
+	// session or a custom property being updated. For the full list of changes
+	// that trigger this handler, refer to the ChangeType* constants defined in
+	// this package.
+	HandleSessionChange(session *Session)
+}
+
+// NopHandler is a no-op implementation of [Handler]. It is used as the default
+// handler for a Session. A custom implementation can be registered at any time
+// via [Session.Handle].
+type NopHandler struct{}
+
+// HandleSessionChange implements [Handler.HandleSessionChange].
+func (NopHandler) HandleSessionChange(*Session) {}
+
 // subscriptionData describes a wire representation of the custom payload
 // included in the RTA subscription.
 type subscriptionData struct {
@@ -125,11 +148,12 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 							slog.Any("error", err))
 						return
 					}
-					h.log.Info("synchronized multiplayer session",
+					h.log.Debug("synchronized multiplayer session",
 						slog.Group("session",
 							slog.String("ref", s.Reference().URL().String()),
 						),
 					)
+					go s.handler().HandleSessionChange(s)
 				}()
 			}
 		}
