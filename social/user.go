@@ -471,7 +471,7 @@ type UserDetail struct {
 	CanBeFollowed bool `json:"canBeFollowed,omitempty"`
 	// Friend indicates whether the caller is already friends with this user.
 	Friend bool `json:"friend,omitempty"`
-	// FriendCount はこのユーザーのフレンド数です.
+	// FriendCount is the number of friends this user has.
 	FriendCount int `json:"friendCount,omitempty"`
 	// FriendRequestReceived reports whether this user has sent a pending friend
 	// request to the caller. When true, calling [Client.AddFriend] with this user
