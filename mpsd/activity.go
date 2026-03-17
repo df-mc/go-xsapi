@@ -8,20 +8,21 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/df-mc/go-xsapi/internal"
 	"github.com/google/uuid"
 )
 
 // Activities returns activity handles for open multiplayer sessions in the specified
 // Service Configuration ID (SCID) for all users.
-func (c *Client) Activities(ctx context.Context, scid uuid.UUID) ([]ActivityHandle, error) {
-	return c.ActivitiesForUsers(ctx, scid, nil)
+func (c *Client) Activities(ctx context.Context, scid uuid.UUID, opts ...internal.RequestOption) ([]ActivityHandle, error) {
+	return c.ActivitiesForUsers(ctx, scid, nil, opts...)
 }
 
 // ActivitiesForUsers returns activity handles for open multiplayer sessions
 // associated with the specified XUIDs.
 // The Service Configuration ID (SCID) identifies the game to query.
 // If xuids is nil, it returns all open multiplayer sessions for the SCID.
-func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids []string) ([]ActivityHandle, error) {
+func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids []string, opts ...internal.RequestOption) ([]ActivityHandle, error) {
 	// searchRequestPeople specifies whose perspective is used when searching
 	// for activity handles to multiplayer sessions.
 	type searchRequestPeople struct {
@@ -60,7 +61,7 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 		}
 	)
 	requestURL.RawQuery = "include=relatedInfo,customProperties"
-	if err := c.do(ctx, http.MethodPost, requestURL.String(), searchRequest{
+	if err := internal.Do(ctx, c.client, http.MethodPost, requestURL.String(), searchRequest{
 		Type:            "activity",
 		ServiceConfigID: scid,
 		Owners: searchRequestOwners{
@@ -70,7 +71,10 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 				SocialGroupXUID: c.userInfo.XUID,
 			},
 		},
-	}, &result); err != nil {
+	}, &result, append(opts,
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.ContractVersion(contractVersion),
+	)); err != nil {
 		return nil, err
 	}
 	return result.Activities, nil
@@ -80,9 +84,9 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 // If successful, it returns an InviteHandle describing the created invitation.
 // The invite handle includes service-defined metadata such as the expiration time.
 // The title ID is specific to the game
-func (s *Session) Invite(ctx context.Context, xuid, titleID string) (*InviteHandle, error) {
+func (s *Session) Invite(ctx context.Context, xuid, titleID string, opts ...internal.RequestOption) (*InviteHandle, error) {
 	var handle *InviteHandle
-	if err := s.client.do(ctx, http.MethodPost, endpoint.JoinPath("handles").String(), inviteHandle{
+	if err := internal.Do(ctx, s.client.client, http.MethodPost, endpoint.JoinPath("handles").String(), inviteHandle{
 		Type:             "invite",
 		SessionReference: s.ref,
 		Version:          1,
@@ -90,7 +94,10 @@ func (s *Session) Invite(ctx context.Context, xuid, titleID string) (*InviteHand
 		InviteAttributes: InviteAttributes{
 			TitleID: titleID,
 		},
-	}, &handle); err != nil {
+	}, &handle, append(opts,
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.ContractVersion(contractVersion),
+	)); err != nil {
 		return nil, err
 	}
 	if handle == nil {
@@ -186,11 +193,14 @@ type InviteAttributes struct {
 // searching for open multiplayer sessions in the session directory. The
 // provided context controls request cancellation and deadlines.
 func (s *Session) writeActivity(ctx context.Context) error {
-	return s.client.do(ctx, http.MethodPost, endpoint.JoinPath("handles").String(), activityHandle{
+	return internal.Do(ctx, s.client.client, http.MethodPost, endpoint.JoinPath("handles").String(), activityHandle{
 		Type:             "activity",
 		SessionReference: s.ref,
 		Version:          1,
-	}, nil)
+	}, nil, []internal.RequestOption{
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.ContractVersion(contractVersion),
+	})
 }
 
 // activityHandle is the wire representation used to create an activity handle
