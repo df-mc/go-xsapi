@@ -150,7 +150,7 @@ type TitleData struct {
 
 	// SignaturePolicies contains the signature policies referenced by
 	// Endpoints. Each endpoint may refer to a policy by index. If an
-	// Endpoint odes not reference a valid index, the default AuthPolicy
+	// Endpoint does not reference a valid index, the default AuthPolicy
 	// is used.
 	SignaturePolicies []SignaturePolicy
 

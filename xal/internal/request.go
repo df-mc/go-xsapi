@@ -36,7 +36,6 @@ func (r TokenRequest[P]) Do(ctx context.Context, config xal.Config, reqURL strin
 	if err := json.NewEncoder(buf).Encode(r); err != nil {
 		return fmt.Errorf("encode request body: %w", err)
 	}
-	fmt.Println(buf.String())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, buf)
 	if err != nil {
