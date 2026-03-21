@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"net/url"
 	"os"
@@ -118,21 +117,12 @@ func TestSession(t *testing.T) {
 
 	t.Logf("logged in as %s (%s)", client.UserInfo().GamerTag, client.UserInfo().XUID)
 
-	fmt.Println(title.DisplayClaims.TitleInfo.TitleID)
-
-	t.Log("RemoveFriend result:", client.Social().RemoveFriend(context.TODO(), "2535429761408877"))
-
-	if err := client.Social().Subscribe(context.TODO(), &socialSubscriptionHandler{t}); err != nil {
-		t.Fatalf("error subscribing for social: %s", err)
-	}
-	if err := client.Social().AddFriend(context.TODO(), "2535429761408877"); err != nil {
-		t.Fatalf("error adding 2535429761408877: %s", err)
-	}
+	t.Log("Title ID:", title.DisplayClaims.TitleInfo.TitleID)
 
 	time.Sleep(time.Second * 5)
 
-	// publishSession(t, client)
-	// subscribeSocial(t, client)
+	publishSession(t, client)
+	subscribeSocial(t, client)
 
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
 	if err != nil {
