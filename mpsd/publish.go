@@ -13,16 +13,46 @@ import (
 	"github.com/google/uuid"
 )
 
+// PublishConfig describes a configuration for publishing a multiplayer session
+// in the directory. It can be passed to [Client.Publish] to customize the session's
+// initial contents.
 type PublishConfig struct {
+	// CustomProperties holds mutable properties to be associated with the multiplayer session
+	// when publishing.
+	//
+	// The format and semantics of this field are defined by the title. It is
+	// commonly used to expose session metadata such as display names or
+	// server details.
 	CustomProperties json.RawMessage
-	CustomConstants  json.RawMessage
+	// CustomConstants holds immutable constants to be associated with the multiplayer session
+	// when publishing. Once published, it cannot be changed during for the lifetime of the session.
+	//
+	// The format and semantics of this field are defined by the title.
+	CustomConstants json.RawMessage
 
+	// CustomMemberProperties holds mutable properties associated with the host.
+	// Unlike [JoinConfig.CustomMemberConstants], these can be updated at any time
+	// during the session via [Session.SetMemberCustomProperties].
+	//
+	// The format and semantics of this field are defined by the title.
 	CustomMemberProperties json.RawMessage
-	CustomMemberConstants  json.RawMessage
+	// CustomMemberConstants holds immutable constants associated with the host.
+	// These are set when publishing and cannot be changed for the lifetime of the ownership.
+	//
+	// The format and semantics of this field are defined by the title.
+	CustomMemberConstants json.RawMessage
 
+	// JoinRestriction and ReadRestriction specify who may join or read an open session.
+	// If JoinRestriction or ReadRestriction are empty, it will default to [SessionRestrictionFollowed].
 	JoinRestriction, ReadRestriction string
 }
 
+// Publish publishes a new multiplayer session in the directory using the
+// provided [SessionReference]. The provided [PublishConfig] is applied to the
+// session's initial contents.
+//
+// If [SessionReference.Name] is empty, a randomly-generated GUID will be used.
+// Make sure to call [Session.Close] to close the session when it is no longer needed.
 func (c *Client) Publish(ctx context.Context, ref SessionReference, config PublishConfig) (*Session, error) {
 	if ref.Name == "" {
 		ref.Name = strings.ToUpper(uuid.NewString())

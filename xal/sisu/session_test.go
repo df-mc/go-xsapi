@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net/url"
 	"os"
@@ -117,8 +118,21 @@ func TestSession(t *testing.T) {
 
 	t.Logf("logged in as %s (%s)", client.UserInfo().GamerTag, client.UserInfo().XUID)
 
-	publishSession(t, client)
-	subscribeSocial(t, client)
+	fmt.Println(title.DisplayClaims.TitleInfo.TitleID)
+
+	t.Log("RemoveFriend result:", client.Social().RemoveFriend(context.TODO(), "2535429761408877"))
+
+	if err := client.Social().Subscribe(context.TODO(), &socialSubscriptionHandler{t}); err != nil {
+		t.Fatalf("error subscribing for social: %s", err)
+	}
+	if err := client.Social().AddFriend(context.TODO(), "2535429761408877"); err != nil {
+		t.Fatalf("error adding 2535429761408877: %s", err)
+	}
+
+	time.Sleep(time.Second * 5)
+
+	// publishSession(t, client)
+	// subscribeSocial(t, client)
 
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
 	if err != nil {
@@ -160,11 +174,11 @@ func subscribeSocial(t testing.TB, client *xsapi.Client) {
 
 type socialSubscriptionHandler struct{ testing.TB }
 
-func (h socialSubscriptionHandler) HandleRelationshipChange(changeType string, xuids []string) {
+func (h socialSubscriptionHandler) HandleSocialNotification(changeType string, xuids []string) {
 	h.Logf("HandleRelationshipChange(%q, %q)", changeType, xuids)
 }
 
-func (h socialSubscriptionHandler) HandleFriendRequestCountChange(count int) {
+func (h socialSubscriptionHandler) HandleIncomingFriendRequestCountChange(count int) {
 	h.Logf("HandleFriendRequestCountChange(%d)", count)
 }
 
@@ -221,8 +235,16 @@ func publishSession(t testing.TB, client *xsapi.Client) {
 		t.Logf("cleanup: session closed")
 	})
 
-	if _, err := session.Invite(t.Context(), "2535429761408877", "896928775"); err != nil {
+	t.Log(string(session.Properties().Custom))
+	if err := session.SetCustomProperties(context.TODO(), []byte(`{"dummy":"data"}`)); err != nil {
+		t.Fatalf("error setting custom properties: %s", err)
+	}
+	t.Log(string(session.Properties().Custom)) // Partial update.
+
+	if invite, err := session.Invite(t.Context(), "2535429761408877", "1739947436" /*"896928775"*/); err != nil {
 		t.Fatal(err)
+	} else {
+		t.Logf("%#v", invite.GameTypes)
 	}
 
 }

@@ -81,9 +81,14 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 }
 
 // Invite invites the user identified by the XUID to the multiplayer session.
-// If successful, it returns an InviteHandle describing the created invitation.
-// The invite handle includes service-defined metadata such as the expiration time.
-// The title ID is specific to the game
+//
+// If successful, it returns an InviteHandle describing the created invitation,
+// including service-defined metadata such as the expiration time.
+//
+// The title ID identifies the title associated with the invite. A title ID is seemingly
+// unique per service configuration and is shared across platforms. For example, PC and
+// Android builds of a cross-platform game use the same title ID. Note that this value is
+// not necessarily the same as the title ID of the currently-authenticated title.
 func (s *Session) Invite(ctx context.Context, xuid, titleID string, opts ...internal.RequestOption) (*InviteHandle, error) {
 	var handle *InviteHandle
 	if err := internal.Do(ctx, s.client.client, http.MethodPost, endpoint.JoinPath("handles").String(), inviteHandle{

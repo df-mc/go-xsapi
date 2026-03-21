@@ -14,6 +14,7 @@ import (
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
+// New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	return &Client{
 		client:   client,
@@ -25,6 +26,7 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	}
 }
 
+// Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
 type Client struct {
 	client   *http.Client
 	rta      *rta.Conn
@@ -70,8 +72,7 @@ func (c *Client) SessionByReference(ctx context.Context, ref SessionReference, o
 
 // Close closes the Client with a context of 15 seconds timeout.
 // It unsubscribes from the RTA service if any subscription is present on the Client.
-// Although Close can be called many times, it is recommended to use the client-set's
-// [github.com/df-mc/xsapi-go.Client.Close] method.
+// It is recommended to use the client-set's [github.com/df-mc/xsapi-go.Client.Close] method.
 func (c *Client) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
@@ -80,8 +81,7 @@ func (c *Client) Close() error {
 
 // CloseContext closes the Client with the [context.Context].
 // It unsubscribes from the RTA service if any subscription is present on the Client.
-// Although CloseContext can be called many times, it is recommended to use the client-set's
-// [github.com/df-mc/xsapi-go.Client.CloseContext] method.
+// It is recommended to use the client-set's [github.com/df-mc/xsapi-go.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) (err error) {
 	c.once.Do(func() {
 		c.subscriptionMu.Lock()

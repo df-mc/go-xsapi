@@ -162,6 +162,7 @@ func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescript
 	case http.StatusOK, http.StatusCreated:
 		s.cacheMu.Lock()
 		defer s.cacheMu.Unlock()
+
 		if err := json.NewDecoder(resp.Body).Decode(&s.cache); err != nil {
 			return nil, fmt.Errorf("decode response body: %w", err)
 		}

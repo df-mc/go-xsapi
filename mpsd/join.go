@@ -9,11 +9,36 @@ import (
 	"github.com/google/uuid"
 )
 
+// JoinConfig describes a configuration for joining a multiplayer session in the directory.
+// It can be passed to [Client.Join] to customize the join behavior.
 type JoinConfig struct {
-	CustomMemberConstants  json.RawMessage
+	// CustomMemberConstants holds immutable constants associated with the caller
+	// as a member of the session. These are set when joining and cannot be
+	// changed for the lifetime of the membership.
+	//
+	// The format and semantics of this field are defined by the title.
+	CustomMemberConstants json.RawMessage
+
+	// CustomMemberProperties holds mutable properties associated with the caller
+	// as a member of the session. Unlike [JoinConfig.CustomMemberConstants],
+	// these can be updated at any time during the session via
+	// [Session.SetMemberCustomProperties].
+	//
+	// The format and semantics of this field are defined by the title.
 	CustomMemberProperties json.RawMessage
 }
 
+// Join joins a multiplayer session in the directory using the provided handle ID.
+//
+// The handle ID is exposed on several handle types available in the directory, such as:
+//   - [ActivityHandle] queried by [Client.Activities]
+//   - [InviteHandle] sent by [Session.Invite] and received from notifications.
+//
+// The provided JoinConfig is applied to the caller's initial member contents.
+// A zero-value JoinConfig may be sufficient for most titles.
+//
+// A Session may be returned, which represents the joined multiplayer session.
+// Make sure to call [Session.Close] to leave the session when it is no longer needed.
 func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig) (*Session, error) {
 	_, payload, err := c.subscribe(ctx)
 	if err != nil {
