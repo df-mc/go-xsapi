@@ -72,7 +72,7 @@ func (c *Client) SessionByReference(ctx context.Context, ref SessionReference, o
 
 // Close closes the Client with a context of 15 seconds timeout.
 // It unsubscribes from the RTA service if any subscription is present on the Client.
-// It is recommended to use the client-set's [github.com/df-mc/xsapi-go.Client.Close] method.
+// It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.Close] method.
 func (c *Client) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
@@ -81,7 +81,7 @@ func (c *Client) Close() error {
 
 // CloseContext closes the Client with the [context.Context].
 // It unsubscribes from the RTA service if any subscription is present on the Client.
-// It is recommended to use the client-set's [github.com/df-mc/xsapi-go.Client.CloseContext] method.
+// It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) (err error) {
 	c.once.Do(func() {
 		c.subscriptionMu.Lock()
