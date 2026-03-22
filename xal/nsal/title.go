@@ -177,8 +177,8 @@ type TitleData struct {
 func (t *TitleData) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
 	for _, e := range t.Endpoints {
 		if e.Match(u) {
-			if e.SignaturePolicyIndex >= 0 && e.SignaturePolicyIndex < len(t.SignaturePolicies) {
-				policy = t.SignaturePolicies[e.SignaturePolicyIndex]
+			if e.SignaturePolicyIndex != nil && *e.SignaturePolicyIndex >= 0 && *e.SignaturePolicyIndex < len(t.SignaturePolicies) {
+				policy = t.SignaturePolicies[*e.SignaturePolicyIndex]
 			} else {
 				policy = AuthPolicy
 			}
@@ -233,8 +233,8 @@ type Endpoint struct {
 	TokenType string
 
 	// SignaturePolicyIndex refers to a signature policy in the parent TitleData
-	// by index. If zero or absent, the default AuthPolicy will be used in [TitleData.Match].
-	SignaturePolicyIndex int
+	// by index. If nil or absent, the default AuthPolicy will be used in [TitleData.Match].
+	SignaturePolicyIndex *int
 
 	// ClientCertIndex lists indices into [TitleData.Certs] identifying client
 	// certificates that should be presented when connecting to this endpoint.
