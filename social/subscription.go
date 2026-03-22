@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 )
 
 // Subscribe subscribes to RTA (Real-Time Activity) services to receive
@@ -101,7 +102,8 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 
 		h.subscriptionMu.RLock()
 		for _, handler := range h.subscriptionHandlers {
-			go handler.HandleSocialNotification(data.Type, data.XUIDs)
+			xuids := slices.Clone(data.XUIDs)
+			go handler.HandleSocialNotification(data.Type, xuids)
 		}
 		h.subscriptionMu.RUnlock()
 	default:
