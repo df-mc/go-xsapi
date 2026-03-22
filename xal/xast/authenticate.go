@@ -26,11 +26,8 @@ func Authenticate(ctx context.Context, config xal.Config, deviceToken *xasd.Toke
 			TokenType:    "JWT",
 			Properties: properties{
 				DeviceToken: deviceToken.Token,
-				ProofKey: jose.JSONWebKey{
-					Key: proofKey.Public(),
-					Use: "sig",
-				},
-				TitleID: config.TitleID,
+				ProofKey:    internal.ProofKey(proofKey),
+				TitleID:     config.TitleID,
 			},
 		}
 		t *Token
