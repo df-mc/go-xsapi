@@ -40,7 +40,7 @@ func Default(ctx context.Context) (*TitleData, error) {
 	}
 	req.Header.Set("x-xbl-contract-version", "1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := xal.ContextClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
