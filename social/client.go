@@ -36,8 +36,6 @@ type Client struct {
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
 	subscriptionHandlers []SubscriptionHandler
-
-	once sync.Once
 }
 
 // Close closes the Client with a context of 15 seconds timeout.
@@ -52,19 +50,18 @@ func (c *Client) Close() error {
 }
 
 // CloseContext closes the Client using the given context.
+// Client is still usable after calling this method as it only resets internal state.
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // In most cases, [github.com/df-mc/go-xsapi.Client.CloseContext] should be preferred
 // over calling this method directly.
 func (c *Client) CloseContext(ctx context.Context) (err error) {
-	c.once.Do(func() {
-		c.subscriptionMu.Lock()
-		defer c.subscriptionMu.Unlock()
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
 
-		if c.subscription != nil {
-			if err2 := c.rta.Unsubscribe(ctx, c.subscription); err2 != nil {
-				err = errors.Join(err, fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err2))
-			}
+	if c.subscription != nil {
+		if err2 := c.rta.Unsubscribe(ctx, c.subscription); err2 != nil {
+			err = errors.Join(err, fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err2))
 		}
-	})
+	}
 	return err
 }
