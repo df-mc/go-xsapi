@@ -23,8 +23,6 @@ func ExampleClient() {
 		panic(fmt.Sprintf("error requesting device authorization flow: %s", err))
 	}
 
-	// We print out the verification URI and the user code to [os.Stderr]
-	// so it doesn't need to be captured by Output: line in this example.
 	_, _ = fmt.Fprintf(os.Stderr,
 		"Sign in to your Microsoft Account at %s using the code %s.",
 		da.VerificationURI, da.UserCode,
@@ -70,7 +68,6 @@ func ExampleClient() {
 	// Use the first user present in the result.
 	user := users[0]
 	fmt.Println(user.GamerTag)
-	// Output: Lactyy
 }
 
 // MinecraftAndroid is the SISU configuration used in Minecraft: Bedrock Edition for Android.
