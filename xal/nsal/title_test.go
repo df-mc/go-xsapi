@@ -1,3 +1,5 @@
+//go:build network
+
 package nsal
 
 import (

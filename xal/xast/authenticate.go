@@ -1,9 +1,9 @@
-//go:build exclude
-// +build exclude
+//go:build xast_authenticate_experimental
 
 // It is unclear how we can request a title token using the device token.
 // Windows and some console devices seem to use this endpoint, but it is
-// not well-tested and should not be used at this time.
+// not well-tested and should not be used at this time. We hide this method
+// behind a build tag.
 
 package xast
 

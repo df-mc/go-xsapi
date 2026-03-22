@@ -103,5 +103,5 @@ var AuthPolicy = SignaturePolicy{
 //
 // See: https://learn.microsoft.com/en-us/windows/win32/sysinfo/file-times
 func windowsTimestamp(t time.Time) int64 {
-	return (t.Unix() + 11644473600) * 10000000
+	return t.UnixNano()/100 + 116444736000000000
 }
