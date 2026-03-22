@@ -266,15 +266,34 @@ func (e Endpoint) Match(u *url.URL) bool {
 	var matchHost bool
 	switch e.HostType {
 	case HostTypeFQDN:
-		matchHost = u.Hostname() == e.Host
+		matchHost = e.Host == u.Hostname()
 	case HostTypeWildcard:
-		matchHost = e.matchWildcard(u.Host)
+		matchHost = e.matchWildcard(u.Hostname())
 	case HostTypeCIDR:
-		matchHost = e.matchCIDR(u.Host)
+		matchHost = e.matchCIDR(u.Hostname())
 	}
 	return matchHost &&
-		(e.Port == 0 || strconv.Itoa(int(e.Port)) == u.Port()) &&
+		(e.Port == 0 || strconv.Itoa(int(e.Port)) == effectivePort(u)) &&
 		(e.Path == "" || e.Path == u.Path)
+}
+
+// effectivePort returns the port from u, falling back to the default
+// port for the scheme if u.Port() is empty.
+// TODO: It is unclear whether the NSAL endpoint port field refers to
+// the effective port (where 443 matches https://foo.xboxlive.com) or
+// the explicit port (where 443 only matches https://foo.xboxlive.com:443).
+// For now, we treat missing ports as their scheme defaults.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch u.Scheme {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // matchCIDR returns true if the given host is in the CIDR prefix.
