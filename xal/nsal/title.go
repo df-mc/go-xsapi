@@ -168,12 +168,16 @@ type TitleData struct {
 
 // Match resolves the Endpoint and SignaturePolicy that apply to the provided URL.
 //
-// It iterates through the configured Endpoints and returns the first matching Endpoint
-// together with its associated SignaturePolicy. If multiple Endpoints match, an Endpoint
-// with HostTypeFQDN is preferred over one with HostTypeWildcard. If the referenced
-// SignaturePolicyIndex is invalid, the default AuthPolicy is used.
+// It iterates through the configured Endpoints in order. If an Endpoint with
+// HostTypeFQDN matches, it is returned immediately. Otherwise, the last
+// matching Endpoint is returned. As a result, an Endpoint with HostTypeFQDN
+// effectively takes precedence over one with HostTypeWildcard only if it
+// appears after the wildcard Endpoint in the list.
 //
-// The returned bool value reports whether a matching Endpoint was found in the configuration.
+// If the referenced SignaturePolicyIndex is invalid or absent, the default
+// AuthPolicy is used.
+//
+// The returned bool value reports whether a matching Endpoint was found.
 func (t *TitleData) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
 	for _, e := range t.Endpoints {
 		if e.Match(u) {
@@ -184,9 +188,8 @@ func (t *TitleData) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy
 			}
 			endpoint, ok = e, true
 
-			// Endpoint with HostTypeFQDN should be preferred over
-			// HostTypeWildcard. If we match an endpoint for this,
-			// we immediately break and return the matching endpoint.
+			// An Endpoint with HostTypeFQDN is an exact match, so stop
+			// searching and return it immediately.
 			if e.HostType == HostTypeFQDN {
 				break
 			}
