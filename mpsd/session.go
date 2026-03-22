@@ -140,6 +140,12 @@ func (s *Session) handler() Handler {
 //
 // On success, both the local cache and stored ETag are updated to reflect the server response.
 func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescription, opts ...internal.RequestOption) (*http.Response, error) {
+	select {
+	case <-s.closed:
+		return nil, net.ErrClosed
+	default:
+	}
+
 	buf := &bytes.Buffer{}
 	if err := json.NewEncoder(buf).Encode(changes); err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)
