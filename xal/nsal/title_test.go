@@ -16,7 +16,7 @@ func TestDefault(t *testing.T) {
 	}
 	for _, endpoint := range title.Endpoints {
 		t.Logf("%#v", endpoint)
-		t.Log(title.SignaturePolicies[endpoint.SignaturePolicyIndex])
+		t.Log(title.SignaturePolicies[*endpoint.SignaturePolicyIndex])
 	}
 }
 
