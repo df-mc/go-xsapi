@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -105,8 +104,8 @@ func (s *Session) CloseContext(ctx context.Context) (err error) {
 				"me": nil,
 			},
 		}
-		if _, err2 := s.write(ctx, s.ref.URL(), d); err2 != nil {
-			err = errors.Join(err, err2)
+		if _, err2 := s.write(ctx, s.ref.URL(), d, internal.RequestHeader("If-Match", "*")); err2 != nil {
+			err = err2
 		}
 		s.client.handleSessionClose(s)
 		close(s.closed)
