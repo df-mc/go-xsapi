@@ -244,6 +244,8 @@ func publishSession(t testing.TB, client *xsapi.Client) {
 func readSnapshot(t testing.TB, path string) *Snapshot {
 	if stat, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
+	} else if err != nil {
+		t.Fatalf("stat %q: %s", path, err)
 	} else if stat.IsDir() {
 		t.Fatalf("%q is a directory", path)
 	}
