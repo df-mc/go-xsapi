@@ -279,7 +279,7 @@ func (e Endpoint) Match(u *url.URL) bool {
 
 // effectivePort returns the port from u, falling back to the default
 // port for the scheme if u.Port() is empty.
-// TODO: It is unclear whether the NSAL endpoint port field refers to
+// TODO: It is unclear whether the [Endpoint.Port] field refers to
 // the effective port (where 443 matches https://foo.xboxlive.com) or
 // the explicit port (where 443 only matches https://foo.xboxlive.com:443).
 // For now, we treat missing ports as their scheme defaults.
@@ -297,17 +297,18 @@ func effectivePort(u *url.URL) string {
 }
 
 // matchCIDR returns true if the given host is in the CIDR prefix.
-// Returns false otherwise.
+// Returns false otherwise. Currently, matching a CIDR host pattern
+// requires the hostname of the URL to be an IP address.
 func (e Endpoint) matchCIDR(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
 	_, ipnet, err := net.ParseCIDR(e.Host)
 	if err != nil {
 		return false
 	}
-	addr, err := net.ResolveIPAddr("ip", host)
-	if err != nil {
-		return false
-	}
-	return ipnet.Contains(addr.IP)
+	return ipnet.Contains(ip)
 }
 
 // matchWildcard matches a wildcard host which are prefixed by '*'.
