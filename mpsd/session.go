@@ -1,7 +1,6 @@
 package mpsd
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -145,11 +144,7 @@ func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescript
 	default:
 	}
 
-	buf := &bytes.Buffer{}
-	if err := json.NewEncoder(buf).Encode(changes); err != nil {
-		return nil, fmt.Errorf("encode request body: %w", err)
-	}
-	req, err := internal.NewRequest(ctx, http.MethodPut, u.String(), buf, append(opts,
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, u.String(), changes, append(opts,
 		internal.RequestHeader("Content-Type", "application/json"),
 		internal.ContractVersion(contractVersion),
 	))
@@ -178,7 +173,7 @@ func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescript
 	case http.StatusNotModified, http.StatusNoContent:
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return nil, internal.UnexpectedStatusCode(resp)
 	}
 }
 
@@ -267,7 +262,7 @@ func (s *Session) Sync(ctx context.Context) error {
 		case http.StatusNotModified:
 			return nil
 		default:
-			return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+			return internal.UnexpectedStatusCode(resp)
 		}
 	}
 }

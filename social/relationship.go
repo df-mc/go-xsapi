@@ -43,7 +43,7 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 	case http.StatusOK, http.StatusNoContent:
 		return nil
 	default:
-		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return internal.UnexpectedStatusCode(resp)
 	}
 }
 

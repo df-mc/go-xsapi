@@ -3,10 +3,13 @@
 package sisu
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -121,10 +124,38 @@ func TestSession(t *testing.T) {
 
 	t.Log("Title ID:", title.DisplayClaims.TitleInfo.TitleID)
 
-	time.Sleep(time.Second * 5)
-
 	publishSession(t, client)
-	subscribeSocial(t, client)
+	// subscribeSocial(t, client)
+
+	buf := &bytes.Buffer{}
+	defer buf.Reset()
+	if err := json.NewEncoder(buf).Encode(map[string]any{
+		"state": "active",
+		/*"activity": map[string]any{
+			"richPresence": map[string]any{
+				"id":   "Creative",
+				"scid": "4fc10100-5f7a-4470-899b-280835760c07",
+			},
+		},*/
+	}); err != nil {
+		t.Fatalf("error encoding request body: %s", err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://userpresence.xboxlive.com/users/xuid("+client.UserInfo().XUID+")/devices/current/titles/current", buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("x-xbl-contract-version", "3")
+	req.Header.Set("Accept-Language", "en-US,en,ja-JP,ja")
+	req.Header.Set("User-Agent", "XboxServicesAPI/2024.10.20250509.0 c")
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+
+	resp, err := client.HTTPClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	fmt.Println(resp.Status)
 
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
 	if err != nil {
@@ -162,6 +193,12 @@ func subscribeSocial(t testing.TB, client *xsapi.Client) {
 	if err := client.Social().AddFriend(ctx, "2535453875771523"); err != nil {
 		t.Fatalf("error adding friend: %s", err)
 	}
+
+	if err := client.Social().AddFriend(t.Context(), "2535429761408877"); err != nil {
+		t.Fatalf("error adding 2535429761408877: %s", err)
+	}
+
+	time.Sleep(time.Second * 15)
 }
 
 type socialSubscriptionHandler struct{ testing.TB }
@@ -239,6 +276,7 @@ func publishSession(t testing.TB, client *xsapi.Client) {
 		t.Logf("%#v", invite.GameTypes)
 	}
 
+	time.Sleep(time.Second * 15)
 }
 
 func readSnapshot(t testing.TB, path string) *Snapshot {

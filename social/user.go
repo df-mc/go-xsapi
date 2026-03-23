@@ -46,13 +46,13 @@ func (c *Client) Search(ctx context.Context, query string, opts ...internal.Requ
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var respBody batchResponse
-		if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		var result batchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return nil, fmt.Errorf("decode response body: %w", err)
 		}
-		return respBody.Users, nil
+		return result.Users, nil
 	default:
-		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return nil, internal.UnexpectedStatusCode(resp)
 	}
 }
 
@@ -160,13 +160,13 @@ func (c *Client) users(ctx context.Context, perspective, selector string, postBo
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var respBody batchResponse
-		if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		var result batchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return nil, fmt.Errorf("decode response body: %w", err)
 		}
-		return respBody.Users, nil
+		return result.Users, nil
 	default:
-		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return nil, internal.UnexpectedStatusCode(resp)
 	}
 }
 
