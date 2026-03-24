@@ -14,6 +14,7 @@ import (
 
 	"github.com/df-mc/go-xsapi/internal"
 	"github.com/df-mc/go-xsapi/mpsd"
+	"github.com/df-mc/go-xsapi/presence"
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/social"
 	"github.com/df-mc/go-xsapi/xal/nsal"
@@ -98,6 +99,7 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	// Initialise API clients, each scoped to their respective endpoint.
 	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log().With("src", "mpsd"))
 	c.social = social.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log().With("src", "social"))
+	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	return c, nil
 }
 
@@ -138,9 +140,10 @@ type Client struct {
 	defaultTitle, currentTitle *nsal.TitleData
 	userInfo                   xsts.UserInfo
 
-	rta    *rta.Conn
-	mpsd   *mpsd.Client
-	social *social.Client
+	rta      *rta.Conn
+	mpsd     *mpsd.Client
+	social   *social.Client
+	presence *presence.Client
 
 	once sync.Once
 }
@@ -258,7 +261,13 @@ func (c *Client) MPSD() *mpsd.Client {
 }
 
 // Social returns the API client for the Xbox Live Social APIs.
-func (c *Client) Social() *social.Client { return c.social }
+func (c *Client) Social() *social.Client {
+	return c.social
+}
+
+func (c *Client) Presence() *presence.Client {
+	return c.presence
+}
 
 // RTA returns the connection to Xbox Live RTA (Real-Time Activity) services.
 func (c *Client) RTA() *rta.Conn {
@@ -289,6 +298,7 @@ func (c *Client) CloseContext(ctx context.Context) (err error) {
 		err = errors.Join(
 			c.mpsd.CloseContext(ctx),
 			c.social.CloseContext(ctx),
+			c.presence.CloseContext(ctx),
 
 			c.rta.Close(),
 		)

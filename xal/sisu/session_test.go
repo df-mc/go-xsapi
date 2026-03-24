@@ -3,13 +3,10 @@
 package sisu
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"fmt"
 	"math/rand"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +15,7 @@ import (
 
 	"github.com/df-mc/go-xsapi"
 	"github.com/df-mc/go-xsapi/mpsd"
+	"github.com/df-mc/go-xsapi/presence"
 	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
@@ -124,38 +122,20 @@ func TestSession(t *testing.T) {
 
 	t.Log("Title ID:", title.DisplayClaims.TitleInfo.TitleID)
 
-	publishSession(t, client)
-	// subscribeSocial(t, client)
-
-	buf := &bytes.Buffer{}
-	defer buf.Reset()
-	if err := json.NewEncoder(buf).Encode(map[string]any{
-		"state": "active",
-		/*"activity": map[string]any{
-			"richPresence": map[string]any{
-				"id":   "Creative",
-				"scid": "4fc10100-5f7a-4470-899b-280835760c07",
-			},
-		},*/
+	if err := client.Presence().Remove(ctx); err != nil {
+		t.Fatalf("error removing presence: %s", err)
+	}
+	if err := client.Presence().Update(t.Context(), presence.TitleRequest{
+		// ID:    uint32(titleID),
+		State: presence.StateActive,
 	}); err != nil {
-		t.Fatalf("error encoding request body: %s", err)
+		t.Fatalf("error updating presence: %s", err)
 	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://userpresence.xboxlive.com/users/xuid("+client.UserInfo().XUID+")/devices/current/titles/current", buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("x-xbl-contract-version", "3")
-	req.Header.Set("Accept-Language", "en-US,en,ja-JP,ja")
-	req.Header.Set("User-Agent", "XboxServicesAPI/2024.10.20250509.0 c")
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 
-	resp, err := client.HTTPClient().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	// cleanup is automatically done on [Client.Close].
 
-	fmt.Println(resp.Status)
+	subscribeSocial(t, client)
+	publishSession(t, client)
 
 	activities, err := client.MPSD().Activities(t.Context(), serviceConfigID)
 	if err != nil {
@@ -197,8 +177,6 @@ func subscribeSocial(t testing.TB, client *xsapi.Client) {
 	if err := client.Social().AddFriend(t.Context(), "2535429761408877"); err != nil {
 		t.Fatalf("error adding 2535429761408877: %s", err)
 	}
-
-	time.Sleep(time.Second * 15)
 }
 
 type socialSubscriptionHandler struct{ testing.TB }
@@ -270,11 +248,58 @@ func publishSession(t testing.TB, client *xsapi.Client) {
 	}
 	t.Log(string(session.Properties().Custom)) // Partial update.
 
-	if invite, err := session.Invite(t.Context(), "2535429761408877", "1739947436" /*"896928775"*/); err != nil {
-		t.Fatal(err)
-	} else {
-		t.Logf("%#v", invite.GameTypes)
+	for range 5 {
+		if invite, err := session.Invite(t.Context(), "2535429761408877", "896928775" /*"896928775"*/); err != nil {
+			t.Fatal(err)
+		} else {
+			t.Logf("%#v", invite.GameTypes)
+		}
 	}
+
+	// *notification.GameInvite
+	// *notification.AcceptedFriendRequests
+	// *notification.IncomingFriendRequests
+
+	// notification/accepted_friend_requests.go
+	// notification/incoming_friend_requests.go
+	// notification/game_invite.go
+
+	// client.Presence().Current()
+	// client.Presence().Update(context.TODO(), presence.UpdateRequest{})
+	// client.Presence().ByXUID()
+
+	// client.Presence().Current() (*presence.Record, error)
+	// client.Presence().Write(context.TODO(), presence.UpdateRequest{})
+	// client.Presence().RecordByXUID()
+
+	// record, err := client.Presence().Current(context.TODO())
+	// if err != nil {}
+
+	// social/presence
+
+	// client.Presence()
+	// inbox, err := client.Notification().Inbox(context.TODO(), notification.InboxFilter{})
+
+	// client.Chat()
+	// client.Messaging().ConversationByXUID(
+
+	// client.Notification().NotificationByID()
+
+	// client.Notification().NotificationByID(context.TODO(), id)
+
+	// if err := client.Notification().Subscribe(context.Background(), notification.SubscriptionHandler{})
+
+	// client.Presence().RecordByXUID(context.TODO(), xuid)
+
+	// if err := client.Presence().Update(context.Background(), presence.UpdateRequest{
+	//		State: presence.StateOnline,
+	// }); err != nil {
+	// }
+	// defer client.Presence().Update(context.Background(), presence.UpdateRequest{
+	//		State: presence.StateOffline,
+	// })
+
+	// client.Presence().Update(ctx, presence.TitleRequest{})
 
 	time.Sleep(time.Second * 15)
 }
