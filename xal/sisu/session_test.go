@@ -256,51 +256,6 @@ func publishSession(t testing.TB, client *xsapi.Client) {
 		}
 	}
 
-	// *notification.GameInvite
-	// *notification.AcceptedFriendRequests
-	// *notification.IncomingFriendRequests
-
-	// notification/accepted_friend_requests.go
-	// notification/incoming_friend_requests.go
-	// notification/game_invite.go
-
-	// client.Presence().Current()
-	// client.Presence().Update(context.TODO(), presence.UpdateRequest{})
-	// client.Presence().ByXUID()
-
-	// client.Presence().Current() (*presence.Record, error)
-	// client.Presence().Write(context.TODO(), presence.UpdateRequest{})
-	// client.Presence().RecordByXUID()
-
-	// record, err := client.Presence().Current(context.TODO())
-	// if err != nil {}
-
-	// social/presence
-
-	// client.Presence()
-	// inbox, err := client.Notification().Inbox(context.TODO(), notification.InboxFilter{})
-
-	// client.Chat()
-	// client.Messaging().ConversationByXUID(
-
-	// client.Notification().NotificationByID()
-
-	// client.Notification().NotificationByID(context.TODO(), id)
-
-	// if err := client.Notification().Subscribe(context.Background(), notification.SubscriptionHandler{})
-
-	// client.Presence().RecordByXUID(context.TODO(), xuid)
-
-	// if err := client.Presence().Update(context.Background(), presence.UpdateRequest{
-	//		State: presence.StateOnline,
-	// }); err != nil {
-	// }
-	// defer client.Presence().Update(context.Background(), presence.UpdateRequest{
-	//		State: presence.StateOffline,
-	// })
-
-	// client.Presence().Update(ctx, presence.TitleRequest{})
-
 	time.Sleep(time.Second * 15)
 }
 
