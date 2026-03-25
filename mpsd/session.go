@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -295,7 +296,9 @@ func (s *Session) Constants() SessionConstants {
 	if constants == nil {
 		return SessionConstants{}
 	}
-	return *constants
+	c := *constants
+	c.Custom = slices.Clone(constants.Custom)
+	return c
 }
 
 // Properties returns the mutable session properties.
@@ -309,7 +312,9 @@ func (s *Session) Properties() SessionProperties {
 	if properties == nil {
 		return SessionProperties{}
 	}
-	return *properties
+	p := *properties
+	p.Custom = slices.Clone(properties.Custom)
+	return p
 }
 
 // Reference returns a reference to the multiplayer session.
