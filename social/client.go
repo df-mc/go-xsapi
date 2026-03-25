@@ -50,7 +50,8 @@ func (c *Client) Close() error {
 }
 
 // CloseContext closes the Client using the given context.
-// Client is still usable after calling this method as it only resets internal state.
+// Client is still usable after calling this method as it only resets the internal state.
+//
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // In most cases, [github.com/df-mc/go-xsapi.Client.CloseContext] should be preferred
 // over calling this method directly.
