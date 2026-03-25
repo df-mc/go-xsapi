@@ -18,6 +18,9 @@ type TokenSource interface {
 
 func ReuseTokenSource(config xal.Config, t *Token, proofKey *ecdsa.PrivateKey) TokenSource {
 	if proofKey == nil {
+		if t == nil {
+			panic("xal/xasd: reusing a device token requires proof key")
+		}
 		var err error
 		proofKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
