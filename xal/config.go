@@ -5,12 +5,26 @@ import (
 	"net/http"
 )
 
+// Config represents the basic configuration used to authenticate with Xbox Live
+// services. All fields are specific or bound to the title and cannot be easily changed.
 type Config struct {
-	Device    Device
+	// Device identifies the device type used during authentication.
+	// It is included in device token requests and determines how Xbox
+	// Live services identify the platform.
+	Device Device
+
+	// UserAgent is the value sent as the "User-Agent" header on requests
+	// to Xbox Live authentication services. It should be identically the
+	// same as the one observed in the real application.
 	UserAgent string
-	TitleID   int64
-	// Sandbox is the sandbox used to authenticate or authorize a session in Xbox Live.
-	// It is "RETAIL" for most retail games available in Xbox Live.
+
+	// TitleID is the ID of the title to authenticate as. It is required
+	// when requesting title tokens or initiating the Auth Code Flow via
+	// SISU. The title ID may be different per platform in the same game.
+	TitleID int64
+
+	// Sandbox is the sandbox ID used to isolate test data from production.
+	// It is usually "RETAIL" for most retail games available in Xbox Live.
 	Sandbox string
 }
 
