@@ -11,11 +11,25 @@ import (
 	"github.com/df-mc/go-xsapi/xal"
 )
 
+// TokenSource is the interface that supplies device tokens and the proof key
+// used to sign requests.
 type TokenSource interface {
+	// DeviceToken returns a device token, requesting a new one if necessary.
 	DeviceToken(ctx context.Context) (*Token, error)
+	// ProofKey returns the [ecdsa.PrivateKey] used to sign requests.
 	ProofKey() *ecdsa.PrivateKey
 }
 
+// ReuseTokenSource returns a [TokenSource] that caches and automatically
+// refreshes device tokens as they expire.
+//
+// t and proofKey may be restored from a previous session to avoid
+// re-authenticating. They must always be stored and restored together,
+// as the proof key is bound to the device token and is required to sign
+// requests on its behalf.
+//
+// If proofKey is nil, a new one is generated. In that case, t must also
+// be nil, as an existing device token cannot be used with a different proof key.
 func ReuseTokenSource(config xal.Config, t *Token, proofKey *ecdsa.PrivateKey) TokenSource {
 	if proofKey == nil {
 		if t == nil {
@@ -34,6 +48,8 @@ func ReuseTokenSource(config xal.Config, t *Token, proofKey *ecdsa.PrivateKey) T
 	}
 }
 
+// refreshTokenSource is a [TokenSource] that caches a device token and
+// refreshes it automatically when it expires.
 type refreshTokenSource struct {
 	config xal.Config
 
@@ -42,6 +58,8 @@ type refreshTokenSource struct {
 	proofKey *ecdsa.PrivateKey
 }
 
+// DeviceToken returns the cached device token if still valid, or requests
+// a new one via [Authenticate].
 func (r *refreshTokenSource) DeviceToken(ctx context.Context) (*Token, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -57,12 +75,7 @@ func (r *refreshTokenSource) DeviceToken(ctx context.Context) (*Token, error) {
 	return r.t, nil
 }
 
-func (r *refreshTokenSource) Snapshot() *Token {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.t
-}
-
+// ProofKey returns the proof key associated with this token source.
 func (r *refreshTokenSource) ProofKey() *ecdsa.PrivateKey {
 	return r.proofKey
 }

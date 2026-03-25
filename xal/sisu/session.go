@@ -396,7 +396,7 @@ type authorizationRequest struct {
 	// services and is exchanged for an XASU token.
 	AccessToken string
 
-	// ClientIS is the OAuth2 Client ID associated with the title.
+	// ClientID is the OAuth2 Client ID associated with the title.
 	// It must match the client ID used to obtain the Microsoft Account
 	// access token.
 	ClientID string `json:"AppId"`
@@ -452,9 +452,6 @@ type authorizationResponse struct {
 	// Microsoft Account (MSA) as an Xbox user identity. This token is
 	// required when requesting XSTS tokens for Xbox Live services.
 	UserToken *xasu.Token
-
-	// AuthorizationToken is the XSTS token that relies on the party specified in the
-	// RelyingParty field of an authorizationRequest.
 
 	// AuthorizationToken is the XSTS token issued for the relying party
 	// specified in the corresponding authorizationRequest.
