@@ -39,6 +39,9 @@ func Authorize(ctx context.Context, config xal.Config, proofKey *ecdsa.PrivateKe
 		RelyingParty: relyingParty,
 	}
 	for _, token := range tokens {
+		if token == nil {
+			return nil, errors.New("xal/xsts: nil underlying token")
+		}
 		if !token.Valid() {
 			return nil, fmt.Errorf("xal/xsts: invalid underlying %T", token)
 		}
