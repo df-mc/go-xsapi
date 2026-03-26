@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -128,6 +129,8 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			slog.String("data", string(custom)))
 		return
 	}
+
+	refs := make([]SessionReference, 0, len(event.ShoulderTaps))
 	for _, tap := range event.ShoulderTaps {
 		ref, err := h.parseReference(tap.Resource)
 		if err != nil {
@@ -135,30 +138,31 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 				slog.Any("error", err), slog.String("resource", tap.Resource))
 			continue
 		}
-
-		h.sessionsMu.RLock()
-		for _, s := range h.sessions {
-			if s.ref == ref {
-				go func() {
-					ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
-					defer cancel()
-
-					if err := s.Sync(ctx); err != nil {
-						h.log.Error("error synchronizing multiplayer session",
-							slog.Any("error", err))
-						return
-					}
-					h.log.Debug("synchronized multiplayer session",
-						slog.Group("session",
-							slog.String("ref", s.Reference().URL().String()),
-						),
-					)
-					go s.handler().HandleSessionChange(s)
-				}()
-			}
-		}
-		h.sessionsMu.RUnlock()
+		refs = append(refs, ref)
 	}
+
+	h.sessionsMu.RLock()
+	for _, session := range h.sessions {
+		if slices.Contains(refs, session.ref) {
+			go func(s *Session) {
+				ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
+				defer cancel()
+
+				if err := s.Sync(ctx); err != nil {
+					h.log.Error("error synchronizing multiplayer session",
+						slog.Any("error", err))
+					return
+				}
+				h.log.Debug("synchronized multiplayer session",
+					slog.Group("session",
+						slog.String("ref", s.Reference().URL().String()),
+					),
+				)
+				go s.handler().HandleSessionChange(s)
+			}(session)
+		}
+	}
+	h.sessionsMu.RUnlock()
 }
 
 // parseReference parses a SessionReference from a resource identifier included
