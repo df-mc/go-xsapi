@@ -430,22 +430,31 @@ func (ref SessionReference) URL() *url.URL {
 	)
 }
 
-// parseSessionReference parses a SessionReference from the path contained in the
+// parseSessionReference parses a [SessionReference] from the value of the
 // 'Content-Location' header.
 //
-// The path must refer to a session reference in the form
+// The value may be either a relative path or an absolute URL, as both are
+// permitted by the HTTP specification. In either case, the path component
+// must follow this structure:
 //
 //	"/serviceconfigs/<scid>/sessionTemplates/<templateName>/sessions/<name>"
 //
 // If the path does not match this pattern or does not refer to the
 // multiplayer session, an error will be returned.
-func parseSessionReference(path string) (ref SessionReference, err error) {
-	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+func parseSessionReference(loc string) (ref SessionReference, err error) {
+	// [url.Parse] accepts both relative and absolute URLs, making it suitable
+	// for parsing 'Content-Location' values regardless of form.
+	u, err := url.Parse(loc)
+	if err != nil {
+		return SessionReference{}, fmt.Errorf("parse as URL: %w", err)
+	}
+
+	segments := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
 	if len(segments) != 6 {
-		return ref, fmt.Errorf("malformed path: %q", path)
+		return ref, fmt.Errorf("malformed path: %q", u.Path)
 	}
 	if !strings.EqualFold(segments[0], "serviceconfigs") || !strings.EqualFold(segments[2], "sessionTemplates") || segments[4] != "sessions" {
-		return ref, fmt.Errorf("invalid path to session: %q", path)
+		return ref, fmt.Errorf("invalid path to session: %q", u.Path)
 	}
 
 	ref.ServiceConfigID, err = uuid.Parse(segments[1])
