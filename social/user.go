@@ -151,6 +151,9 @@ func (c *Client) users(ctx context.Context, perspective, selector string, postBo
 	if err != nil {
 		return nil, fmt.Errorf("make request: %w", err)
 	}
+	if reqBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
