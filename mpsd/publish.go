@@ -3,6 +3,7 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -154,8 +155,14 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, d Sess
 	)
 
 	if err := s.writeActivity(ctx); err != nil {
-		_ = s.Close()
-		return nil, fmt.Errorf("write session activity: %w", err)
+		err = fmt.Errorf("write activity handle: %w", err)
+		if err2 := s.Close(); err2 != nil {
+			err = errors.Join(
+				err,
+				fmt.Errorf("close session: %w", err2),
+			)
+		}
+		return nil, err
 	}
 
 	// Bind the session to the client so we can receive updates from RTA subscription.
