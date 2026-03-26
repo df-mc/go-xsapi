@@ -55,7 +55,7 @@ type Session struct {
 	etag string
 	// cache holds the SessionDescription for the multiplayer session in the last known state.
 	// Callers can always refresh this cache to the remote state using [Session.Sync] method.
-	cache *SessionDescription
+	cache SessionDescription
 	// cacheMu guards the cache from concurrent read-write access.
 	cacheMu sync.RWMutex
 
@@ -165,11 +165,15 @@ func (s *Session) update(ctx context.Context, changes SessionDescription, opts [
 		s.cacheMu.Lock()
 		defer s.cacheMu.Unlock()
 
-		if err := json.NewDecoder(resp.Body).Decode(&s.cache); err != nil {
+		// A fresh SessionDescription is allocated so that members absent from
+		// the response are not retained from the previous cache.
+		var d SessionDescription
+		if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
 			return fmt.Errorf("decode response body: %w", err)
 		}
+		s.cache = d
 		if e := resp.Header.Get("ETag"); e != "" {
-			s.etag = e
+			s.etag = e // Update the last observed ETag.
 		}
 		return nil
 	default:
@@ -251,10 +255,13 @@ func (s *Session) Sync(ctx context.Context) error {
 			s.cacheMu.Lock()
 			defer s.cacheMu.Unlock()
 
-			// I think re-using s.cache may reduce allocations?
-			if err := json.NewDecoder(resp.Body).Decode(&s.cache); err != nil {
+			// A fresh SessionDescription is allocated so that members absent from
+			// the response are not retained from the previous cache.
+			var d SessionDescription
+			if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
 				return fmt.Errorf("decode response body: %w", err)
 			}
+			s.cache = d
 			if e := resp.Header.Get("ETag"); e != "" {
 				s.etag = e // Update the last observed ETag.
 			}
