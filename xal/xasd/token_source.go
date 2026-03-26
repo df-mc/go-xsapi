@@ -32,7 +32,7 @@ type TokenSource interface {
 // be nil, as an existing device token cannot be used with a different proof key.
 func ReuseTokenSource(config xal.Config, t *Token, proofKey *ecdsa.PrivateKey) TokenSource {
 	if proofKey == nil {
-		if t == nil {
+		if t != nil {
 			panic("xal/xasd: reusing a device token requires proof key")
 		}
 		var err error
