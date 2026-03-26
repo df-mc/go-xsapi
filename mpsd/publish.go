@@ -123,7 +123,7 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 
 	switch resp.StatusCode {
 	case http.StatusCreated:
-		return c.createSession(ctx, ref, d)
+		return c.createSession(ctx, ref, d, resp.Header.Get("ETag"))
 	default:
 		return nil, internal.UnexpectedStatusCode(resp)
 	}
@@ -134,12 +134,13 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 // When joining an existing multiplayer session, the session reference may be
 // nil or unavailable in the context. In that case, the session reference will
 // be automatically derived from the Content-Location header in the first request call.
-func (c *Client) createSession(ctx context.Context, ref SessionReference, d SessionDescription) (*Session, error) {
+func (c *Client) createSession(ctx context.Context, ref SessionReference, d SessionDescription, etag string) (*Session, error) {
 	s := &Session{
 		client: c,
 
 		h:      NopHandler{}, // fast-path without locking
 		cache:  d,
+		etag:   etag,
 		closed: make(chan struct{}),
 		ref:    ref,
 	}
