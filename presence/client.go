@@ -73,6 +73,7 @@ func (c *Client) Batch(ctx context.Context, request BatchRequest, opts ...intern
 	if err = internal.Do(ctx, c.client, http.MethodPost, requestURL, request, &presences, append(opts,
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.RequestHeader("Content-Type", "application/json"),
+		contractVersion,
 		internal.DefaultLanguage,
 	)); err != nil {
 		return nil, err
