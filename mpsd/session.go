@@ -162,20 +162,7 @@ func (s *Session) update(ctx context.Context, changes SessionDescription, opts [
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		s.cacheMu.Lock()
-		defer s.cacheMu.Unlock()
-
-		// A fresh SessionDescription is allocated so that members absent from
-		// the response are not retained from the previous cache.
-		var d SessionDescription
-		if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-			return fmt.Errorf("decode response body: %w", err)
-		}
-		s.cache = d
-		if e := resp.Header.Get("ETag"); e != "" {
-			s.etag = e // Update the last observed ETag.
-		}
-		return nil
+		return s.sync(resp)
 	case http.StatusNoContent, http.StatusNotModified:
 		return nil
 	default:
@@ -254,26 +241,39 @@ func (s *Session) Sync(ctx context.Context) error {
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			s.cacheMu.Lock()
-			defer s.cacheMu.Unlock()
-
-			// A fresh SessionDescription is allocated so that members absent from
-			// the response are not retained from the previous cache.
-			var d SessionDescription
-			if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
-				return fmt.Errorf("decode response body: %w", err)
-			}
-			s.cache = d
-			if e := resp.Header.Get("ETag"); e != "" {
-				s.etag = e // Update the last observed ETag.
-			}
-			return nil
+			return s.sync(resp)
 		case http.StatusNotModified:
 			return nil
 		default:
 			return internal.UnexpectedStatusCode(resp)
 		}
 	}
+}
+
+// sync decodes the response body into a fresh [SessionDescription] and
+// updates the internal cache and last observed ETag.
+//
+// A fresh [SessionDescription] is always allocated before decoding so that
+// members absent from the response are not retained from the previous cache.
+// If the response does not include an ETag header, the existing ETag is preserved.
+//
+// The caller is responsible for closing the response body.
+// An error is returned if the response body cannot be decoded.
+func (s *Session) sync(resp *http.Response) error {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	// A fresh SessionDescription is allocated so that members absent from
+	// the response are not retained from the previous cache.
+	var d SessionDescription
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return fmt.Errorf("decode response body: %w", err)
+	}
+	s.cache = d
+	if e := resp.Header.Get("ETag"); e != "" {
+		s.etag = e // Update the last observed ETag.
+	}
+	return nil
 }
 
 // SetCustomProperties commits the custom properties to the multiplayer session.
