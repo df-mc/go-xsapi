@@ -161,7 +161,7 @@ func (s *Session) update(ctx context.Context, changes SessionDescription, opts [
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusNotModified, http.StatusNoContent:
+	case http.StatusOK:
 		s.cacheMu.Lock()
 		defer s.cacheMu.Unlock()
 
@@ -175,6 +175,8 @@ func (s *Session) update(ctx context.Context, changes SessionDescription, opts [
 		if e := resp.Header.Get("ETag"); e != "" {
 			s.etag = e // Update the last observed ETag.
 		}
+		return nil
+	case http.StatusNoContent, http.StatusNotModified:
 		return nil
 	default:
 		return internal.UnexpectedStatusCode(resp)
