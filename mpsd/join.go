@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/df-mc/go-xsapi/internal"
 	"github.com/google/uuid"
 )
 
@@ -39,7 +41,7 @@ type JoinConfig struct {
 //
 // A Session may be returned, which represents the joined multiplayer session.
 // Make sure to call [Session.Close] to leave the session when it is no longer needed.
-func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig) (*Session, error) {
+func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig, opts ...internal.RequestOption) (*Session, error) {
 	_, payload, err := c.subscribe(ctx)
 	if err != nil {
 		return nil, err
@@ -70,9 +72,36 @@ func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig
 		},
 	}
 
-	s, err := c.createSession(ctx, nil, endpoint.JoinPath("handles", handleID.String(), "session"), d)
+	// Join the multiplayer session by updating the members field to add the caller as participant.
+	// This request call will fail if the multiplayer session does not exist.
+	requestURL := endpoint.JoinPath("handles", handleID.String(), "session").String()
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, requestURL, d, append(opts,
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.RequestHeader("If-Match", "*"),
+		internal.ContractVersion(contractVersion),
+	))
 	if err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
+		return nil, fmt.Errorf("make request: %w", err)
 	}
-	return s, nil
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		loc := resp.Header.Get("Content-Location")
+		if loc == "" {
+			return nil, fmt.Errorf("Content-Location header is absent from response")
+		}
+		ref, err := parseSessionReference(loc)
+		if err != nil {
+			return nil, fmt.Errorf("parse session reference from Content-Location header: %w", err)
+		}
+		return c.createSession(ctx, ref, d)
+	default:
+		return nil, internal.UnexpectedStatusCode(resp)
+	}
 }

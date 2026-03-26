@@ -3,10 +3,9 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
+	"net/http"
 	"strings"
 
 	"github.com/df-mc/go-xsapi/internal"
@@ -53,7 +52,7 @@ type PublishConfig struct {
 //
 // If [SessionReference.Name] is empty, a randomly-generated GUID will be used.
 // Make sure to call [Session.Close] to close the session when it is no longer needed.
-func (c *Client) Publish(ctx context.Context, ref SessionReference, config PublishConfig) (*Session, error) {
+func (c *Client) Publish(ctx context.Context, ref SessionReference, config PublishConfig, opts ...internal.RequestOption) (*Session, error) {
 	if ref.Name == "" {
 		ref.Name = strings.ToUpper(uuid.NewString())
 	}
@@ -105,11 +104,29 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 		}
 	}
 
-	s, err := c.createSession(ctx, &ref, ref.URL(), d)
+	// Newly create a multiplayer session.
+	// This request call will fail if the session already exists.
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, ref.URL().String(), d, append(opts,
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.RequestHeader("If-None-Match", "*"),
+		internal.ContractVersion(contractVersion),
+	))
 	if err != nil {
-		return nil, fmt.Errorf("create session: %w", err)
+		return nil, fmt.Errorf("make request: %w", err)
 	}
-	return s, nil
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		return c.createSession(ctx, ref, d)
+	default:
+		return nil, internal.UnexpectedStatusCode(resp)
+	}
 }
 
 // createSession creates a multiplayer session on the directory using the URL.
@@ -117,47 +134,16 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 // When joining an existing multiplayer session, the session reference may be
 // nil or unavailable in the context. In that case, the session reference will
 // be automatically derived from the Content-Location header in the first request call.
-func (c *Client) createSession(ctx context.Context, knownRef *SessionReference, u *url.URL, d SessionDescription) (*Session, error) {
+func (c *Client) createSession(ctx context.Context, ref SessionReference, d SessionDescription) (*Session, error) {
 	s := &Session{
 		client: c,
 
 		h:      NopHandler{}, // fast-path without locking
 		cache:  &d,
 		closed: make(chan struct{}),
+		ref:    ref,
 	}
 
-	if knownRef == nil {
-		// Join the multiplayer session by updating the members field to add the caller as participant.
-		// This request call will fail if the multiplayer session does not exist.
-		resp, err := s.write(ctx, u, d, internal.RequestHeader("If-Match", "*"))
-		if err != nil {
-			return nil, fmt.Errorf("write session using handle: %w", err)
-		}
-		if resp == nil {
-			// For 304/204 responses, resp may be nil.
-			return nil, errors.New("mpsd: session was unmodified")
-		}
-		contentLocation := resp.Header.Get("Content-Location")
-		if contentLocation == "" {
-			return nil, fmt.Errorf("Content-Location response header is absent from response")
-		}
-		s.ref, err = parseSessionReference(contentLocation)
-		if err != nil {
-			return nil, fmt.Errorf("parse session reference from Content-Location response header: %w", err)
-		}
-	} else {
-		// Newly create a multiplayer session.
-		// This request call will fail if the session already exists.
-		resp, err := s.write(ctx, u, d, internal.RequestHeader("If-None-Match", "*"))
-		if err != nil {
-			return nil, fmt.Errorf("create session: %w", err)
-		}
-		if resp == nil {
-			// For 304/204 responses, resp may be nil.
-			return nil, errors.New("mpsd: session was not created")
-		}
-		s.ref = *knownRef
-	}
 	s.log = c.log.With(
 		slog.Group("session",
 			slog.String("scid", s.ref.ServiceConfigID.String()),

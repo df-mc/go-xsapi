@@ -104,7 +104,7 @@ func (s *Session) CloseContext(ctx context.Context) (err error) {
 				"me": nil,
 			},
 		}
-		if _, err2 := s.write(ctx, s.ref.URL(), d, internal.RequestHeader("If-Match", "*")); err2 != nil {
+		if err2 := s.update(ctx, d, nil); err2 != nil {
 			err = err2
 		}
 		s.client.handleSessionClose(s)
@@ -133,48 +133,47 @@ func (s *Session) handler() Handler {
 	return s.h
 }
 
-// write commits partial changes to the session resource identified by the given URL.
+// update commits partial changes to the session resource identified by the given URL.
 // The provided [SessionDescription] is treated as a patch and merged server-side.
 // The [context.Context] is used for making a PUT request call.
 //
 // On success, both the local cache and stored ETag are updated to reflect the server response.
-func (s *Session) write(ctx context.Context, u *url.URL, changes SessionDescription, opts ...internal.RequestOption) (*http.Response, error) {
+func (s *Session) update(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) error {
 	select {
 	case <-s.closed:
-		return nil, net.ErrClosed
+		return net.ErrClosed
 	default:
 	}
 
-	req, err := internal.WithJSONBody(ctx, http.MethodPut, u.String(), changes, append(opts,
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, s.ref.URL().String(), changes, append(opts,
 		internal.RequestHeader("Content-Type", "application/json"),
+		internal.RequestHeader("If-Match", "*"),
 		internal.ContractVersion(contractVersion),
 	))
 	if err != nil {
-		return nil, fmt.Errorf("make request: %w", err)
+		return fmt.Errorf("make request: %w", err)
 	}
 
 	resp, err := s.client.client.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated:
+	case http.StatusOK, http.StatusNotModified, http.StatusNoContent:
 		s.cacheMu.Lock()
 		defer s.cacheMu.Unlock()
 
 		if err := json.NewDecoder(resp.Body).Decode(&s.cache); err != nil {
-			return nil, fmt.Errorf("decode response body: %w", err)
+			return fmt.Errorf("decode response body: %w", err)
 		}
 		if e := resp.Header.Get("ETag"); e != "" {
 			s.etag = e
 		}
-		return resp, nil
-	case http.StatusNotModified, http.StatusNoContent:
-		return nil, nil
+		return nil
 	default:
-		return nil, internal.UnexpectedStatusCode(resp)
+		return internal.UnexpectedStatusCode(resp)
 	}
 }
 
@@ -272,17 +271,12 @@ func (s *Session) Sync(ctx context.Context) error {
 // The format or semantics of the custom data is specific to the title. It is
 // commonly used to expose session metadata such as display names or
 // server details.
-func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessage) error {
-	_, err := s.write(ctx, s.ref.URL(), SessionDescription{
+func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessage, opts ...internal.RequestOption) error {
+	return s.update(ctx, SessionDescription{
 		Properties: &SessionProperties{
 			Custom: custom,
 		},
-	}, internal.RequestHeader("If-Match", "*"))
-
-	// TODO: Should we still use a shared method or split depending on usage? i.e. update()?
-	// TODO: Can we use the current etag for 'If-Match' header?
-
-	return err
+	}, opts)
 }
 
 // Constants returns the immutable session constants.
@@ -385,8 +379,8 @@ func (s *Session) Members() iter.Seq2[string, MemberDescription] {
 // member may modify their own properties.
 // The [context.Context] is used for making a PUT request call. Changes are commited
 // immediately and reflected in the local cache.
-func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, custom json.RawMessage) error {
-	_, err := s.write(ctx, s.ref.URL(), SessionDescription{
+func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, custom json.RawMessage, opts ...internal.RequestOption) error {
+	return s.update(ctx, SessionDescription{
 		Members: map[string]*MemberDescription{
 			label: {
 				Properties: &MemberProperties{
@@ -394,8 +388,7 @@ func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, c
 				},
 			},
 		},
-	})
-	return err
+	}, opts)
 }
 
 // SessionReference encapsulates a reference to a multiplayer session.
