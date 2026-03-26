@@ -235,9 +235,9 @@ type User struct {
 	// Favorite reports whether the caller has added this user to their favorites.
 	Favorite bool `json:"favorite,omitempty"`
 	// Following reports whether the caller is following this user.
-	Following bool `json:"isFollowingCaller,omitempty"`
+	Following bool `json:"isFollowedByCaller,omitempty"`
 	// Followed reports whether this user is following the caller.
-	Followed bool `json:"isFollowedByCaller,omitempty"`
+	Followed bool `json:"isFollowingCaller,omitempty"`
 
 	// IdentityShared is an unknown value. It was originally believed to indicate whether
 	// the user's RealName is included in their profile, but its exact meaning is currently unclear.
