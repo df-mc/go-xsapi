@@ -139,7 +139,7 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, d Sess
 		client: c,
 
 		h:      NopHandler{}, // fast-path without locking
-		cache:  &d,
+		cache:  d,
 		closed: make(chan struct{}),
 		ref:    ref,
 	}
