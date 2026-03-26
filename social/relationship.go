@@ -23,6 +23,7 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 		"xuid("+xuid+")",
 	).String()
 
+	// Unlike [Client.AddFriend], this request call returns 204 No Content.
 	req, err := internal.NewRequest(ctx, http.MethodPut, requestURL, nil, append(
 		opts,
 		socialContractVersion,
@@ -66,6 +67,8 @@ func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.Re
 		"/users/me/people/friends/v2",
 		"xuid("+xuid+")",
 	).String()
+
+	// Expected status code: 200 OK
 	return internal.Do(ctx, c.client, http.MethodPut, requestURL, nil, nil, append(
 		opts,
 		socialContractVersion,
@@ -97,6 +100,8 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 	q := requestURL.Query()
 	q.Set("deleteRelationships", relationships)
 	requestURL.RawQuery = q.Encode()
+
+	// This request is a DELETE call but returns 200 OK instead of 204 No Content.
 	return internal.Do(ctx, c.client, http.MethodDelete, requestURL.String(), nil, nil, append(
 		opts,
 		socialContractVersion,
