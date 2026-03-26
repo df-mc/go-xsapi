@@ -45,8 +45,8 @@ type Client struct {
 	// and subscriptionData.
 	subscriptionMu sync.Mutex
 
-	sessions   map[string]*Session // TODO
-	sessionsMu sync.Mutex          // TODO
+	sessions   map[string]*Session
+	sessionsMu sync.RWMutex
 
 	// once ensures that the closure of the Client occurs only once.
 	once sync.Once

@@ -136,7 +136,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			continue
 		}
 
-		h.sessionsMu.Lock()
+		h.sessionsMu.RLock()
 		for _, s := range h.sessions {
 			if s.ref == ref {
 				go func() {
@@ -157,7 +157,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 				}()
 			}
 		}
-		h.sessionsMu.Unlock()
+		h.sessionsMu.RUnlock()
 	}
 }
 
