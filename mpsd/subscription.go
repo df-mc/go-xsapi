@@ -158,7 +158,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 						slog.String("ref", s.Reference().URL().String()),
 					),
 				)
-				go s.handler().HandleSessionChange(s)
+				s.handler().HandleSessionChange(s)
 			}(session)
 		}
 	}
