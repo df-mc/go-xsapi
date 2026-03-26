@@ -26,7 +26,7 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 	// searchRequestPeople specifies whose perspective is used when searching
 	// for activity handles to multiplayer sessions.
 	type searchRequestPeople struct {
-		// SocialGroup is the name of the social group used to filter users.
+		// SocialGroup filters the results to users within the specified social group.
 		// It can be "people" or "favorites".
 		SocialGroup string `json:"moniker,omitempty"`
 		// SocialGroupXUID is the XUID of the user to whom the social group applies.
