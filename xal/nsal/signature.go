@@ -34,9 +34,10 @@ type SignaturePolicy struct {
 // Sign signs the request and sets the 'Signature' header. The provided request
 // body will be used for computing an SHA-256 hash. The ECDSA private key will
 // be used to sign the request, which must be same from the ProofKey field of
-// authentication requests.
-func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecdsa.PrivateKey) {
-	currentTime := windowsTimestamp(time.Now())
+// authentication requests. The timestamp is included in the signature data
+// and must be close to the server time as possible.
+func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) {
+	currentTime := windowsTimestamp(timestamp)
 	hash := sha256.New()
 
 	// Signature policy version (0, 0, 0, 1) + 0 byte.

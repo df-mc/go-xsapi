@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
 )
 
 // Default returns the default TitleData used for generic Xbox Live services.
@@ -89,13 +90,15 @@ func Title(ctx context.Context, token interface{ SetAuthHeader(req *http.Request
 	}
 	req.Header.Set("x-xbl-contract-version", "1")
 	token.SetAuthHeader(req)
-	AuthPolicy.Sign(req, nil, proofKey)
+	AuthPolicy.Sign(req, nil, proofKey, timestamp.Now())
 
 	resp, err := xal.ContextClient(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	timestamp.Update(resp.Header)
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}

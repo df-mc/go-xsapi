@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"golang.org/x/oauth2"
@@ -210,7 +211,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 	}
 	req.Header.Set("User-Agent", conf.UserAgent)
 	req.Header.Set("x-xbl-contract-version", "1")
-	nsal.AuthPolicy.Sign(req, buf.Bytes(), device.ProofKey())
+	nsal.AuthPolicy.Sign(req, buf.Bytes(), device.ProofKey(), timestamp.Now())
 
 	var client *http.Client
 	if hc, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok {
@@ -223,6 +224,8 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 		return "", err
 	}
 	defer resp.Body.Close()
+	timestamp.Update(resp.Header)
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}

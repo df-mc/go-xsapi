@@ -189,9 +189,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 	token.SetAuthHeader(req2)
 
 	// If a body is present, it is buffered in full so that it can be included
-	// in the 'Signature' header, then restored on the cloned request. Only
-	// req.Body is checked rather than req.ContentLength, since ContentLength
-	// may be -1 when the body size is unknown.
+	// in the 'Signature' header. It is then restored on the cloned request.
 	if req.Body != nil {
 		signingBuffer := &bytes.Buffer{}
 		if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
@@ -200,7 +198,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 	}
-	policy.Sign(req2, data, c.src.ProofKey())
+	policy.Sign(req2, data, c.src.ProofKey(), time.Now())
 
 	return c.baseTransport().RoundTrip(req2)
 }

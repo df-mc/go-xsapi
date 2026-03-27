@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/df-mc/go-xsapi/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/df-mc/go-xsapi/xal/xast"
@@ -354,13 +355,15 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 	if !ok {
 		return nil, fmt.Errorf("xal/sisu: NSAL title endpoint not found for %q", req.URL)
 	}
-	policy.Sign(req, buf.Bytes(), s.ProofKey())
+	policy.Sign(req, buf.Bytes(), s.ProofKey(), timestamp.Now())
 
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	timestamp.Update(resp.Header)
+
 	switch resp.StatusCode {
 	case http.StatusOK:
 		var r *authorizationResponse

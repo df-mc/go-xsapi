@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/go-jose/go-jose/v4"
 )
@@ -44,7 +45,7 @@ func (r TokenRequest[P]) Do(ctx context.Context, config xal.Config, reqURL strin
 	req.Header.Set("User-Agent", config.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-xbl-contract-version", "1")
-	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey)
+	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey, timestamp.Now())
 
 	resp, err := xal.ContextClient(ctx).Do(req)
 	if err != nil {
@@ -54,6 +55,8 @@ func (r TokenRequest[P]) Do(ctx context.Context, config xal.Config, reqURL strin
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
+	timestamp.Update(resp.Header)
+
 	if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
 		return fmt.Errorf("decode response body: %w", err)
 	}
