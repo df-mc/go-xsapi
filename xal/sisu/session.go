@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -328,10 +329,11 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 
 	td, err := nsal.Default(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("xal/sisu: obtain NSAL default title endpoints: %w", err)
+		return nil, fmt.Errorf("xal/sisu: resolve NSAL default title endpoints: %w", err)
 	}
 
 	buf := &bytes.Buffer{}
+	defer buf.Reset()
 	if err := json.NewEncoder(buf).Encode(&authorizationRequest{
 		AccessToken:       "t=" + token.AccessToken,
 		ClientID:          s.config.ClientID,
@@ -344,7 +346,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 	}); err != nil {
 		return nil, fmt.Errorf("encode request body: %w", err)
 	}
-	defer buf.Reset()
+
 	requestURL := endpoint.JoinPath("authorize").String()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, buf)
 	if err != nil {
@@ -375,9 +377,81 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		}
 		s.resp = r
 		return r, nil
+	case http.StatusUnauthorized:
+		if resp.Header.Get("X-Err") == "2148916233" {
+			sessionID := resp.Header.Get("X-SessionId")
+			if sessionID == "" {
+				return nil, errors.New("xal/sisu: X-SessionId header is absent from authorization response")
+			}
+
+			var r *authorizationResponse
+			if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+				return nil, fmt.Errorf("decode response body: %w", err)
+			}
+			if r.WebPage == "" {
+				return nil, fmt.Errorf("xal/sisu: account creation page URL is absent from authorization response")
+			}
+
+			reqURL := endpoint.JoinPath("proxy")
+			reqURL.RawQuery = url.Values{
+				"sessionid": []string{sessionID},
+			}.Encode()
+			signingRequest, err := http.NewRequest(http.MethodPost, reqURL.String(), nil)
+			if err != nil {
+				return nil, fmt.Errorf("make request for computing signature: %w", err)
+			}
+			signature := nsal.AuthPolicy.Generate(signingRequest, nil, s.ProofKey(), timestamp.Now())
+
+			u, err := url.Parse(r.WebPage)
+			if err != nil {
+				return nil, fmt.Errorf("xal/sisu: parse account creation page URL: %w", err)
+			}
+			q := u.Query()
+			// GRTS only: q.Set("consent", "prompt")
+			q.Set("sig", base64.StdEncoding.EncodeToString(signature))
+			q.Set("did", "0x"+device.DisplayClaims.DeviceInfo.DeviceID)
+			// GRTS only: q.Set("mgt", "true")
+			q.Set("redirect", "https://www.xbox.com") // Any value is supported. No sensitive information are sent to this URL.
+			q.Set("sid", sessionID)
+			// If Auth Code Flow: q.Set("state", "...")
+			u.RawQuery = q.Encode()
+
+			// The script embedded in the web page uses either 'sig' or 'spt' query parameter
+			// to set 'Signature' or 'Authorization' header.
+			// Most native apps use 'sig' since it is not safe to include XSTS token in the URL query.
+
+			return nil, &AccountRequiredError{
+				SignupURL: u,
+			}
+		}
+
+		// We currently ignore all other errors and handle them as unknown status code error.
+		// TODO: Handle other errors as well
+		fallthrough
 	default:
 		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
+}
+
+// AccountRequiredError is returned when the Microsoft Account has no linked Xbox Live account.
+// The caller can unwrap the error and direct the user to [AccountRequiredError.SignupURL] to create one.
+type AccountRequiredError struct {
+	// SignupURL is the URL of the web page where the user can create an Xbox Live account.
+	// It is derived from the authorization response returned by SISU.
+	//
+	// The URL includes a signature in its query parameters that authenticates the user,
+	// so the Xbox Live account created via this URL will be linked to the correct Microsoft Account
+	// regardless of which browser opens it. For this reason, the URL must not be shared publicly.
+	//
+	// An arbitrary 'redirect' query parameter may be set to the URL. After the user completes
+	// account creation, they will be redirected to that URL. No sensitive information is included
+	// in the redirect.
+	SignupURL *url.URL
+}
+
+// Error implements the error interface.
+func (e *AccountRequiredError) Error() string {
+	return fmt.Sprintf("xal/sisu: Xbox Live account required, create one at %s", e.SignupURL)
 }
 
 // defaultRelyingParty is the default relying party desired on the Authorization Token present in
