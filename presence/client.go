@@ -93,7 +93,12 @@ func (c *Client) Close() error {
 }
 
 // CloseContext closes the Client using the given context.
-// It removes any presences if there was any active.
+// It removes the authenticated user's current title presence immediately by
+// calling [Client.Remove], instead of waiting for the presence record to
+// expire on the server.
+//
+// This method is intended for title shutdown. Callers that want to keep the
+// current presence active should not call CloseContext.
 //
 // In most cases, [github.com/df-mc/go-xsapi.Client.CloseContext] should be preferred
 // over calling this method directly.
@@ -135,6 +140,7 @@ const (
 
 // Remove removes the presence of the authenticated user's current title
 // immediately, rather than waiting for it to expire on the server.
+// It is safe to call this method even if the user doesn't have any active presence.
 func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) error {
 	requestURL := endpoint.JoinPath(
 		"users",
