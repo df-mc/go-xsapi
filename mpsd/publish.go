@@ -3,124 +3,187 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/df-mc/go-xsapi"
-	"github.com/df-mc/go-xsapi/internal"
-	"github.com/df-mc/go-xsapi/rta"
-	"github.com/google/uuid"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
+
+	"github.com/df-mc/go-xsapi/internal"
+	"github.com/google/uuid"
 )
 
-// PublishConfig contains an options for publishing a SessionDescription into a Session.
+// PublishConfig describes a configuration for publishing a multiplayer session
+// in the directory. It can be passed to [Client.Publish] to customize the session's
+// initial contents.
 type PublishConfig struct {
-	RTADialer *rta.Dialer
-	RTAConn   *rta.Conn
+	// CustomProperties holds mutable properties to be associated with the multiplayer session
+	// when publishing.
+	//
+	// The format and semantics of this field are defined by the title. It is
+	// commonly used to expose session metadata such as display names or
+	// server details.
+	CustomProperties json.RawMessage
+	// CustomConstants holds immutable constants to be associated with the multiplayer session
+	// when publishing. Once published, it cannot be changed during for the lifetime of the session.
+	//
+	// The format and semantics of this field are defined by the title.
+	CustomConstants json.RawMessage
 
-	Description *SessionDescription
+	// CustomMemberProperties holds mutable properties associated with the host.
+	// Unlike [JoinConfig.CustomMemberConstants], these can be updated at any time
+	// during the session via [Session.SetMemberCustomProperties].
+	//
+	// The format and semantics of this field are defined by the title.
+	CustomMemberProperties json.RawMessage
+	// CustomMemberConstants holds immutable constants associated with the host.
+	// These are set when publishing and cannot be changed for the lifetime of the ownership.
+	//
+	// The format and semantics of this field are defined by the title.
+	CustomMemberConstants json.RawMessage
 
-	Client *http.Client
-	Logger *slog.Logger
+	// JoinRestriction and ReadRestriction specify who may join or read an open session.
+	// If JoinRestriction or ReadRestriction are empty, it will default to [SessionRestrictionFollowed].
+	JoinRestriction, ReadRestriction string
 }
 
-func (conf PublishConfig) publish(ctx context.Context, src xsapi.TokenSource, u *url.URL, ref SessionReference) (*Session, error) {
-	if conf.Logger == nil {
-		conf.Logger = slog.Default()
-	}
-	if conf.Client == nil {
-		conf.Client = &http.Client{}
-	}
-	internal.SetTransport(conf.Client, src)
-
-	if conf.RTAConn == nil {
-		if conf.RTADialer == nil {
-			conf.RTADialer = &rta.Dialer{}
-		}
-		var err error
-		conf.RTAConn, err = conf.RTADialer.DialContext(ctx, src)
-		if err != nil {
-			return nil, fmt.Errorf("prepare subscription: dial: %w", err)
-		}
-	}
-
-	sub, err := conf.RTAConn.Subscribe(ctx, resourceURI)
-	if err != nil {
-		return nil, fmt.Errorf("prepare subscription: subscribe: %w", err)
-	}
-	var custom subscription
-	if err := json.Unmarshal(sub.Custom, &custom); err != nil {
-		return nil, fmt.Errorf("prepare subscription: decode: %w", err)
-	}
-
-	if conf.Description == nil {
-		conf.Description = &SessionDescription{}
-	}
-	if conf.Description.Members == nil {
-		conf.Description.Members = make(map[string]*MemberDescription, 1)
-	}
-
+// Publish publishes a new multiplayer session in the directory using the
+// provided [SessionReference]. The provided [PublishConfig] is applied to the
+// session's initial contents.
+//
+// If [SessionReference.Name] is empty, a randomly-generated GUID will be used.
+// Make sure to call [Session.Close] to close the session when it is no longer needed.
+func (c *Client) Publish(ctx context.Context, ref SessionReference, config PublishConfig, opts ...internal.RequestOption) (*Session, error) {
 	if ref.Name == "" {
 		ref.Name = strings.ToUpper(uuid.NewString())
 	}
+	if config.JoinRestriction == "" {
+		config.JoinRestriction = SessionRestrictionFollowed
+	}
+	if config.ReadRestriction == "" {
+		config.ReadRestriction = SessionRestrictionFollowed
+	}
+	_, payload, err := c.subscribe(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	me, ok := conf.Description.Members["me"]
-	if !ok {
-		me = &MemberDescription{}
+	d := SessionDescription{
+		Properties: &SessionProperties{
+			System: &SessionPropertiesSystem{
+				JoinRestriction: config.JoinRestriction,
+				ReadRestriction: config.ReadRestriction,
+			},
+			Custom: config.CustomProperties,
+		},
+		Members: map[string]*MemberDescription{
+			"me": {
+				Constants: &MemberConstants{
+					System: &MemberConstantsSystem{
+						Initialize: true,
+						XUID:       c.userInfo.XUID,
+					},
+					Custom: config.CustomMemberConstants,
+				},
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{
+						Active:     true,
+						Connection: payload.ConnectionID,
+						Subscription: &MemberPropertiesSystemSubscription{
+							ID:          strings.ToUpper(uuid.NewString()),
+							ChangeTypes: []string{ChangeTypeEverything},
+						},
+					},
+					Custom: config.CustomMemberProperties,
+				},
+			},
+		},
 	}
-	if me.Constants == nil {
-		me.Constants = &MemberConstants{}
-	}
-	if me.Constants.System == nil {
-		me.Constants.System = &MemberConstantsSystem{}
-	}
-	me.Constants.System.Initialize = true
-	if me.Constants.System.XUID == "" {
-		tok, err := src.Token()
-		if err != nil {
-			return nil, fmt.Errorf("obtain token: %w", err)
+	if config.CustomConstants != nil {
+		d.Constants = &SessionConstants{
+			Custom: config.CustomConstants,
 		}
-		me.Constants.System.XUID = tok.DisplayClaims().XUID
-	}
-	if me.Properties == nil {
-		me.Properties = &MemberProperties{}
-	}
-	if me.Properties.System == nil {
-		me.Properties.System = &MemberPropertiesSystem{}
-	}
-	me.Properties.System.Active = true
-	me.Properties.System.Connection = custom.ConnectionID
-	if me.Properties.System.Subscription == nil {
-		me.Properties.System.Subscription = &MemberPropertiesSystemSubscription{}
-	}
-	if me.Properties.System.Subscription.ID == "" {
-		me.Properties.System.Subscription.ID = strings.ToUpper(uuid.NewString())
-	}
-	me.Properties.System.Subscription.ChangeTypes = []string{
-		ChangeTypeEverything,
-	}
-	conf.Description.Members["me"] = me
-
-	if _, err := conf.commit(ctx, u, conf.Description); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
-	}
-	if err := conf.commitActivity(ctx, ref); err != nil {
-		return nil, fmt.Errorf("commit activity: %w", err)
 	}
 
+	// Newly create a multiplayer session.
+	// This request call will fail if the session already exists.
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, ref.URL().String(), d, append(opts,
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.RequestHeader("If-None-Match", "*"),
+		internal.ContractVersion(contractVersion),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		return c.createSession(ctx, ref, resp)
+	default:
+		return nil, internal.UnexpectedStatusCode(resp)
+	}
+}
+
+// createSession creates a multiplayer session on the directory using the URL.
+// The URL may be a session reference or the handle referencing the session to join.
+// When joining an existing multiplayer session, the session reference may be
+// nil or unavailable in the context. In that case, the session reference will
+// be automatically derived from the Content-Location header in the first request call.
+// The initial response will be used to decode the initial contents of the remote session.
+// The caller should close the response body after calling this method.
+func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *http.Response) (*Session, error) {
+	var d SessionDescription
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return nil, fmt.Errorf("decode initial contents: %w", err)
+	}
 	s := &Session{
-		ref:  ref,
-		conf: conf,
-		rta:  conf.RTAConn,
-		sub:  sub,
+		client: c,
+
+		h:      NopHandler{}, // fast-path without locking
+		cache:  d,
+		etag:   resp.Header.Get("ETag"),
+		closed: make(chan struct{}),
+		ref:    ref,
 	}
-	s.Handle(nil)
-	sub.Handle(&subscriptionHandler{s})
+
+	s.log = c.log.With(
+		slog.Group("session",
+			slog.String("scid", s.ref.ServiceConfigID.String()),
+			slog.String("templateName", s.ref.TemplateName),
+			slog.String("name", s.ref.Name),
+		),
+	)
+
+	if err := s.writeActivity(ctx); err != nil {
+		err = fmt.Errorf("write activity handle: %w", err)
+		if err2 := s.Close(); err2 != nil {
+			err = errors.Join(
+				err,
+				fmt.Errorf("close session: %w", err2),
+			)
+		}
+		return nil, err
+	}
+
+	// Bind the session to the client so we can receive updates from RTA subscription.
+	c.sessionsMu.Lock()
+	c.sessions[s.ref.URL().String()] = s
+	c.sessionsMu.Unlock()
+
 	return s, nil
 }
 
-// PublishContext publishes a Session on the SessionReference using the [context.Context].
-func (conf PublishConfig) PublishContext(ctx context.Context, src xsapi.TokenSource, ref SessionReference) (s *Session, err error) {
-	return conf.publish(ctx, src, ref.URL(), ref)
+// handleSessionClosure handles closure of a multiplayer session.
+// It releases the multiplayer session from the client so it can no
+// longer receive notifications from the RTA subscription.
+func (c *Client) handleSessionClose(s *Session) {
+	c.sessionsMu.Lock()
+	delete(c.sessions, s.ref.URL().String())
+	c.sessionsMu.Unlock()
 }

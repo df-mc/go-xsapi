@@ -3,233 +3,466 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
-	"github.com/df-mc/go-xsapi/rta"
-	"sync/atomic"
+	"fmt"
+	"iter"
+	"log/slog"
+	"maps"
+	"net"
+	"net/http"
+	"net/url"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/df-mc/go-xsapi/internal"
+	"github.com/google/uuid"
 )
 
+// Session represents a multiplayer session in MPSD (Multiplayer Session Directory) in Xbox Live.
+//
+// A Session is a stateful, client-side handle to a remote multiplayer session.
+// It acts as a thin wrapper around a [SessionDescription] and maintains a locally cached
+// copy of the session state, which is synchronized with MPSD using E-Tags.
+//
+// In addition to explicit synchronization via [Session.Sync], the cached
+// session state is kept up-to-date automatically though an RTA (Real-Time
+// Activity) subscription. RTA delivers session change notifications over a
+// WebSocket connection, allowing the Session to update its cache as soon
+// as the remote multiplayer session changes (e.g. member is joining/leaving).
+//
+// Session is safe for concurrent use unless otherwise documented.
+//
+// Once a Session is closed, all operations should be treated as invalid.
 type Session struct {
-	ref  SessionReference
-	conf PublishConfig
+	// client is the API client for Multiplayer Session Directory (MPSD) in Xbox Live
+	// used to create this multiplayer session. It is used to synchronize or commit
+	// the properties on the multiplayer session.
+	client *Client
 
-	rta *rta.Conn
+	// log is the logger used for reporting errors and diagnostic information
+	// related to the session.
+	//
+	// The logger is configured via PublishConfig or JoinConfig, or defaults
+	// to the logger configured on the API client.
+	log *slog.Logger
 
-	sub *rta.Subscription
+	// ref contains a reference to the multiplayer session.
+	ref SessionReference
 
-	h atomic.Pointer[Handler]
+	// etag holds the most recently observed E-Tag for the session resource.
+	// When reading or accessing etag, cacheMu must be held for concurrent safety.
+	etag string
+	// cache holds the SessionDescription for the multiplayer session in the last known state.
+	// Callers can always refresh this cache to the remote state using [Session.Sync] method.
+	cache SessionDescription
+	// cacheMu guards the cache from concurrent read-write access.
+	cacheMu sync.RWMutex
+
+	// h is the Handler registered to this Session to receive updates from RTA.
+	h Handler
+	// hMu guards h from concurrent read/write access.
+	hMu sync.RWMutex
+
+	// closed is a channel that is closed when the Session is no longer usable.
+	//
+	// Goroutines may select on this channel to be notified when the session has been closed.
+	// Once closed, no further network operations should be performed using this Session.
+	closed chan struct{}
+	// once ensures that the closure of the Session occurs only once.
+	once sync.Once
 }
 
-func (s *Session) Query() (*Commit, error) {
-	q := Query{Client: s.conf.Client}
-	return q.Query(nil, s.ref)
-}
-
+// Close closes the multiplayer session using a context with 15 seconds timeout.
+//
+// If the caller is the host of the multiplayer session, the session itself is closed.
+// If the caller is a non-host participant, this call ensures the caller to leave the session.
+//
+// Once CloseContext is called, the multiplayer session will no longer receive notifications
+// about changes in the session even though if the session still exist after leaving.
+// CloseContext can be called many times since it internally uses a [sync.Once].
 func (s *Session) Close() error {
-	if err := s.rta.Unsubscribe(context.Background(), s.sub); err != nil {
-		s.conf.Logger.Error("error unsubscribing with RTA", "err", err)
-	}
-	_, err := s.Commit(context.Background(), &SessionDescription{
-		Members: map[string]*MemberDescription{
-			"me": nil,
-		},
+	ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
+	defer cancel()
+
+	return s.CloseContext(ctx)
+}
+
+// CloseContext closes the multiplayer session using the context.
+//
+// If the caller is the host of the multiplayer session, the session itself is closed.
+// If the caller is a non-host participant, this call ensures the caller to leave the session.
+//
+// Once CloseContext is called, the multiplayer session will no longer receive notifications
+// about changes in the session even though if the session still exist after leaving.
+// CloseContext can be called many times since it internally uses a [sync.Once].
+func (s *Session) CloseContext(ctx context.Context) (err error) {
+	s.once.Do(func() {
+		d := SessionDescription{
+			Members: map[string]*MemberDescription{
+				// Set myself to nil to leave or close the multiplayer session.
+				"me": nil,
+			},
+		}
+		if err2 := s.update(ctx, d, nil); err2 != nil {
+			err = err2
+		}
+		s.client.handleSessionClose(s)
+		close(s.closed)
 	})
 	return err
 }
 
-type SessionDescription struct {
-	Constants  *SessionConstants             `json:"constants,omitempty"`
-	RoleTypes  json.RawMessage               `json:"roleTypes,omitempty"`
-	Properties *SessionProperties            `json:"properties,omitempty"`
-	Members    map[string]*MemberDescription `json:"members,omitempty"`
+// Handle registers h as the [Handler] for this session. The registered handler
+// is called when an event is received over the RTA (Real-Time Activity)
+// subscription, such as when a member joins or leaves the session. Passing nil
+// falls back to [NopHandler].
+func (s *Session) Handle(h Handler) {
+	if h == nil {
+		h = NopHandler{}
+	}
+	s.hMu.Lock()
+	s.h = h
+	s.hMu.Unlock()
 }
 
-// SessionProperties is a set of properties associated with multiplayer session.
-// Any member can modify these fields.
-type SessionProperties struct {
-	System *SessionPropertiesSystem `json:"system,omitempty"`
-	// Custom is a JSON string that specify the custom properties for the session. These can
-	// be changed anytime.
-	Custom json.RawMessage `json:"custom,omitempty"`
+// handler returns the [Handler] currently registered for this session.
+func (s *Session) handler() Handler {
+	s.hMu.RLock()
+	defer s.hMu.RUnlock()
+	return s.h
 }
 
-type SessionPropertiesSystem struct {
-	// Keywords is an optional list of keywords associated with the session.
-	Keywords []string `json:"keywords,omitempty"`
-	// Turn is a list of member IDs indicating whose turn it is.
-	Turn []uint32 `json:"turn,omitempty"`
-	// JoinRestriction restricts who can join "open" sessions. (Has no effects on reservations,
-	// which means it has no impact on "private" and "visible" sessions)
-	// It is one of constants defined below.
-	JoinRestriction string `json:"joinRestriction,omitempty"`
-	// ReadRestriction restricts who can read "open" sessions. (Has no effect on reservations,
-	// which means it has no impact on "private" and "visible" sessions.)
-	ReadRestriction string `json:"readRestriction,omitempty"`
-	// Controls whether a session is joinable, independent of visibility, join restriction,
-	// and available space in the session. Does not affect reservations. Defaults to false.
-	Closed bool `json:"closed"`
-	// If Locked is true, it would allow the members of the session to be locked, such that
-	// if a user leaves they are able to come back into the session but no other user could
-	// take that spot. Defaults to false.
-	Locked      bool                                `json:"locked,omitempty"`
-	Matchmaking *SessionPropertiesSystemMatchmaking `json:"matchmaking,omitempty"`
-	// MatchmakingResubmit is true, if the match that was found didn't work out and needs to
-	// be resubmitted. If false, signal that the match did work, and the matchmaking service
-	// can release the session.
-	MatchmakingResubmit bool `json:"matchmakingResubmit,omitempty"`
-	// InitializationSucceeded is true if initialization succeeded.
-	InitializationSucceeded bool `json:"initializationSucceeded,omitempty"`
-	// Host is the device token of the host.
-	Host string `json:"host,omitempty"`
-	// ServerConnectionStringCandidates is the ordered list of case-insensitive connection
-	// strings that the session could use to connect to a game server. Generally titles
-	// should use the first on the list, but sophisticated titles could use a custom mechanism
-	// for choosing one of the others (e.g. based on load).
-	ServerConnectionStringCandidates json.RawMessage `json:"serverConnectionStringCandidates,omitempty"`
-}
-
-type SessionPropertiesSystemMatchmaking struct {
-	// TargetSessionConstants is a JSON string representing the target session constants.
-	TargetSessionConstants json.RawMessage `json:"targetSessionConstants,omitempty"`
-	// ServerConnectionString Force a specific connection string to be used. This is useful
-	// for session in progress join scenarios.
-	ServerConnectionString string `json:"serverConnectionString,omitempty"`
-}
-
-const (
-	SessionRestrictionNone     = "none"
-	SessionRestrictionLocal    = "local"
-	SessionRestrictionFollowed = "followed"
-)
-
-// SessionConstants represents constants for a multiplayer session.
+// update commits partial changes to the session resource identified by the given URL.
+// The provided [SessionDescription] is treated as a patch and merged server-side.
+// The [context.Context] is used for making a PUT request call.
 //
-// SessionConstants are set by the creator or by the session template only when a
-// session is created. Fields in SessionConstants generally cannot be changed after
-// the session is created.
-type SessionConstants struct {
-	System *SessionConstantsSystem `json:"system,omitempty"`
-	// Custom is any custom constants for the session, specified in a JSON string.
-	Custom json.RawMessage `json:"custom,omitempty"`
+// On success, both the local cache and stored ETag are updated to reflect the server response.
+func (s *Session) update(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) error {
+	select {
+	case <-s.closed:
+		return net.ErrClosed
+	default:
+	}
+
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, s.ref.URL().String(), changes, append(opts,
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.RequestHeader("If-Match", "*"),
+		internal.ContractVersion(contractVersion),
+	))
+	if err != nil {
+		return fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := s.client.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return s.sync(resp)
+	case http.StatusNoContent, http.StatusNotModified:
+		return nil
+	default:
+		return internal.UnexpectedStatusCode(resp)
+	}
 }
 
-type SessionConstantsSystem struct {
-	// MaxMembersCount is the maximum number of members in the session.
-	MaxMembersCount uint32 `json:"maxMembersCount,omitempty"`
-	// Capabilities is the capabilities of the session.
-	Capabilities *SessionCapabilities `json:"capabilities,omitempty"`
-	// Visibility is the visibility of the session.
-	Visibility string `json:"visibility,omitempty"`
-	// Initiators is a list of XUIDs indicating who initiated the session.
-	Initiators []string `json:"initiators,omitempty"`
-	// ReservedRemovalTimeout is the maximum time, in milliseconds, for a member with a reservation
-	// to join the session. If the member doesn't join within this time, this reservation is removed.
-	ReservedRemovalTimeout uint64 `json:"reservedRemovalTimeout,omitempty"`
-	// InactiveRemovalTimeout is the maximum time, in milliseconds, for an inactive member to become
-	// active. If an inactive member doesn't become active within this time, the member is removed from
+// Context returns a [context.Context] bound to the lifecycle of the Session.
+// Callers can use this context as the parent context for making calls involving the multiplayer
+// session so they can no longer reference a multiplayer session that is closed.
+func (s *Session) Context() context.Context {
+	return sessionContext{closed: s.closed}
+}
+
+// sessionContext implements [context.Context] that is valid for the lifecycle
+// of a multiplayer session. It is returned by [Session.Context] so callers can
+// use the context as the parent context for making calls involving the multiplayer
+// session.
+type sessionContext struct{ closed <-chan struct{} }
+
+// Deadline implements [context.Context.Deadline]. It always returns zero time with false.
+func (sessionContext) Deadline() (deadline time.Time, ok bool) {
+	return deadline, ok
+}
+
+// Done returns a channel that is closed when the multiplayer session is no longer usable.
+func (ctx sessionContext) Done() <-chan struct{} {
+	return ctx.closed
+}
+
+// Err returns [context.Canceled] if the multiplayer session has been closed, or nil if the
+// underlying multiplayer session is still usable.
+func (ctx sessionContext) Err() error {
+	select {
+	case <-ctx.closed:
+		return context.Canceled
+	default:
+		return nil
+	}
+}
+
+// Value implements [context.Context.Value]. It always returns nil for any key.
+func (sessionContext) Value(any) any {
+	return nil
+}
+
+// Sync reconciles the local session state with the remote session state.
+// In most cases, callers do not need to call Sync explicitly, as the cache
+// is kept up-to-date automatically though RTA subscription.
+// The request uses the current ETag to perform a conditional GET when possible.
+func (s *Session) Sync(ctx context.Context) error {
+	select {
+	case <-s.closed:
+		return net.ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		s.cacheMu.RLock()
+		etag := s.etag
+		s.cacheMu.RUnlock()
+
+		req, err := internal.NewRequest(ctx, http.MethodGet, s.ref.URL().String(), nil, []internal.RequestOption{
+			internal.RequestHeader("Accept", "application/json"),
+			internal.RequestHeader("If-None-Match", etag),
+			internal.ContractVersion(contractVersion),
+		})
+		if err != nil {
+			return fmt.Errorf("make request: %w", err)
+		}
+
+		resp, err := s.client.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		switch resp.StatusCode {
+		case http.StatusOK:
+			return s.sync(resp)
+		case http.StatusNotModified:
+			return nil
+		default:
+			return internal.UnexpectedStatusCode(resp)
+		}
+	}
+}
+
+// sync decodes the response body into a fresh [SessionDescription] and
+// updates the internal cache and last observed ETag.
+//
+// A fresh [SessionDescription] is always allocated before decoding so that
+// members absent from the response are not retained from the previous cache.
+// If the response does not include an ETag header, the existing ETag is preserved.
+//
+// The caller is responsible for closing the response body.
+// An error is returned if the response body cannot be decoded.
+func (s *Session) sync(resp *http.Response) error {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	// A fresh SessionDescription is allocated so that members absent from
+	// the response are not retained from the previous cache.
+	var d SessionDescription
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return fmt.Errorf("decode response body: %w", err)
+	}
+	s.cache = d
+	if e := resp.Header.Get("ETag"); e != "" {
+		s.etag = e // Update the last observed ETag.
+	}
+	return nil
+}
+
+// SetCustomProperties commits the custom properties to the multiplayer session.
+// The format or semantics of the custom data is specific to the title. It is
+// commonly used to expose session metadata such as display names or
+// server details.
+func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessage, opts ...internal.RequestOption) error {
+	return s.update(ctx, SessionDescription{
+		Properties: &SessionProperties{
+			Custom: custom,
+		},
+	}, opts)
+}
+
+// Constants returns the immutable session constants.
+// The returned value is a copy of the cached session state and is safe
+// to modify by the caller.
+func (s *Session) Constants() SessionConstants {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+
+	constants := s.cache.Constants
+	if constants == nil {
+		return SessionConstants{}
+	}
+	c := *constants
+	c.Custom = slices.Clone(constants.Custom)
+	return c
+}
+
+// Properties returns the mutable session properties.
+// The returned value is a copy of the cached session state and is safe
+// to modify by the caller.
+func (s *Session) Properties() SessionProperties {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+
+	properties := s.cache.Properties
+	if properties == nil {
+		return SessionProperties{}
+	}
+	p := *properties
+	p.Custom = slices.Clone(properties.Custom)
+	return p
+}
+
+// Reference returns a reference to the multiplayer session.
+// Callers may use this method for referencing the Session in external services in the game.
+func (s *Session) Reference() SessionReference {
+	return s.ref
+}
+
+// Member returns the cached description of the member identified by label.
+//
+// The label corresponds to a member identifier in the session.
+// In addition to concrete member IDs, the special label "me" may be
+// used to refer to the currently authenticated caller participating in the session.
+//
+// The returned [MemberDescription] is a copy of the cached state. The
+// boolean result reports whether a non-nil member with the given label
+// exists in the cached session state.
+func (s *Session) Member(label string) (MemberDescription, bool) {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+
+	member, ok := s.cache.Members[label]
+	if !ok || member == nil {
+		return MemberDescription{}, false
+	}
+	return *member, true
+}
+
+// MemberByXUID returns the cached description of the member identified by their XUID.
+//
+// The returned [MemberDescription] is a copy of the cached state. The
+// boolean result reports whether a non-nil member with the given XUID
+// exists in the member list iterator returned from [Session.Members].
+func (s *Session) MemberByXUID(xuid string) (MemberDescription, bool) {
+	for _, member := range s.Members() {
+		if member.Constants != nil && member.Constants.System != nil && member.Constants.System.XUID == xuid {
+			return member, true
+		}
+	}
+	return MemberDescription{}, false
+}
+
+// Members returns an iterator that yields non-nil members from the cached session state.
+// The returned seq operates over a snapshot of the member map taken at the time
+// of the call, so it is safe to iterate without holding internal locks.
+func (s *Session) Members() iter.Seq2[string, MemberDescription] {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+
+	if s.cache.Members == nil {
+		return func(func(string, MemberDescription) bool) {}
+	}
+	members := maps.Clone(s.cache.Members)
+	return func(yield func(string, MemberDescription) bool) {
+		for label, member := range members {
+			if member == nil {
+				continue
+			}
+			if !yield(label, *member) {
+				break
+			}
+		}
+	}
+}
+
+// SetMemberCustomProperties updates the custom properties of the specified member.
+// The special label "me" refers to the current authenticated caller. Only the owning
+// member may modify their own properties.
+// The [context.Context] is used for making a PUT request call. Changes are commited
+// immediately and reflected in the local cache.
+func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, custom json.RawMessage, opts ...internal.RequestOption) error {
+	return s.update(ctx, SessionDescription{
+		Members: map[string]*MemberDescription{
+			label: {
+				Properties: &MemberProperties{
+					Custom: custom,
+				},
+			},
+		},
+	}, opts)
+}
+
+// SessionReference encapsulates a reference to a multiplayer session.
+type SessionReference struct {
+	// ServiceConfigID is the Xbox Live service configuration ID (SCID)
+	// associated with the title.
+	//
+	// A single service configuration may be shared by multiple titles
+	// and platforms for the same game.
+	ServiceConfigID uuid.UUID `json:"scid,omitempty"`
+
+	// TemplateName is the name of the session template used to create
 	// the session.
-	InactiveRemovalTimeout uint64 `json:"inactiveRemovalTimeout,omitempty"`
-	// ReadyRemovalTimeout is the maximum time, in milliseconds, for a member who is marked as ready
-	// to become active. When the shell launches the title to start a multiplayer game, the member is
-	// marked as ready. If a member who is marked as ready doesn't become active with in this time,
-	// the member becomes inactive.
-	ReadyRemovalTimeout uint64 `json:"readyRemovalTimeout,omitempty"`
-	// SessionEmptyTimeout is the maximum time, in milliseconds, that the session can remain empty.
-	// If no members join the session within this time, the session is deleted.
-	SessionEmptyTimeout uint64                         `json:"sessionEmptyTimeout,omitempty"`
-	Metrics             *SessionConstantsSystemMetrics `json:"metrics,omitempty"`
-	// If MemberInitialization is set, the session expects the client system or title to perform initialization
-	// after session creation. Timeouts and initialization stages are automatically tracked by the session, including
-	// initial Quality of Service (QoS) measurements if any metrics are set.
-	MemberInitialization *MemberInitialization `json:"memberInitialization,omitempty"`
-	// PeerToPeerRequirements is a QoS requirements for a connection between session members.
-	PeerToPeerRequirements *PeerToPeerRequirements `json:"peerToPeerRequirements,omitempty"`
-	// PeerToHostRequirements is a QoS requirements for a connection between a host candidate
-	// and session members.
-	PeerToHostRequirements *PeerToHostRequirements `json:"peerToHostRequirements,omitempty"`
-	// MeasurementServerAddresses is the set of potential server connection strings that should
-	// be evaluated.
-	MeasurementServerAddresses json.RawMessage `json:"measurementServerAddresses,omitempty"`
-	// CloudComputePackage is the Cloud Compute package constants for the session, specified in a JSON string.
-	CloudComputePackage json.RawMessage `json:"cloudComputePackage,omitempty"`
+	//
+	// This value may be used to retrieve the template definition via
+	// API.TemplateByName.
+	TemplateName string `json:"templateName,omitempty"`
+
+	// Name is the unique identifier of the session.
+	//
+	// The value is an uppercase UUID (GUID) that uniquely identifies
+	// the session within the service configuration.
+	Name string `json:"name,omitempty"`
 }
 
-type PeerToHostRequirements struct {
-	LatencyMaximum       uint64 `json:"latencyMaximum,omitempty"`
-	BandwidthDownMinimum uint64 `json:"bandwidthDownMinimum,omitempty"`
-	BandwidthUpMinimum   uint64 `json:"bandwidthUpMinimum,omitempty"`
-	HostSelectionMetric  string `json:"hostSelectionMetric,omitempty"`
+// URL returns the URL locating to the HTTP resource of the session.
+func (ref SessionReference) URL() *url.URL {
+	return endpoint.JoinPath(
+		"/serviceconfigs/", ref.ServiceConfigID.String(),
+		"/sessionTemplates", ref.TemplateName,
+		"/sessions", ref.Name,
+	)
 }
 
-const (
-	HostSelectionMetricBandwidthUp   = "bandwidthUp"
-	HostSelectionMetricBandwidthDown = "bandwidthDown"
-	HostSelectionMetricBandwidth     = "bandwidth"
-	HostSelectionMetricLatency       = "latency"
-)
-
-type PeerToPeerRequirements struct {
-	LatencyMaximum   uint64 `json:"latencyMaximum,omitempty"`
-	BandwidthMinimum uint64 `json:"bandwidthMinimum,omitempty"`
-}
-
-type MemberInitialization struct {
-	JoinTimeout          uint64 `json:"joinTimeout,omitempty"`
-	MeasurementTimeout   uint64 `json:"measurementTimeout,omitempty"`
-	EvaluationTimeout    uint64 `json:"evaluationTimeout,omitempty"`
-	ExternalEvaluation   bool   `json:"externalEvaluation,omitempty"`
-	MembersNeededToStart uint32 `json:"membersNeededToStart,omitempty"`
-}
-
-type SessionConstantsSystemMetrics struct {
-	// Latency indicates that the title wants latency measured to
-	// help determine connectivity.
-	Latency bool `json:"latency,omitempty"`
-	// Bandwidth indicates that the title wants downstream (host-to-peer)
-	// bandwidth measured to help determine connectivity.
-	BandwidthDown bool `json:"bandwidthDown,omitempty"`
-	// BandwidthUp indicates that the title wants upstream (peer-to-host)
-	// bandwidth measured to help determine connectivity.
-	BandwidthUp bool `json:"bandwidthUp,omitempty"`
-	// Custom indicates that the title wants a custom measurement to help
-	// determine connectivity.
-	Custom bool `json:"custom,omitempty"`
-}
-
-// SessionCapabilities represents the capabilities of multiplayer session.
+// parseSessionReference parses a [SessionReference] from the value of the
+// 'Content-Location' header.
 //
-// SessionCapabilities are optional bool values that are set in the session
-// template. If no capabilities are needed, an empty SessionCapabilities should
-// be used in the template to prevent capabilities from being specified at session
-// creation, unless the title requires dynamic session capabilities.
-type SessionCapabilities struct {
-	// Connectivity indicates whether a session can enable metrics.
-	Connectivity bool `json:"connectivity,omitempty"`
-	// If SuppressPresenceActivityCheck is false (the default value), active users are required to
-	// remain online playing the title. If they don't, they are demoted to inactive status. Set
-	// SuppressPresenceActivityCheck to true to enable session members to stay active indefinitely
-	SuppressPresenceActivityCheck bool `json:"suppressPresenceActivityCheck,omitempty"`
-	// Gameplay indicates whether the session represents actual gameplay rather than time in setup
-	// or a menu, such as a lobby or during matchmaking.
-	Gameplay bool `json:"gameplay,omitempty"`
-	// If Large is true, if the session can host 101 to 1000 users, which affects other session features.
-	// Otherwise, the session can host 1 to 100 users.
-	Large bool `json:"large,omitempty"`
-	// If UserAuthorizationStyle is true, the session supports calls from platforms without strong
-	// title identity. This capability can't be set on large sessions.
-	UserAuthorizationStyle bool `json:"userAuthorizationStyle,omitempty"`
-	// If ConnectionRequiredForActiveMembers is true, a connection is required for a member to be
-	// marked as active. To enable session notifications and detect disconnections, it must be set
-	// to true.
-	ConnectionRequiredForActiveMembers bool `json:"connectionRequiredForActiveMembers,omitempty"`
-	// CrossPlay is true, if the session supports crossplay.
-	CrossPlay bool `json:"crossPlay,omitempty"`
-	// If Searchable is true, the session can be linked to a search handle for searching.
-	Searchable bool `json:"searchable,omitempty"`
-	// If HasOwners is true, the session has owners.
-	HasOwners bool `json:"hasOwners,omitempty"`
-}
+// The value may be either a relative path or an absolute URL, as both are
+// permitted by the HTTP specification. In either case, the path component
+// must follow this structure:
+//
+//	"/serviceconfigs/<scid>/sessionTemplates/<templateName>/sessions/<name>"
+//
+// If the path does not match this pattern or does not refer to the
+// multiplayer session, an error will be returned.
+func parseSessionReference(loc string) (ref SessionReference, err error) {
+	// [url.Parse] accepts both relative and absolute URLs, making it suitable
+	// for parsing 'Content-Location' values regardless of form.
+	u, err := url.Parse(loc)
+	if err != nil {
+		return SessionReference{}, fmt.Errorf("parse as URL: %w", err)
+	}
 
-const (
-	SessionVisibilityPrivate = "private"
-	SessionVisibilityVisible = "visible"
-	SessionVisibilityOpen    = "open"
-)
+	segments := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(segments) != 6 {
+		return ref, fmt.Errorf("malformed path: %q", u.Path)
+	}
+	if !strings.EqualFold(segments[0], "serviceconfigs") || !strings.EqualFold(segments[2], "sessionTemplates") || segments[4] != "sessions" {
+		return ref, fmt.Errorf("invalid path to session: %q", u.Path)
+	}
+
+	ref.ServiceConfigID, err = uuid.Parse(segments[1])
+	if err != nil {
+		return ref, fmt.Errorf("parse service config ID: %w", err)
+	}
+	ref.TemplateName, ref.Name = segments[3], segments[5]
+	return ref, nil
+}

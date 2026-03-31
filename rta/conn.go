@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
-	"github.com/df-mc/go-xsapi/internal"
 	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 // Conn represents a connection between the real-time activity services. It can
@@ -61,7 +61,7 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 			}
 			sub := &Subscription{}
 			if err := json.Unmarshal(h.payload[0], &sub.ID); err != nil {
-				return nil, fmt.Errorf("decode subscription ConnectionID: %w", err)
+				return nil, fmt.Errorf("decode subscription ID: %w", err)
 			}
 			sub.Custom = h.payload[1]
 
@@ -93,6 +93,9 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		if h.status != StatusOK {
 			return unexpectedStatusCode(h.status, h.payload)
 		}
+		c.subscriptionsMu.Lock()
+		delete(c.subscriptions, sub.ID)
+		c.subscriptionsMu.Unlock()
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -152,7 +155,7 @@ func (c *Conn) read() {
 		}
 		typ, err := readHeader(payload)
 		if err != nil {
-			c.log.Error("error reading header", internal.ErrAttr(err))
+			c.log.Error("error reading header", slog.Any("error", err))
 			continue
 		}
 		go c.handleMessage(typ, payload[1:])
@@ -174,7 +177,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 	case typeSubscribe, typeUnsubscribe: // Subscribe & Unsubscribe handshake response
 		h, err := readHandshake(payload)
 		if err != nil {
-			c.log.Error("error reading handshake response", internal.ErrAttr(err))
+			c.log.Error("error reading handshake response", slog.Any("error", err))
 			return
 		}
 		op := typeToOperation(typ)
@@ -193,7 +196,8 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		}
 		var subscriptionID uint32
 		if err := json.Unmarshal(payload[0], &subscriptionID); err != nil {
-			c.log.Error("error decoding subscription ID", internal.ErrAttr(err))
+			c.log.Error("error decoding subscription ID", slog.Any("error", err))
+			return
 		}
 		c.subscriptionsMu.Lock()
 		defer c.subscriptionsMu.Unlock()
@@ -215,6 +219,8 @@ type OutOfRangeError struct {
 	Index   int
 }
 
+// Error returns a string representation of the Error in the same format
+// used by [runtime.boundsError].
 func (e *OutOfRangeError) Error() string {
 	return fmt.Sprintf("xsapi/rta: index out of range [%d] with length %d", e.Index, len(e.Payload))
 }
