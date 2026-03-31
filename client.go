@@ -17,6 +17,7 @@ import (
 	"github.com/df-mc/go-xsapi/presence"
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/social"
+	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/df-mc/go-xsapi/xal/xsts"
@@ -198,11 +199,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 	}
-	// The timestamp used for signing is always time.Now() rather than the latest
-	// timestamp observed from Microsoft servers. This is because RoundTrip may
-	// serve non-Microsoft endpoints, and it would be incorrect to advance the
-	// internal clock based on responses from arbitrary servers.
-	policy.Sign(req2, data, c.src.ProofKey(), time.Now())
+	policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime())
 
 	return c.baseTransport().RoundTrip(req2)
 }

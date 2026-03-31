@@ -69,8 +69,9 @@ type Session struct {
 	// Goroutines may select on this channel to be notified when the session has been closed.
 	// Once closed, no further network operations should be performed using this Session.
 	closed chan struct{}
-	// once ensures that the closure of the Session occurs only once.
-	once sync.Once
+	// closeMu serializes remote close attempts so that a failed close can be retried
+	// without racing a successful one.
+	closeMu sync.Mutex
 }
 
 // Close closes the multiplayer session using a context with 15 seconds timeout.
@@ -78,9 +79,9 @@ type Session struct {
 // If the caller is the host of the multiplayer session, the session itself is closed.
 // If the caller is a non-host participant, this call ensures the caller to leave the session.
 //
-// Once CloseContext is called, the multiplayer session will no longer receive notifications
+// Once CloseContext succeeds, the multiplayer session will no longer receive notifications
 // about changes in the session even though if the session still exist after leaving.
-// CloseContext can be called many times since it internally uses a [sync.Once].
+// If the remote leave or close request fails, the Session remains usable and CloseContext may be retried.
 func (s *Session) Close() error {
 	ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
 	defer cancel()
@@ -93,25 +94,32 @@ func (s *Session) Close() error {
 // If the caller is the host of the multiplayer session, the session itself is closed.
 // If the caller is a non-host participant, this call ensures the caller to leave the session.
 //
-// Once CloseContext is called, the multiplayer session will no longer receive notifications
+// Once CloseContext succeeds, the multiplayer session will no longer receive notifications
 // about changes in the session even though if the session still exist after leaving.
-// CloseContext can be called many times since it internally uses a [sync.Once].
-func (s *Session) CloseContext(ctx context.Context) (err error) {
+// If the remote leave or close request fails, the Session remains usable and CloseContext may be retried.
+func (s *Session) CloseContext(ctx context.Context) error {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+
+	select {
+	case <-s.closed:
+		return nil
+	default:
+	}
+
 	d := SessionDescription{
 		Members: map[string]*MemberDescription{
 			// Set myself to nil to leave or close the multiplayer session.
 			"me": nil,
 		},
 	}
-	if err2 := s.update(ctx, d, nil); err2 != nil {
-		err = err2
+	if err := s.update(ctx, d, nil); err != nil {
+		return err
 	}
 
-	s.once.Do(func() {
-		s.client.handleSessionClose(s)
-		close(s.closed)
-	})
-	return err
+	s.client.handleSessionClose(s)
+	close(s.closed)
+	return nil
 }
 
 // Handle registers h as the [Handler] for this session. The registered handler
