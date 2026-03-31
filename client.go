@@ -267,6 +267,7 @@ func (c *Client) Social() *social.Client {
 	return c.social
 }
 
+// Presence returns the API client for the Xbox Live Presence API.
 func (c *Client) Presence() *presence.Client {
 	return c.presence
 }
@@ -295,6 +296,14 @@ func (c *Client) Close() error {
 // CloseContext closes all underlying API clients using the given context.
 // Once closed, the Client cannot be reused as it also disconnects from
 // WebSocket-based services such as RTA.
+//
+// CloseContext also removes the authenticated title's current Xbox Live
+// presence via [presence.Client.Remove]. This is intentional: shutting down
+// the client is treated as the title closing, so the presence is cleared
+// immediately instead of waiting for it to expire on the server.
+//
+// Callers that want to release other resources without mutating presence
+// should not call CloseContext.
 func (c *Client) CloseContext(ctx context.Context) (err error) {
 	c.once.Do(func() {
 		err = errors.Join(
