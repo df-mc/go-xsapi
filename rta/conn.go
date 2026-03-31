@@ -93,6 +93,9 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		if h.status != StatusOK {
 			return unexpectedStatusCode(h.status, h.payload)
 		}
+		c.subscriptionsMu.Lock()
+		delete(c.subscriptions, sub.ID)
+		c.subscriptionsMu.Unlock()
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
