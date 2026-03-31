@@ -198,6 +198,10 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 	}
+	// The timestamp used for signing is always time.Now() rather than the latest
+	// timestamp observed from Microsoft servers. This is because RoundTrip may
+	// serve non-Microsoft endpoints, and it would be incorrect to advance the
+	// internal clock based on responses from arbitrary servers.
 	policy.Sign(req2, data, c.src.ProofKey(), time.Now())
 
 	return c.baseTransport().RoundTrip(req2)
