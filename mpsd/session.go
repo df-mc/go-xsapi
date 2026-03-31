@@ -97,16 +97,17 @@ func (s *Session) Close() error {
 // about changes in the session even though if the session still exist after leaving.
 // CloseContext can be called many times since it internally uses a [sync.Once].
 func (s *Session) CloseContext(ctx context.Context) (err error) {
+	d := SessionDescription{
+		Members: map[string]*MemberDescription{
+			// Set myself to nil to leave or close the multiplayer session.
+			"me": nil,
+		},
+	}
+	if err2 := s.update(ctx, d, nil); err2 != nil {
+		err = err2
+	}
+
 	s.once.Do(func() {
-		d := SessionDescription{
-			Members: map[string]*MemberDescription{
-				// Set myself to nil to leave or close the multiplayer session.
-				"me": nil,
-			},
-		}
-		if err2 := s.update(ctx, d, nil); err2 != nil {
-			err = err2
-		}
 		s.client.handleSessionClose(s)
 		close(s.closed)
 	})
