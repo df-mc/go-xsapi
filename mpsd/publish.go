@@ -124,7 +124,7 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 
 	switch resp.StatusCode {
 	case http.StatusCreated:
-		return c.createSession(ctx, ref, d, resp.Header.Get("ETag"))
+		return c.createSession(ctx, ref, resp)
 	default:
 		return nil, internal.UnexpectedStatusCode(resp)
 	}
@@ -135,13 +135,19 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 // When joining an existing multiplayer session, the session reference may be
 // nil or unavailable in the context. In that case, the session reference will
 // be automatically derived from the Content-Location header in the first request call.
-func (c *Client) createSession(ctx context.Context, ref SessionReference, d SessionDescription, etag string) (*Session, error) {
+// The initial response will be used to decode the initial contents of the remote session.
+// The caller should close the response body after calling this method.
+func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *http.Response) (*Session, error) {
+	var d SessionDescription
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return nil, fmt.Errorf("decode initial contents: %w", err)
+	}
 	s := &Session{
 		client: c,
 
 		h:      NopHandler{}, // fast-path without locking
 		cache:  d,
-		etag:   etag,
+		etag:   resp.Header.Get("ETag"),
 		closed: make(chan struct{}),
 		ref:    ref,
 	}
