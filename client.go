@@ -146,7 +146,9 @@ type Client struct {
 	social   *social.Client
 	presence *presence.Client
 
-	once sync.Once
+	closeMu  sync.Mutex
+	closed   bool
+	closeErr error
 }
 
 // HTTPClient returns the underlying HTTP client that automatically
@@ -301,17 +303,28 @@ func (c *Client) Close() error {
 //
 // Callers that want to release other resources without mutating presence
 // should not call CloseContext.
-func (c *Client) CloseContext(ctx context.Context) (err error) {
-	c.once.Do(func() {
-		err = errors.Join(
-			c.mpsd.CloseContext(ctx),
-			c.social.CloseContext(ctx),
-			c.presence.CloseContext(ctx),
+func (c *Client) CloseContext(ctx context.Context) error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
 
-			c.rta.Close(),
-		)
-	})
-	return err
+	if c.closed {
+		return c.closeErr
+	}
+
+	if err := errors.Join(
+		c.mpsd.CloseContext(ctx),
+		c.social.CloseContext(ctx),
+		c.presence.CloseContext(ctx),
+	); err != nil {
+		return err
+	}
+
+	// Once rta is closed, the client is no longer usable and Close cannot be retried.
+	c.closed = true
+	if c.rta != nil {
+		c.closeErr = c.rta.Close()
+	}
+	return c.closeErr
 }
 
 // AcceptLanguage returns a [internal.RequestOption] that appends the given
