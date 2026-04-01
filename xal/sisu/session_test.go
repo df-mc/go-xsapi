@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"net/url"
 	"os"
@@ -166,7 +165,7 @@ func testSubscription(t testing.TB, client *xsapi.Client) {
 	if err != nil {
 		t.Fatalf("error subscribing: %s", err)
 	}
-	fmt.Println(sub.ResourceURI())
+	t.Log(sub.ResourceURI())
 	sub.Handle(&subscriptionHandler{
 		TB:  t,
 		sub: sub,
@@ -175,7 +174,7 @@ func testSubscription(t testing.TB, client *xsapi.Client) {
 	/*if err := rta.CloseDaConn(client.RTA()); err != nil {
 		t.Fatalf("error closing WebSocket: %s", err)
 	}*/
-	time.Sleep(time.Second * 15)
+	// time.Sleep(time.Second * 15)
 }
 
 type subscriptionHandler struct {

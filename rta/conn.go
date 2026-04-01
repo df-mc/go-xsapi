@@ -39,12 +39,19 @@ type Conn struct {
 
 	log *slog.Logger
 
-	reconnecting  atomic.Bool
+	// reconnecting indicates whether the Conn is currently reconnecting.
+	reconnecting atomic.Bool
+	// reconnectDone is a channel that is closed when the reconnect is complete.
+	// It will be a nil channel if there is no ongoing reconnect.
 	reconnectDone chan struct{}
-	reconnectMu   sync.RWMutex
+	// reconnectMu guards reconnectDone from concurrent read/write access.
+	reconnectMu sync.RWMutex
 
-	once   sync.Once
-	ctx    context.Context
+	// once ensures that the Conn is closed only once.
+	once sync.Once
+	// ctx is the background context for the Conn.
+	ctx context.Context
+	// cancel is a function used to cancel the background ctx of the Conn.
 	cancel context.CancelCauseFunc
 }
 
@@ -63,49 +70,51 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 }
 
 func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
+	h, err := c.call(ctx, operationSubscribe, []any{resourceURI})
+	if err != nil {
+		return nil, err
+	}
+
+	switch h.status {
+	case StatusOK:
+		if len(h.payload) < 2 {
+			return nil, &OutOfRangeError{
+				Payload: h.payload,
+				Index:   1,
+			}
+		}
+		sub := &Subscription{resourceURI: resourceURI}
+		if err := json.Unmarshal(h.payload[0], &sub.id); err != nil {
+			return nil, fmt.Errorf("decode subscription ID: %w", err)
+		}
+		sub.custom = h.payload[1]
+		return sub, nil
+	default:
+		return nil, unexpectedStatusCode(h.status, h.payload)
+	}
+}
+
+func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {
 	for {
 		if err := c.wait(ctx); err != nil {
 			return nil, err
 		}
 
-		sequence := c.sequences[operationSubscribe].Add(1)
-		hand, err := c.expect(operationSubscribe, sequence, []any{resourceURI})
+		seq := c.sequences[op].Add(1)
+		ch, err := c.expect(op, seq, payload)
 		if err != nil {
 			continue
 		}
-
 		select {
-		case h, ok := <-hand:
+		case result, ok := <-ch:
 			if !ok {
-				// drainExpected cleared the expected map and closed the channel
-				// because the connection was lost during the handshake.
-				// We can retry on the new connection.
 				continue
 			}
-
-			c.release(operationSubscribe, sequence)
-			switch h.status {
-			case StatusOK:
-				if len(h.payload) < 2 {
-					return nil, &OutOfRangeError{
-						Payload: h.payload,
-						Index:   1,
-					}
-				}
-				sub := &Subscription{resourceURI: resourceURI}
-				if err := json.Unmarshal(h.payload[0], &sub.id); err != nil {
-					return nil, fmt.Errorf("decode subscription ID: %w", err)
-				}
-				sub.custom = h.payload[1]
-				return sub, nil
-			default:
-				return nil, unexpectedStatusCode(h.status, h.payload)
-			}
+			c.release(op, seq)
+			return result, nil
 		case <-ctx.Done():
-			c.release(operationSubscribe, sequence)
 			return nil, ctx.Err()
 		case <-c.ctx.Done():
-			c.release(operationSubscribe, sequence)
 			return nil, context.Cause(c.ctx)
 		}
 	}
@@ -114,38 +123,18 @@ func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
-	for {
-		if err := c.wait(ctx); err != nil {
-			return err
-		}
-
-		sequence := c.sequences[operationUnsubscribe].Add(1)
-		hand, err := c.expect(operationUnsubscribe, sequence, []any{sub.ID()})
-		if err != nil {
-			continue
-		}
-
-		select {
-		case h, ok := <-hand:
-			if !ok {
-				continue
-			}
-			c.release(operationUnsubscribe, sequence)
-			if h.status != StatusOK {
-				return unexpectedStatusCode(h.status, h.payload)
-			}
-			c.subscriptionsMu.Lock()
-			delete(c.subscriptions, sub.ID())
-			c.subscriptionsMu.Unlock()
-			return nil
-		case <-ctx.Done():
-			c.release(operationUnsubscribe, sequence)
-			return ctx.Err()
-		case <-c.ctx.Done():
-			c.release(operationUnsubscribe, sequence)
-			return context.Cause(c.ctx)
-		}
+	h, err := c.call(ctx, operationUnsubscribe, []any{sub.ID()})
+	if err != nil {
+		return err
 	}
+
+	if h.status != StatusOK {
+		return unexpectedStatusCode(h.status, h.payload)
+	}
+	c.subscriptionsMu.Lock()
+	delete(c.subscriptions, sub.ID())
+	c.subscriptionsMu.Unlock()
+	return nil
 }
 
 // Subscription represents a subscription contracted with the resource URI available through
@@ -232,9 +221,10 @@ func (c *Conn) drainExpected() {
 	c.expectedMu.Lock()
 	for op := range operationCapacity {
 		for seq, ch := range c.expected[op] {
-			close(ch)
 			delete(c.expected[op], seq)
+			close(ch)
 		}
+		c.sequences[op].Store(0)
 	}
 	c.expectedMu.Unlock()
 }
@@ -273,7 +263,7 @@ func (c *Conn) reconnect() {
 	}
 	defer c.reconnecting.Store(false)
 
-	c.log.Info("reconnecting WebSocket connection...")
+	c.log.Info("re-establishing WebSocket connection...")
 
 	done := make(chan struct{})
 	c.reconnectMu.Lock()
@@ -292,62 +282,67 @@ func (c *Conn) reconnect() {
 		_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
 		return
 	}
-
 	c.connMu.Lock()
 	c.conn = conn
 	c.connMu.Unlock()
 	go c.read()
 
-	c.log.Info("reconnected, resubscribing any existing subscriptions")
-	go c.resubscribe()
-}
+	c.log.Info("reconnected, resubscribing existing subscriptions...")
 
-func (c *Conn) resubscribe() {
 	c.subscriptionsMu.Lock()
 	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
-	for _, s := range c.subscriptions {
-		subscriptions = append(subscriptions, s)
+	for _, subscription := range c.subscriptions {
+		subscriptions = append(subscriptions, subscription)
 	}
 	clear(c.subscriptions)
 	c.subscriptionsMu.Unlock()
 
+	go c.resubscribe(subscriptions)
+}
+
+func (c *Conn) resubscribe(subscriptions []*Subscription) {
 	wg := new(sync.WaitGroup)
 	wg.Add(len(subscriptions))
-	for _, sub := range subscriptions {
-		go func(sub *Subscription) {
+	for _, s := range subscriptions {
+		go func(subscription *Subscription) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 			defer cancel()
 
-			newSub, err := c.subscribe(ctx, sub.ResourceURI())
+			sub, err := c.subscribe(ctx, subscription.ResourceURI())
 			if err != nil {
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
-						slog.Uint64("id", uint64(sub.ID())),
-						slog.String("resourceURI", sub.ResourceURI()),
+						slog.Uint64("id", uint64(subscription.ID())),
+						slog.String("resourceURI", subscription.ResourceURI()),
 					),
 					slog.Any("error", err),
 				)
 				return
 			}
 
-			sub.mu.Lock()
-			sub.id = newSub.id
-			sub.custom = newSub.custom
-			sub.mu.Unlock()
+			subscription.mu.Lock()
+			subscription.id = sub.id
+			subscription.custom = sub.custom
+			subscription.mu.Unlock()
 
 			c.subscriptionsMu.Lock()
-			c.subscriptions[sub.id] = sub
+			c.subscriptions[subscription.id] = subscription
 			c.subscriptionsMu.Unlock()
 
 			// Call HandleReconnect() to notice that the subscription has been refreshed in the new connection.
 			// This is because the subscription's custom data may differ from the previous one.
-			go sub.handler().HandleReconnect()
-		}(sub)
+			go subscription.handler().HandleReconnect()
+			c.log.Debug("resubscribed", slog.Group("subscription",
+				slog.Uint64("id", uint64(subscription.ID())),
+				slog.String("custom", string(subscription.Custom())),
+				slog.String("resourceURI", subscription.ResourceURI()),
+			))
+		}(s)
 	}
 
 	wg.Wait()
-	c.log.Info("resubscribed any existing subscriptions")
+	c.log.Info("resubscribed existing subscriptions")
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.
@@ -374,9 +369,9 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 			return
 		}
 		op := typeToOperation(typ)
-		c.expectedMu.RLock()
+		c.expectedMu.Lock()
+		defer c.expectedMu.Unlock()
 		hand, ok := c.expected[op][h.sequence]
-		c.expectedMu.RUnlock()
 		if !ok {
 			c.log.Debug("unexpected handshake response", slog.Group("message", "type", typ, "sequence", h.sequence))
 			return
