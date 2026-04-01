@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/df-mc/go-xsapi"
 	"github.com/df-mc/go-xsapi/mpsd"
 	"github.com/df-mc/go-xsapi/presence"
+	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
@@ -105,6 +107,8 @@ func TestSession(t *testing.T) {
 		}
 	})
 
+	testSubscription(t, client)
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
 	u, err := url.Parse("https://20ca2.playfabapi.com")
@@ -155,6 +159,36 @@ func TestSession(t *testing.T) {
 	for _, activity := range activities {
 		t.Logf("%#v", activity)
 	}
+}
+
+func testSubscription(t testing.TB, client *xsapi.Client) {
+	sub, err := client.RTA().Subscribe(t.Context(), "https://sessiondirectory.xboxlive.com/connections/")
+	if err != nil {
+		t.Fatalf("error subscribing: %s", err)
+	}
+	fmt.Println(sub.ResourceURI())
+	sub.Handle(&subscriptionHandler{
+		TB:  t,
+		sub: sub,
+	})
+
+	/*if err := rta.CloseDaConn(client.RTA()); err != nil {
+		t.Fatalf("error closing WebSocket: %s", err)
+	}*/
+	time.Sleep(time.Second * 15)
+}
+
+type subscriptionHandler struct {
+	testing.TB
+	sub *rta.Subscription
+}
+
+func (h subscriptionHandler) HandleEvent(custom json.RawMessage) {
+	h.Logf("HandleEvent(%s)", custom)
+}
+
+func (h subscriptionHandler) HandleReconnect() {
+	h.Logf("HandleReconnect(%#v)", h.sub)
 }
 
 func subscribeSocial(t testing.TB, client *xsapi.Client) {

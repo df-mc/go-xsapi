@@ -69,7 +69,7 @@ func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription
 		}
 
 		sequence := c.sequences[operationSubscribe].Add(1)
-		hand, err := c.shake(operationSubscribe, sequence, []any{resourceURI})
+		hand, err := c.expect(operationSubscribe, sequence, []any{resourceURI})
 		if err != nil {
 			continue
 		}
@@ -92,7 +92,7 @@ func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription
 						Index:   1,
 					}
 				}
-				sub := &Subscription{}
+				sub := &Subscription{resourceURI: resourceURI}
 				if err := json.Unmarshal(h.payload[0], &sub.id); err != nil {
 					return nil, fmt.Errorf("decode subscription ID: %w", err)
 				}
@@ -120,13 +120,16 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		}
 
 		sequence := c.sequences[operationUnsubscribe].Add(1)
-		hand, err := c.shake(operationUnsubscribe, sequence, []any{sub.ID()})
+		hand, err := c.expect(operationUnsubscribe, sequence, []any{sub.ID()})
 		if err != nil {
-			return err
+			continue
 		}
 
 		select {
-		case h := <-hand:
+		case h, ok := <-hand:
+			if !ok {
+				continue
+			}
 			c.release(operationUnsubscribe, sequence)
 			if h.status != StatusOK {
 				return unexpectedStatusCode(h.status, h.payload)
@@ -239,7 +242,7 @@ func (c *Conn) drainExpected() {
 // read goes as a background goroutine of Conn, reading a JSON array from the websocket
 // connection and decoding a header needed to indicate which message should be handled.
 func (c *Conn) read() {
-	go c.drainExpected()
+	defer c.drainExpected()
 
 	for {
 		var payload []json.RawMessage
@@ -296,7 +299,7 @@ func (c *Conn) reconnect() {
 	go c.read()
 
 	c.log.Info("reconnected, resubscribing any existing subscriptions")
-	c.resubscribe()
+	go c.resubscribe()
 }
 
 func (c *Conn) resubscribe() {
@@ -311,7 +314,6 @@ func (c *Conn) resubscribe() {
 	wg := new(sync.WaitGroup)
 	wg.Add(len(subscriptions))
 	for _, sub := range subscriptions {
-		wg.Add(1)
 		go func(sub *Subscription) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
@@ -373,8 +375,8 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		}
 		op := typeToOperation(typ)
 		c.expectedMu.RLock()
-		defer c.expectedMu.RUnlock()
 		hand, ok := c.expected[op][h.sequence]
+		c.expectedMu.RUnlock()
 		if !ok {
 			c.log.Debug("unexpected handshake response", slog.Group("message", "type", typ, "sequence", h.sequence))
 			return
@@ -390,9 +392,9 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 			c.log.Error("error decoding subscription ID", slog.Any("error", err))
 			return
 		}
-		c.subscriptionsMu.Lock()
-		defer c.subscriptionsMu.Unlock()
+		c.subscriptionsMu.RLock()
 		sub, ok := c.subscriptions[subscriptionID]
+		c.subscriptionsMu.RUnlock()
 		if ok {
 			go sub.handler().HandleEvent(payload[1])
 		}
