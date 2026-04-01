@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"log/slog"
 	"math/rand"
 	"net/url"
 	"os"
@@ -96,6 +97,9 @@ func TestSession(t *testing.T) {
 
 	client, err := xsapi.ClientConfig{
 		// EnableChat: true,
+		Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
 	}.New(t.Context(), s)
 	if err != nil {
 		t.Fatalf("error creating API client: %s", err)
@@ -186,7 +190,11 @@ func (h subscriptionHandler) HandleEvent(custom json.RawMessage) {
 	h.Logf("HandleEvent(%s)", custom)
 }
 
-func (h subscriptionHandler) HandleReconnect() {
+func (h subscriptionHandler) HandleReconnect(err error) {
+	if err != nil {
+		h.Logf("HandleReconnect(%s)", err)
+		return
+	}
 	h.Logf("HandleReconnect(%#v)", h.sub)
 }
 

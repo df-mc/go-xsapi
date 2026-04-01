@@ -39,10 +39,10 @@ type Conn struct {
 
 	log *slog.Logger
 
-	// reconnecting indicates whether the Conn is currently reconnecting.
+	// reconnecting indicates whether the Conn is currently reconnecting to the RTA service.
 	reconnecting atomic.Bool
 	// reconnectDone is a channel that is closed when the reconnect is complete.
-	// It will be a nil channel if there is no ongoing reconnect.
+	// It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
 	// reconnectMu guards reconnectDone from concurrent read/write access.
 	reconnectMu sync.RWMutex
@@ -69,6 +69,13 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 	return sub, nil
 }
 
+// subscribe performs a sequenced call to subscribe to the given resource URI using
+// the provided [context.Context]. The caller is responsible for registering the
+// returned [Subscription] in the Conn's subscriptions map using [Subscription.ID].
+//
+// This is separated from [Conn.Subscribe] because during reconnect, subscriptions
+// inherited from previous connection must be re-registered in the map without
+// duplicating the subscribe logic.
 func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
 	h, err := c.call(ctx, operationSubscribe, []any{resourceURI})
 	if err != nil {
@@ -83,7 +90,11 @@ func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription
 				Index:   1,
 			}
 		}
-		sub := &Subscription{resourceURI: resourceURI}
+		sub := &Subscription{
+			resourceURI: resourceURI,
+
+			h: NopSubscriptionHandler{}, // fast-path for defaulting handler without locking
+		}
 		if err := json.Unmarshal(h.payload[0], &sub.id); err != nil {
 			return nil, fmt.Errorf("decode subscription ID: %w", err)
 		}
@@ -94,6 +105,30 @@ func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription
 	}
 }
 
+// Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
+// the [context.Context] to be used during the handshake. An error may be returned.
+func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
+	h, err := c.call(ctx, operationUnsubscribe, []any{sub.ID()})
+	if err != nil {
+		return err
+	}
+
+	if h.status != StatusOK {
+		return unexpectedStatusCode(h.status, h.payload)
+	}
+	c.subscriptionsMu.Lock()
+	delete(c.subscriptions, sub.ID())
+	c.subscriptionsMu.Unlock()
+	return nil
+}
+
+// call sends a sequenced message to the server and blocks using the given
+// [context.Context] until the server responds with a matching sequence number.
+// The response is then decoded into a [handshake] and returned. The caller is
+// responsible for checking its status code.
+//
+// If the Conn is currently reconnecting, [call] blocks until the reconnect
+// completes before sending a message to the server.
 func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {
 	for {
 		if err := c.wait(ctx); err != nil {
@@ -120,23 +155,6 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, e
 	}
 }
 
-// Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
-// the [context.Context] to be used during the handshake. An error may be returned.
-func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
-	h, err := c.call(ctx, operationUnsubscribe, []any{sub.ID()})
-	if err != nil {
-		return err
-	}
-
-	if h.status != StatusOK {
-		return unexpectedStatusCode(h.status, h.payload)
-	}
-	c.subscriptionsMu.Lock()
-	delete(c.subscriptions, sub.ID())
-	c.subscriptionsMu.Unlock()
-	return nil
-}
-
 // Subscription represents a subscription contracted with the resource URI available through
 // the real-time activity service. A Subscription may be contracted via Conn.Subscribe.
 type Subscription struct {
@@ -148,50 +166,84 @@ type Subscription struct {
 	mu sync.RWMutex
 }
 
+// ID returns the ID assigned to the [Subscription] within a single RTA connection.
 func (s *Subscription) ID() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.id
 }
 
+// Custom returns the custom data associated with the [Subscription].
+//
+// The format and semantics of this data depend on the resource the
+// subscription is targeting. It is received alongside the successful
+// subscription response when the [Subscription] was established.
+// The custom data may change if the Conn has reconnected to RTA service.
 func (s *Subscription) Custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.custom
 }
 
+// ResourceURI returns the URI identifying the resource which the [Subscription] is targeting.
+// The returned value is identical to the one passed to [Conn.Subscribe].
 func (s *Subscription) ResourceURI() string {
 	return s.resourceURI
 }
 
+// Handle registers a [SubscriptionHandler] on the [Subscription] to handle
+// future events that may occur in the subscription. If h is nil, a no-op
+// handler is registered.
 func (s *Subscription) Handle(h SubscriptionHandler) {
+	if h == nil {
+		h = NopSubscriptionHandler{}
+	}
 	s.mu.Lock()
 	s.h = h
 	s.mu.Unlock()
 }
 
+// handler returns the [SubscriptionHandler] currently registered on the [Subscription].
 func (s *Subscription) handler() SubscriptionHandler {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.h == nil {
-		return NopSubscriptionHandler{}
-	}
 	return s.h
 }
 
+// SubscriptionHandler is the interface for handling events that may occur in a single
+// [Subscription]. An implementation can be registered on a Subscription via [Subscription.Handle].
 type SubscriptionHandler interface {
+	// HandleEvent handles an event message received over the RTA subscription.
+	// The event data reflects what occurred within that subscription.
+	// For example, in Social API, an event is received when a user adds or
+	// removes the caller.
 	HandleEvent(custom json.RawMessage)
-	HandleReconnect()
+
+	// HandleReconnect is called when the Conn has reconnected to the RTA service
+	// and the subscription has been re-established on the new connection.
+	//
+	// If err is non-nil, the re-subscribe has failed. In this case, the [Subscription]
+	// still holds the ID and custom data from the previous connection. The handler does
+	// not need to call [Conn.Unsubscribe].
+	//
+	// If err is nil, the Subscription was successfully re-established on the
+	// new connection and has been assigned a new ID. The custom data may also
+	// differ from the previous connection depending on the targeting resource.
+	// In this case, the handler remains responsible for calling [Conn.Unsubscribe]
+	// during cleanup.
+	HandleReconnect(err error)
 }
 
+// NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
 type NopSubscriptionHandler struct{}
 
 func (NopSubscriptionHandler) HandleEvent(json.RawMessage) {}
-func (NopSubscriptionHandler) HandleReconnect()            {}
+func (NopSubscriptionHandler) HandleReconnect(error)       {}
 
-// write attempts to write a JSON array with header and the body. A background context is
-// used as no context perceived by the parent goroutine should be used to a websocket method
-// to avoid closing the connection if it has cancelled or exceeded a deadline.
+// write sends a JSON array composed of the given type and payload over the
+// WebSocket connection. A background context is used intentionally, because
+// the caller's context must not be passed to WebSocket write methods, as
+// cancellation or deadline would close the underlying connection.
 func (c *Conn) write(typ uint32, payload []any) error {
 	return wsjson.Write(context.Background(), c.conn, append([]any{typ}, payload...))
 }
@@ -215,8 +267,9 @@ func (c *Conn) wait(ctx context.Context) error {
 	}
 }
 
-// drainExpected closes all channels currently registered in c.expected
-// and clears the map.
+// drainExpected closes all pending response channels in c.expected, clears
+// the map, and resets all sequence counters to zero so the next sequenced
+// call will start from zero again. It is called when the connection is lost.
 func (c *Conn) drainExpected() {
 	c.expectedMu.Lock()
 	for op := range operationCapacity {
@@ -229,8 +282,10 @@ func (c *Conn) drainExpected() {
 	c.expectedMu.Unlock()
 }
 
-// read goes as a background goroutine of Conn, reading a JSON array from the websocket
-// connection and decoding a header needed to indicate which message should be handled.
+// read continuously reads JSON messages from the WebSocket connection and
+// dispatches them for handling. If the connection is lost unexpectedly, it
+// triggers a reconnect. If the Conn was closed by the user via [Conn.Close],
+// no reconnect is attempted.
 func (c *Conn) read() {
 	defer c.drainExpected()
 
@@ -254,6 +309,9 @@ func (c *Conn) read() {
 	}
 }
 
+// reconnect re-establishes the WebSocket connection. Only one reconnect may
+// run at a time. Concurrent calls after the first are no-ops. If establishment fails,
+// the Conn is closed with the error as the cause.
 func (c *Conn) reconnect() {
 	if c.ctx.Err() != nil {
 		return
@@ -287,8 +345,6 @@ func (c *Conn) reconnect() {
 	c.connMu.Unlock()
 	go c.read()
 
-	c.log.Info("reconnected, resubscribing existing subscriptions...")
-
 	c.subscriptionsMu.Lock()
 	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
 	for _, subscription := range c.subscriptions {
@@ -297,9 +353,13 @@ func (c *Conn) reconnect() {
 	clear(c.subscriptions)
 	c.subscriptionsMu.Unlock()
 
+	c.log.Info("reconnected, resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 	go c.resubscribe(subscriptions)
 }
 
+// resubscribe re-establishes all subscriptions inherited from the previous
+// WebSocket connection. Each re-subscribe attempt has a timeout of 15 seconds.
+// Failures are reported via [SubscriptionHandler.HandleReconnect].
 func (c *Conn) resubscribe(subscriptions []*Subscription) {
 	wg := new(sync.WaitGroup)
 	wg.Add(len(subscriptions))
@@ -311,6 +371,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 
 			sub, err := c.subscribe(ctx, subscription.ResourceURI())
 			if err != nil {
+				go subscription.handler().HandleReconnect(err)
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
 						slog.Uint64("id", uint64(subscription.ID())),
@@ -330,9 +391,9 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 			c.subscriptions[subscription.id] = subscription
 			c.subscriptionsMu.Unlock()
 
-			// Call HandleReconnect() to notice that the subscription has been refreshed in the new connection.
-			// This is because the subscription's custom data may differ from the previous one.
-			go subscription.handler().HandleReconnect()
+			// Notify the handler that the subscription has been refreshed on the
+			// new connection as the custom data may differ from the previous one.
+			go subscription.handler().HandleReconnect(nil)
 			c.log.Debug("resubscribed", slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.ID())),
 				slog.String("custom", string(subscription.Custom())),
@@ -342,7 +403,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 	}
 
 	wg.Wait()
-	c.log.Info("resubscribed existing subscriptions")
+	c.log.Info("resubscribed existing subscriptions", slog.Int("count", len(subscriptions)))
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.
@@ -350,7 +411,9 @@ func (c *Conn) Close() (err error) {
 	return c.close(net.ErrClosed)
 }
 
-// close cancels the background context of the Conn.
+// close closes the WebSocket connection with [websocket.StatusNormalClosure],
+// then cancels the background context of the Conn with the given reason so that
+// any blocking methods in [Conn] can return it from [context.Cause].
 func (c *Conn) close(cause error) (err error) {
 	c.once.Do(func() {
 		c.cancel(cause)
