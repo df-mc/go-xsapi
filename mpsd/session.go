@@ -3,6 +3,7 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -154,34 +155,81 @@ func (s *Session) handler() Handler {
 // of the PUT. In that case, deleted is true and the caller is responsible for
 // transitioning the local Session into a deleted/closed state.
 func (s *Session) update(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) (deleted bool, err error) {
+	deleted, _, err = s.commit(ctx, changes, preconditionWildcard, opts)
+	return deleted, err
+}
+
+// commit writes a partial session update using the requested precondition mode.
+// It reports whether the write deleted the session and, for synchronized
+// ETag-based writes, whether the caller should treat a 412 as a retryable
+// conflict instead of a terminal error.
+func (s *Session) commit(ctx context.Context, changes SessionDescription, precondition updatePrecondition, opts []internal.RequestOption) (deleted, conflict bool, err error) {
 	select {
 	case <-s.closed:
-		return false, net.ErrClosed
+		return false, false, net.ErrClosed
 	default:
 	}
 
+	match, err := s.ifMatchHeader(ctx, precondition)
+	if err != nil {
+		return false, false, err
+	}
 	req, err := internal.WithJSONBody(ctx, http.MethodPut, s.ref.URL().String(), changes, append(opts,
 		internal.RequestHeader("Content-Type", "application/json"),
-		internal.RequestHeader("If-Match", "*"),
+		internal.RequestHeader("If-Match", match),
 		internal.ContractVersion(contractVersion),
 	))
 	if err != nil {
-		return false, fmt.Errorf("make request: %w", err)
+		return false, false, fmt.Errorf("make request: %w", err)
 	}
 
 	resp, err := s.client.client.Do(req)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return false, s.sync(resp)
+		return false, false, s.sync(resp)
 	case http.StatusNoContent:
-		return true, nil
+		return true, false, nil
+	case http.StatusPreconditionFailed:
+		// Only synchronized ETag-based writes treat 412 as a retryable conflict.
+		if precondition == preconditionCachedETag {
+			return false, true, nil
+		}
+		return false, false, internal.UnexpectedStatusCode(resp)
 	default:
-		return false, internal.UnexpectedStatusCode(resp)
+		return false, false, internal.UnexpectedStatusCode(resp)
+	}
+}
+
+// updatePrecondition is a type that represents the precondition for an update operation.
+// It is used to determine whether the update should be treated as a conflict or not.
+type updatePrecondition uint8
+
+const (
+	// preconditionWildcard uses If-Match: * and is appropriate for writes that
+	// should succeed regardless of the currently observed session ETag.
+	preconditionWildcard updatePrecondition = iota
+	// preconditionCachedETag uses the last observed session ETag and is
+	// appropriate for synchronized writes to shared session state.
+	preconditionCachedETag
+)
+
+// errSessionDeleted is returned when the session is deleted.
+var errSessionDeleted = errors.New("mpsd: session deleted")
+
+// ifMatchHeader returns the If-Match header value based on the precondition.
+func (s *Session) ifMatchHeader(ctx context.Context, precondition updatePrecondition) (string, error) {
+	switch precondition {
+	case preconditionWildcard:
+		return "*", nil
+	case preconditionCachedETag:
+		return s.currentETag(ctx)
+	default:
+		panic("unreachable")
 	}
 }
 
@@ -214,11 +262,21 @@ func (s *Session) markDeletedLocked() {
 // RTA updates and closes s.closed so future operations fail as if the Session
 // had been closed.
 func (s *Session) closeLocked() {
-	s.client.handleSessionClose(s)
 	select {
 	case <-s.closed:
 	default:
+		s.client.handleSessionClose(s)
 		close(s.closed)
+	}
+}
+
+// isClosed checks if the session is closed.
+func (s *Session) isClosed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -296,6 +354,9 @@ func (s *Session) Sync(ctx context.Context) error {
 			return s.sync(resp)
 		case http.StatusNotModified:
 			return nil
+		case http.StatusNoContent:
+			s.markDeleted()
+			return nil
 		default:
 			return internal.UnexpectedStatusCode(resp)
 		}
@@ -333,18 +394,11 @@ func (s *Session) sync(resp *http.Response) error {
 // commonly used to expose session metadata such as display names or
 // server details.
 func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessage, opts ...internal.RequestOption) error {
-	deleted, err := s.update(ctx, SessionDescription{
+	return s.finishUpdate(s.synchronizedUpdate(ctx, SessionDescription{
 		Properties: &SessionProperties{
 			Custom: custom,
 		},
-	}, opts)
-	if err != nil {
-		return err
-	}
-	if deleted {
-		s.markDeleted()
-	}
-	return nil
+	}, opts))
 }
 
 // Constants returns the immutable session constants.
@@ -447,7 +501,7 @@ func (s *Session) Members() iter.Seq2[string, MemberDescription] {
 // The [context.Context] is used for making a PUT request call. Changes are commited
 // immediately and reflected in the local cache.
 func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, custom json.RawMessage, opts ...internal.RequestOption) error {
-	deleted, err := s.update(ctx, SessionDescription{
+	return s.finishUpdate(s.update(ctx, SessionDescription{
 		Members: map[string]*MemberDescription{
 			label: {
 				Properties: &MemberProperties{
@@ -455,7 +509,12 @@ func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, c
 				},
 			},
 		},
-	}, opts)
+	}, opts))
+}
+
+// finishUpdate converts a deleted-session result into local teardown and
+// otherwise returns the original update error/result unchanged.
+func (s *Session) finishUpdate(deleted bool, err error) error {
 	if err != nil {
 		return err
 	}
@@ -463,6 +522,66 @@ func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, c
 		s.markDeleted()
 	}
 	return nil
+}
+
+// synchronizedUpdate is for writes to shared session state that must
+// participate in MPSD's ETag-based optimistic concurrency flow. It retries on
+// 412 responses after refreshing local state, and treats a remotely deleted
+// session as a successful delete.
+func (s *Session) synchronizedUpdate(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) (deleted bool, err error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+
+		deleted, conflict, err := s.commit(ctx, changes, preconditionCachedETag, opts)
+		if errors.Is(err, errSessionDeleted) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !conflict {
+			return deleted, nil
+		}
+		if err := s.Sync(ctx); err != nil {
+			return false, err
+		}
+		if s.isClosed() {
+			return true, nil
+		}
+	}
+}
+
+// currentETag returns the last observed session ETag, refreshing it from MPSD
+// if necessary. If the refresh discovers that the session no longer exists,
+// errSessionDeleted is returned.
+func (s *Session) currentETag(ctx context.Context) (string, error) {
+	// If the ETag is already set, return it.
+	s.cacheMu.RLock()
+	etag := s.etag
+	s.cacheMu.RUnlock()
+	if etag != "" {
+		return etag, nil
+	}
+
+	// Sync the session state from MPSD.
+	if err := s.Sync(ctx); err != nil {
+		return "", err
+	}
+
+	// Return the ETag from the synced session state.
+	s.cacheMu.RLock()
+	etag = s.etag
+	s.cacheMu.RUnlock()
+	if etag == "" {
+		// A sync that closed the session means the remote session was deleted.
+		if s.isClosed() {
+			return "", errSessionDeleted
+		}
+		return "", errors.New("mpsd: synchronized update requires ETag")
+	}
+	return etag, nil
 }
 
 // SessionReference encapsulates a reference to a multiplayer session.

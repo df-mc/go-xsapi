@@ -184,6 +184,9 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 // longer receive notifications from the RTA subscription.
 func (c *Client) handleSessionClose(s *Session) {
 	c.sessionsMu.Lock()
-	delete(c.sessions, s.ref.URL().String())
+	key := s.ref.URL().String()
+	if current := c.sessions[key]; current == s {
+		delete(c.sessions, key)
+	}
 	c.sessionsMu.Unlock()
 }
