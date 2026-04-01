@@ -5,50 +5,35 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
-	"time"
 
 	"github.com/coder/websocket"
 )
 
-// Dialer represents the options for establishing a Conn with real-time activity services with DialContext or Dial.
-type Dialer struct {
-	Options  *websocket.DialOptions
-	ErrorLog *slog.Logger
-}
-
-// Dial calls DialContext with a 15 seconds timeout.
-func (d Dialer) Dial(client *http.Client) (*Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-	defer cancel()
-	return d.DialContext(ctx, client)
-}
-
-// DialContext establishes a connection with real-time activity service. A context.Context is used to control the
-// scene real-timely. An authorization token may be used for configuring an HTTP header to Options. An error may be
-// returned during the dial of websocket connection.
-func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, error) {
-	if d.ErrorLog == nil {
-		d.ErrorLog = slog.Default()
-	}
-	if d.Options == nil {
-		d.Options = &websocket.DialOptions{}
-	}
-	d.Options.HTTPClient = client
-	if !slices.Contains(d.Options.Subprotocols, subprotocol) {
-		d.Options.Subprotocols = append(d.Options.Subprotocols, subprotocol)
+// Dial establishes a connection with real-time activity service.
+//
+// The [context.Context] is used to control the deadline of the establishment of the WebSocket connection.
+// The [http.Client] is used to authenticate handshake HTTP requests and is typically retrieved from
+// [github.com/df-mc/go-xspai.Client.HTTPClient].
+func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, error) {
+	if log == nil {
+		log = slog.Default()
 	}
 
-	c, _, err := websocket.Dial(ctx, connectURL.String(), d.Options)
+	d := &dialer{
+		client: client,
+		log:    log,
+	}
+	c, err := d.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
 	conn := &Conn{
 		conn:          c,
-		log:           d.ErrorLog,
+		dialer:        d,
+		log:           log,
 		subscriptions: make(map[uint32]*Subscription),
-		closed:        make(chan struct{}),
 	}
+	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	for i := range cap(conn.expected) {
 		conn.expected[i] = make(map[uint32]chan<- *handshake)
 	}
@@ -56,10 +41,25 @@ func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, er
 	return conn, nil
 }
 
-const (
-	// subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
-	subprotocol = "rta.xboxlive.com.V2"
-)
+type dialer struct {
+	client *http.Client
+	log    *slog.Logger
+}
+
+// dial establishes a new WebSocket connection.
+func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
+	c, _, err := websocket.Dial(ctx, connectURL.String(), &websocket.DialOptions{
+		Subprotocols: []string{subprotocol},
+		HTTPClient:   d.client,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
+const subprotocol = "rta.xboxlive.com.V2"
 
 // connectURL is the URL used to establish a websocket connection with real-time activity services. It is
 // generally present at websocket.Dial with other websocket.DialOptions, specifically along with subprotocol.

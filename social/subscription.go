@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+
+	"github.com/df-mc/go-xsapi/rta"
 )
 
 // Subscribe subscribes to RTA (Real-Time Activity) services to receive
@@ -36,7 +38,9 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		if err != nil {
 			return err
 		}
-		c.subscription.Handle(&subscriptionHandler{c})
+		c.subscription.Handle(&subscriptionHandler{
+			Client: c,
+		})
 	}
 
 	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
@@ -48,6 +52,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 // [SubscriptionHandler] implementations registered via [Client.Subscribe].
 type subscriptionHandler struct {
 	*Client
+	rta.NopSubscriptionHandler
 }
 
 // HandleEvent handles an event received over the RTA subscription.

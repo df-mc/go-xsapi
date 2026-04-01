@@ -23,7 +23,7 @@ func (f *fakeUnsubscriber) Unsubscribe(context.Context, *rta.Subscription) error
 }
 
 func TestClientCloseContextPreservesSubscriptionOnUnsubscribeError(t *testing.T) {
-	subscription := &rta.Subscription{ID: 7}
+	subscription := &rta.Subscription{}
 	subscriptionData := &subscriptionData{ConnectionID: uuid.New()}
 	unsub := &fakeUnsubscriber{failures: 1}
 	client := &Client{
