@@ -118,6 +118,20 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 	}
 }
 
+// HandleReconnect implements [rta.SubscriptionHandler.HandleReconnect].
+func (h *subscriptionHandler) HandleReconnect(err error) {
+	if err != nil {
+		// currently we don't attempt to re-subscribe to the RTA service
+		// since the connection might be dead. but at least as a safeguard,
+		// we set both the subscription and subscriptionData to nil so it
+		// can be retired on next call.
+		h.subscriptionMu.Lock()
+		h.subscription, h.subscriptionHandlers = nil, nil
+		h.subscriptionMu.Unlock()
+		return
+	}
+}
+
 // SubscriptionHandler is the interface for receiving real-time notifications
 // for changes in the caller's friend list via an RTA (Real-Time Activity)
 // subscription.

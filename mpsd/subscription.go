@@ -169,13 +169,20 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 
 // HandleReconnect implements [rta.SubscriptionHandler].
 func (h *subscriptionHandler) HandleReconnect(err error) {
-	if err := h.handleReconnect(err); err != nil {
+	if err != nil {
+		h.subscriptionMu.Lock()
+		h.subscription, h.subscriptionData = nil, nil
+		h.subscriptionMu.Unlock()
+		return
+	}
+
+	if err := h.handleReconnect(); err != nil {
 		h.log.Error("error reconnecting subscription", slog.Any("error", err))
 	}
 }
 
 // handleReconnect is called when the RTA connection has re-established the subscription.
-func (h *subscriptionHandler) handleReconnect(reconnectErr error) (err error) {
+func (h *subscriptionHandler) handleReconnect() (err error) {
 	h.subscriptionMu.Lock()
 	defer h.subscriptionMu.Unlock()
 
@@ -195,10 +202,6 @@ func (h *subscriptionHandler) handleReconnect(reconnectErr error) (err error) {
 			h.subscription, h.subscriptionData = nil, nil
 		}
 	}()
-
-	if reconnectErr != nil {
-		return fmt.Errorf("mpsd: reconnect subscription: %w", err)
-	}
 
 	var data subscriptionData
 	if err := json.Unmarshal(h.subscription.Custom(), &data); err != nil {
