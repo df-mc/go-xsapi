@@ -411,7 +411,10 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 			q.Set("sig", base64.StdEncoding.EncodeToString(signature))
 			q.Set("did", "0x"+device.DisplayClaims.DeviceInfo.DeviceID)
 			// GRTS only: q.Set("mgt", "true")
-			q.Set("redirect", "https://www.xbox.com") // Any value is supported. No sensitive information are sent to this URL.
+			// Allowed values: "https://login.live.com/oauth20_desktop.srf" for GRTS, "ms-xal-*://" for Android/iOS devices.
+			// "https://login.live.com/oauth20_desktop.srf" is a placeholder URL which simply displays an error message saying "You shouldn't be here, call Microsoft Support Center".
+			// When "redirect" query parameter is absent, the web page will fall back to "https://sisu.xboxlive.com/sisu_desktop.srf".
+			q.Set("redirect", "https://sisu.xboxlive.com/sisu_desktop.srf")
 			q.Set("sid", sessionID)
 			// If Auth Code Flow: q.Set("state", "...")
 			u.RawQuery = q.Encode()
