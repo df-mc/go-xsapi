@@ -24,6 +24,9 @@ type unsubscriber interface {
 
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Client{
 		client:   client,
 		rta:      conn,

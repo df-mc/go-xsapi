@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/internal"
@@ -147,7 +149,7 @@ type Client struct {
 	presence *presence.Client
 
 	closeMu  sync.Mutex
-	closed   bool
+	closed   atomic.Bool
 	closeErr error
 }
 
@@ -172,6 +174,9 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		// rather than delegating to the base transport because the body
 		// is buffered for signing before being forwarded.
 		defer req.Body.Close()
+	}
+	if c.closed.Load() {
+		return nil, net.ErrClosed
 	}
 
 	// Propagate the request's context so that XSTS token retrieval
@@ -226,6 +231,9 @@ func (c *Client) baseTransport() http.RoundTripper {
 // token to be embedded directly in the request body, such as PlayFab's
 // /Client/LoginWithXbox endpoint.
 func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy nsal.SignaturePolicy, _ error) {
+	if c.closed.Load() {
+		return nil, policy, net.ErrClosed
+	}
 	// Title-scoped data is checked first. Default data is only consulted as a
 	// fallback because it can contain duplicate entries for the same endpoint
 	// (e.g. *.playfabapi.com may appear in both title-scoped and default data).
@@ -307,7 +315,7 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
 
-	if c.closed {
+	if c.closed.Load() {
 		return c.closeErr
 	}
 
@@ -320,7 +328,7 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	}
 
 	// Once rta is closed, the client is no longer usable and Close cannot be retried.
-	c.closed = true
+	c.closed.Store(true)
 	if c.rta != nil {
 		c.closeErr = c.rta.Close()
 	}
