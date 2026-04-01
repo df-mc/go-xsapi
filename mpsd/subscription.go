@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/df-mc/go-xsapi/rta"
@@ -164,6 +165,77 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		}
 	}
 	h.sessionsMu.RUnlock()
+}
+
+// HandleReconnect implements [rta.SubscriptionHandler].
+func (h *subscriptionHandler) HandleReconnect(err error) {
+	if err := h.handleReconnect(err); err != nil {
+		h.log.Error("error reconnecting subscription", slog.Any("error", err))
+	}
+}
+
+// handleReconnect is called when the RTA connection has re-established the subscription.
+func (h *subscriptionHandler) handleReconnect(reconnectErr error) (err error) {
+	h.subscriptionMu.Lock()
+	defer h.subscriptionMu.Unlock()
+
+	defer func() {
+		if err != nil {
+			if h.subscription != nil {
+				// If the subscription was unsuccessful, we reset the subscription state
+				// along with the custom data so it can be retried.
+				go func(subscription *rta.Subscription) {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+					defer cancel()
+					if err := h.rta.Unsubscribe(ctx, subscription); err != nil {
+						h.log.Error("error resetting broken subscription", slog.Any("error", err))
+					}
+				}(h.subscription)
+			}
+			h.subscription, h.subscriptionData = nil, nil
+		}
+	}()
+
+	if reconnectErr != nil {
+		return fmt.Errorf("mpsd: reconnect subscription: %w", err)
+	}
+
+	var data subscriptionData
+	if err := json.Unmarshal(h.subscription.Custom(), &data); err != nil {
+		return fmt.Errorf("decode subscription custom data: %w", err)
+	}
+	h.subscriptionData = &data
+
+	wg := new(sync.WaitGroup)
+	h.sessionsMu.RLock()
+	wg.Add(len(h.sessions))
+	for _, s := range h.sessions {
+		go func(session *Session) {
+			defer wg.Done()
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+			defer cancel()
+			if _, err := session.update(ctx, SessionDescription{
+				Members: map[string]*MemberDescription{
+					"me": {
+						Properties: &MemberProperties{
+							System: &MemberPropertiesSystem{
+								Connection: data.ConnectionID,
+							},
+						},
+					},
+				},
+			}, nil); err != nil {
+				session.log.Error("error updating connection ID", slog.Any("error", err))
+				return
+			}
+		}(s)
+	}
+	h.sessionsMu.RUnlock()
+
+	wg.Wait()
+	h.log.Debug("reconnected subscription")
+	return nil
 }
 
 // parseReference parses a SessionReference from a resource identifier included
