@@ -2,7 +2,6 @@ package mpsd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,11 +13,25 @@ import (
 	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
+// unsubscriber captures just the part of the RTA connection needed during
+// client shutdown.
+//
+// Client normally uses the live *rta.Conn injected by New. The interface exists
+// so tests can simulate unsubscribe failures and verify that subscription state
+// is preserved for retry instead of being discarded after a failed cleanup.
+type unsubscriber interface {
+	Unsubscribe(context.Context, *rta.Subscription) error
+}
+
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Client{
 		client:   client,
 		rta:      conn,
+		unsub:    conn,
 		userInfo: userInfo,
 		log:      log,
 
@@ -45,11 +58,14 @@ type Client struct {
 	// and subscriptionData.
 	subscriptionMu sync.Mutex
 
+	// unsub is the narrow shutdown dependency used for removing RTA
+	// subscriptions. In production it is the same value as rta.
+	// Keeping this separate allows tests to inject controlled failures for the
+	// retry path without having to construct a real rta.Conn.
+	unsub unsubscriber
+
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
-
-	// once ensures that the closure of the Client occurs only once.
-	once sync.Once
 }
 
 // SessionByReference looks up for a multiplayer session identified by the reference.
@@ -82,19 +98,17 @@ func (c *Client) Close() error {
 // CloseContext closes the Client with the [context.Context].
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
-func (c *Client) CloseContext(ctx context.Context) (err error) {
-	c.once.Do(func() {
-		c.subscriptionMu.Lock()
-		defer c.subscriptionMu.Unlock()
+func (c *Client) CloseContext(ctx context.Context) error {
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
 
-		if c.subscription != nil {
-			if err2 := c.rta.Unsubscribe(ctx, c.subscription); err2 != nil {
-				err = errors.Join(err, fmt.Errorf("mpsd: unsubscribe: %w", err2))
-			}
+	if c.subscription != nil {
+		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
+			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
 		c.subscription, c.subscriptionData = nil, nil
-	})
-	return err
+	}
+	return nil
 }
 
 // contractVersion is the value for the 'x-xbl-contract-version' request header.

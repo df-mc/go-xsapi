@@ -131,6 +131,7 @@ func TestSession(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("error updating presence: %s", err)
 	}
+	defer client.Presence().Remove(context.TODO())
 
 	// cleanup is automatically done on [Client.Close].
 

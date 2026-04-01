@@ -3,6 +3,7 @@ package mpsd
 import (
 	"encoding/json"
 	"net/url"
+	"slices"
 
 	"github.com/google/uuid"
 )
@@ -365,3 +366,78 @@ const (
 	// associated RTA subscription.
 	ChangeTypeMembersCustomProperty = "membersCustomProperty"
 )
+
+// cloneSessionConstants creates a deep copy of the given SessionConstants.
+func cloneSessionConstants(in *SessionConstants) *SessionConstants {
+	if in == nil {
+		return nil
+	}
+	out := &SessionConstants{
+		Custom: slices.Clone(in.Custom),
+	}
+	if in.System != nil {
+		system := *in.System
+		system.Capabilities = slices.Clone(in.System.Capabilities)
+		system.Initiators = slices.Clone(in.System.Initiators)
+		system.Metrics = slices.Clone(in.System.Metrics)
+		system.MemberInitialization = slices.Clone(in.System.MemberInitialization)
+		system.PeerToPeerRequirements = slices.Clone(in.System.PeerToPeerRequirements)
+		system.PeerToHostRequirements = slices.Clone(in.System.PeerToHostRequirements)
+		system.MeasurementServerAddresses = slices.Clone(in.System.MeasurementServerAddresses)
+		system.CloudComputePackage = slices.Clone(in.System.CloudComputePackage)
+		out.System = &system
+	}
+	return out
+}
+
+// cloneSessionProperties creates a deep copy of the given SessionProperties.
+func cloneSessionProperties(in *SessionProperties) *SessionProperties {
+	if in == nil {
+		return nil
+	}
+	out := &SessionProperties{
+		Custom: slices.Clone(in.Custom),
+	}
+	if in.System != nil {
+		system := *in.System
+		system.Keywords = slices.Clone(in.System.Keywords)
+		system.Turn = slices.Clone(in.System.Turn)
+		system.Matchmaking = slices.Clone(in.System.Matchmaking)
+		system.ServerConnectionStringCandidates = slices.Clone(in.System.ServerConnectionStringCandidates)
+		out.System = &system
+	}
+	return out
+}
+
+// cloneMemberDescription creates a deep copy of the given MemberDescription.
+func cloneMemberDescription(in *MemberDescription) *MemberDescription {
+	if in == nil {
+		return nil
+	}
+	out := &MemberDescription{}
+	if in.Constants != nil {
+		out.Constants = &MemberConstants{
+			Custom: slices.Clone(in.Constants.Custom),
+		}
+		if in.Constants.System != nil {
+			system := *in.Constants.System
+			out.Constants.System = &system
+		}
+	}
+	if in.Properties != nil {
+		out.Properties = &MemberProperties{
+			Custom: slices.Clone(in.Properties.Custom),
+		}
+		if in.Properties.System != nil {
+			system := *in.Properties.System
+			system.SecureDeviceAddress = slices.Clone(in.Properties.System.SecureDeviceAddress)
+			if in.Properties.System.Subscription != nil {
+				subscription := *in.Properties.System.Subscription
+				subscription.ChangeTypes = slices.Clone(in.Properties.System.Subscription.ChangeTypes)
+				system.Subscription = &subscription
+			}
+			out.Properties.System = &system
+		}
+	}
+	return out
+}

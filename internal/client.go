@@ -34,14 +34,6 @@ func WithJSONBody(ctx context.Context, method, u string, reqBody any, opts []Req
 	return NewRequest(ctx, method, u, buf, opts)
 }
 
-// DecodeJSON decodes the contents of r into a value of type T.
-func DecodeJSON[T any](r io.Reader) (value T, err error) {
-	if err := json.NewDecoder(r).Decode(&value); err != nil {
-		return value, err
-	}
-	return value, nil
-}
-
 // UnexpectedStatusCode returns an error describing an unexpected HTTP status code,
 // including the request method and URL for context.
 // The resp must be a client response because [http.Response.Request] is only

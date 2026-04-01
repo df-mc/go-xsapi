@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -69,8 +67,9 @@ type Session struct {
 	// Goroutines may select on this channel to be notified when the session has been closed.
 	// Once closed, no further network operations should be performed using this Session.
 	closed chan struct{}
-	// once ensures that the closure of the Session occurs only once.
-	once sync.Once
+	// closeMu serializes remote close attempts so that a failed close can be retried
+	// without racing a successful one.
+	closeMu sync.Mutex
 }
 
 // Close closes the multiplayer session using a context with 15 seconds timeout.
@@ -78,9 +77,9 @@ type Session struct {
 // If the caller is the host of the multiplayer session, the session itself is closed.
 // If the caller is a non-host participant, this call ensures the caller to leave the session.
 //
-// Once CloseContext is called, the multiplayer session will no longer receive notifications
+// Once CloseContext succeeds, the multiplayer session will no longer receive notifications
 // about changes in the session even though if the session still exist after leaving.
-// CloseContext can be called many times since it internally uses a [sync.Once].
+// If the remote leave or close request fails, the Session remains usable and CloseContext may be retried.
 func (s *Session) Close() error {
 	ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
 	defer cancel()
@@ -93,25 +92,35 @@ func (s *Session) Close() error {
 // If the caller is the host of the multiplayer session, the session itself is closed.
 // If the caller is a non-host participant, this call ensures the caller to leave the session.
 //
-// Once CloseContext is called, the multiplayer session will no longer receive notifications
+// Once CloseContext succeeds, the multiplayer session will no longer receive notifications
 // about changes in the session even though if the session still exist after leaving.
-// CloseContext can be called many times since it internally uses a [sync.Once].
-func (s *Session) CloseContext(ctx context.Context) (err error) {
+// If the remote leave or close request fails, the Session remains usable and CloseContext may be retried.
+func (s *Session) CloseContext(ctx context.Context) error {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+
+	select {
+	case <-s.closed:
+		return nil
+	default:
+	}
+
 	d := SessionDescription{
 		Members: map[string]*MemberDescription{
 			// Set myself to nil to leave or close the multiplayer session.
 			"me": nil,
 		},
 	}
-	if err2 := s.update(ctx, d, nil); err2 != nil {
-		err = err2
+	deleted, err := s.update(ctx, d, nil)
+	if err != nil {
+		return err
 	}
-
-	s.once.Do(func() {
-		s.client.handleSessionClose(s)
-		close(s.closed)
-	})
-	return err
+	if deleted {
+		s.markDeletedLocked()
+		return nil
+	}
+	s.closeLocked()
+	return nil
 }
 
 // Handle registers h as the [Handler] for this session. The registered handler
@@ -138,11 +147,16 @@ func (s *Session) handler() Handler {
 // The provided [SessionDescription] is treated as a patch and merged server-side.
 // The [context.Context] is used for making a PUT request call.
 //
-// On success, both the local cache and stored ETag are updated to reflect the server response.
-func (s *Session) update(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) error {
+// On 200 OK, the local cache and stored ETag are updated from the returned
+// session body and deleted is false.
+//
+// On 204 No Content, MPSD documents that the session was deleted as a result
+// of the PUT. In that case, deleted is true and the caller is responsible for
+// transitioning the local Session into a deleted/closed state.
+func (s *Session) update(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) (deleted bool, err error) {
 	select {
 	case <-s.closed:
-		return net.ErrClosed
+		return false, net.ErrClosed
 	default:
 	}
 
@@ -152,22 +166,59 @@ func (s *Session) update(ctx context.Context, changes SessionDescription, opts [
 		internal.ContractVersion(contractVersion),
 	))
 	if err != nil {
-		return fmt.Errorf("make request: %w", err)
+		return false, fmt.Errorf("make request: %w", err)
 	}
 
 	resp, err := s.client.client.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return s.sync(resp)
-	case http.StatusNoContent, http.StatusNotModified:
-		return nil
+		return false, s.sync(resp)
+	case http.StatusNoContent:
+		return true, nil
 	default:
-		return internal.UnexpectedStatusCode(resp)
+		return false, internal.UnexpectedStatusCode(resp)
+	}
+}
+
+// markDeletedLocked finalizes the local Session after MPSD reports that the
+// remote session no longer exists.
+//
+// It clears the cached session data and ETag, unregisters the Session from its
+// parent Client so it no longer receives RTA updates, and closes s.closed so
+// future operations fail as if the Session had been closed.
+func (s *Session) markDeleted() {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	s.markDeletedLocked()
+}
+
+// markDeletedLocked is markDeleted with s.closeMu already held by the caller.
+func (s *Session) markDeletedLocked() {
+	s.cacheMu.Lock()
+	s.cache = SessionDescription{}
+	s.etag = ""
+	s.cacheMu.Unlock()
+
+	s.closeLocked()
+}
+
+// closeLocked finalizes the local Session after it is no longer usable by the
+// caller.
+//
+// It unregisters the Session from its parent Client so it no longer receives
+// RTA updates and closes s.closed so future operations fail as if the Session
+// had been closed.
+func (s *Session) closeLocked() {
+	s.client.handleSessionClose(s)
+	select {
+	case <-s.closed:
+	default:
+		close(s.closed)
 	}
 }
 
@@ -282,11 +333,18 @@ func (s *Session) sync(resp *http.Response) error {
 // commonly used to expose session metadata such as display names or
 // server details.
 func (s *Session) SetCustomProperties(ctx context.Context, custom json.RawMessage, opts ...internal.RequestOption) error {
-	return s.update(ctx, SessionDescription{
+	deleted, err := s.update(ctx, SessionDescription{
 		Properties: &SessionProperties{
 			Custom: custom,
 		},
 	}, opts)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		s.markDeleted()
+	}
+	return nil
 }
 
 // Constants returns the immutable session constants.
@@ -300,9 +358,7 @@ func (s *Session) Constants() SessionConstants {
 	if constants == nil {
 		return SessionConstants{}
 	}
-	c := *constants
-	c.Custom = slices.Clone(constants.Custom)
-	return c
+	return *cloneSessionConstants(constants)
 }
 
 // Properties returns the mutable session properties.
@@ -316,9 +372,7 @@ func (s *Session) Properties() SessionProperties {
 	if properties == nil {
 		return SessionProperties{}
 	}
-	p := *properties
-	p.Custom = slices.Clone(properties.Custom)
-	return p
+	return *cloneSessionProperties(properties)
 }
 
 // Reference returns a reference to the multiplayer session.
@@ -344,7 +398,7 @@ func (s *Session) Member(label string) (MemberDescription, bool) {
 	if !ok || member == nil {
 		return MemberDescription{}, false
 	}
-	return *member, true
+	return *cloneMemberDescription(member), true
 }
 
 // MemberByXUID returns the cached description of the member identified by their XUID.
@@ -371,13 +425,16 @@ func (s *Session) Members() iter.Seq2[string, MemberDescription] {
 	if s.cache.Members == nil {
 		return func(func(string, MemberDescription) bool) {}
 	}
-	members := maps.Clone(s.cache.Members)
+	members := make(map[string]MemberDescription, len(s.cache.Members))
+	for label, member := range s.cache.Members {
+		if member == nil {
+			continue
+		}
+		members[label] = *cloneMemberDescription(member)
+	}
 	return func(yield func(string, MemberDescription) bool) {
 		for label, member := range members {
-			if member == nil {
-				continue
-			}
-			if !yield(label, *member) {
+			if !yield(label, member) {
 				break
 			}
 		}
@@ -390,7 +447,7 @@ func (s *Session) Members() iter.Seq2[string, MemberDescription] {
 // The [context.Context] is used for making a PUT request call. Changes are commited
 // immediately and reflected in the local cache.
 func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, custom json.RawMessage, opts ...internal.RequestOption) error {
-	return s.update(ctx, SessionDescription{
+	deleted, err := s.update(ctx, SessionDescription{
 		Members: map[string]*MemberDescription{
 			label: {
 				Properties: &MemberProperties{
@@ -399,6 +456,13 @@ func (s *Session) SetMemberCustomProperties(ctx context.Context, label string, c
 			},
 		},
 	}, opts)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		s.markDeleted()
+	}
+	return nil
 }
 
 // SessionReference encapsulates a reference to a multiplayer session.

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/internal"
@@ -17,6 +19,7 @@ import (
 	"github.com/df-mc/go-xsapi/presence"
 	"github.com/df-mc/go-xsapi/rta"
 	"github.com/df-mc/go-xsapi/social"
+	"github.com/df-mc/go-xsapi/xal"
 	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/df-mc/go-xsapi/xal/xsts"
@@ -145,7 +148,9 @@ type Client struct {
 	social   *social.Client
 	presence *presence.Client
 
-	once sync.Once
+	closeMu  sync.Mutex
+	closed   atomic.Bool
+	closeErr error
 }
 
 // HTTPClient returns the underlying HTTP client that automatically
@@ -169,6 +174,9 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		// rather than delegating to the base transport because the body
 		// is buffered for signing before being forwarded.
 		defer req.Body.Close()
+	}
+	if c.closed.Load() {
+		return nil, net.ErrClosed
 	}
 
 	// Propagate the request's context so that XSTS token retrieval
@@ -198,11 +206,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 	}
-	// The timestamp used for signing is always time.Now() rather than the latest
-	// timestamp observed from Microsoft servers. This is because RoundTrip may
-	// serve non-Microsoft endpoints, and it would be incorrect to advance the
-	// internal clock based on responses from arbitrary servers.
-	policy.Sign(req2, data, c.src.ProofKey(), time.Now())
+	policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime())
 
 	return c.baseTransport().RoundTrip(req2)
 }
@@ -227,6 +231,9 @@ func (c *Client) baseTransport() http.RoundTripper {
 // token to be embedded directly in the request body, such as PlayFab's
 // /Client/LoginWithXbox endpoint.
 func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy nsal.SignaturePolicy, _ error) {
+	if c.closed.Load() {
+		return nil, policy, net.ErrClosed
+	}
 	// Title-scoped data is checked first. Default data is only consulted as a
 	// fallback because it can contain duplicate entries for the same endpoint
 	// (e.g. *.playfabapi.com may appear in both title-scoped and default data).
@@ -267,6 +274,7 @@ func (c *Client) Social() *social.Client {
 	return c.social
 }
 
+// Presence returns the API client for the Xbox Live Presence API.
 func (c *Client) Presence() *presence.Client {
 	return c.presence
 }
@@ -295,17 +303,36 @@ func (c *Client) Close() error {
 // CloseContext closes all underlying API clients using the given context.
 // Once closed, the Client cannot be reused as it also disconnects from
 // WebSocket-based services such as RTA.
-func (c *Client) CloseContext(ctx context.Context) (err error) {
-	c.once.Do(func() {
-		err = errors.Join(
-			c.mpsd.CloseContext(ctx),
-			c.social.CloseContext(ctx),
-			c.presence.CloseContext(ctx),
+//
+// CloseContext also removes the authenticated title's current Xbox Live
+// presence via [presence.Client.Remove]. This is intentional: shutting down
+// the client is treated as the title closing, so the presence is cleared
+// immediately instead of waiting for it to expire on the server.
+//
+// Callers that want to release other resources without mutating presence
+// should not call CloseContext.
+func (c *Client) CloseContext(ctx context.Context) error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
 
-			c.rta.Close(),
-		)
-	})
-	return err
+	if c.closed.Load() {
+		return c.closeErr
+	}
+
+	if err := errors.Join(
+		c.mpsd.CloseContext(ctx),
+		c.social.CloseContext(ctx),
+		c.presence.CloseContext(ctx),
+	); err != nil {
+		return err
+	}
+
+	// Once rta is closed, the client is no longer usable and Close cannot be retried.
+	c.closed.Store(true)
+	if c.rta != nil {
+		c.closeErr = c.rta.Close()
+	}
+	return c.closeErr
 }
 
 // AcceptLanguage returns a [internal.RequestOption] that appends the given
