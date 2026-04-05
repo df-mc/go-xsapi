@@ -682,14 +682,5 @@ func refreshInterrupted(err error, sessionCtx, waveCtx context.Context) bool {
 // reconnectBackoff returns an exponential backoff duration starting at 200ms
 // and capping at 5 seconds.
 func reconnectBackoff(attempt int) time.Duration {
-	const max = time.Second * 5
-
-	delay := time.Millisecond * 200
-	for range attempt {
-		delay *= 2
-		if delay >= max {
-			return max
-		}
-	}
-	return delay
+	return min(200*time.Millisecond<<attempt, 5*time.Second)
 }
