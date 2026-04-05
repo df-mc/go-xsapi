@@ -158,7 +158,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 // responsible for checking its status code.
 //
 // If the Conn is currently reconnecting, [call] blocks until the reconnect
-// completes before sending a message to the server.
+// completes before sending a message to the server
 //
 // errReconnectInterrupted is returned by [Conn.callDuringReconnect] when the
 // replacement socket drops during a re-subscribe attempt.

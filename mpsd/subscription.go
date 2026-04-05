@@ -29,8 +29,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 			return nil, nil, err
 		}
 	}
-	seq := c.backgroundSeq.Load()
-	return c.subscribeWithInstall(ctx, func() bool { return c.backgroundActive(seq) })
+	return c.subscribeWithInstall(ctx, c.backgroundInstallGate(c.backgroundSeq.Load()))
 }
 
 // subscribeWithInstall returns an active subscription, reusing the cached one
@@ -357,25 +356,24 @@ func decodeSubscriptionData(subscription *rta.Subscription) (*subscriptionData, 
 // subscription is recovered, it starts a refresh wave to rebind tracked
 // sessions to the new connection ID.
 func (c *Client) repairSubscriptionAfterReconnectFailure(backgroundSeq uint64) {
+	canInstall := c.backgroundInstallGate(backgroundSeq)
 	// We intentionally try to recover the MPSD subscription for live sessions
 	// instead of tearing multiplayer down immediately. Once the subscription is
 	// re-established, the new connection ID is written back to tracked sessions
 	// via startRefreshWave so shoulder taps and disconnect detection resume.
 	for attempt := 0; ; attempt++ {
-		if !c.backgroundActive(backgroundSeq) {
+		if !canInstall() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-		_, data, err := c.subscribeWithInstall(ctx, func() bool {
-			return c.backgroundActive(backgroundSeq)
-		})
+		data, err := c.refreshSubscriptionDataWithInstall(ctx, canInstall)
 		cancel()
 		if err == nil {
 			c.startRefreshWave(data.ConnectionID)
 			return
 		}
 		c.log.Error("error re-establishing MPSD subscription after reconnect failure", slog.Any("error", err))
-		if !c.backgroundActive(backgroundSeq) {
+		if !canInstall() {
 			return
 		}
 		time.Sleep(reconnectBackoff(attempt))
@@ -432,8 +430,7 @@ func (c *Client) cancelRefreshWaveLocked() {
 // reconcileSessionConnection checks whether the session's connection ID still
 // matches the current subscription data and, if not, refreshes it.
 func (c *Client) reconcileSessionConnection(ctx context.Context, session *Session, connectionID uuid.UUID) error {
-	seq := c.backgroundSeq.Load()
-	return c.reconcileSessionConnectionWithInstall(ctx, session, connectionID, func() bool { return c.backgroundActive(seq) })
+	return c.reconcileSessionConnectionWithInstall(ctx, session, connectionID, c.backgroundInstallGate(c.backgroundSeq.Load()))
 }
 
 // reconcileSessionConnectionWithInstall is the canInstall-aware variant of
@@ -494,10 +491,10 @@ func (c *Client) reconcileSubscriptionDataWithInstall(ctx context.Context, canIn
 // refreshSubscriptionDataWithInstall creates a new subscription and returns
 // its decoded data. It is called when the cached subscription is unavailable.
 func (c *Client) refreshSubscriptionDataWithInstall(ctx context.Context, canInstall func() bool) (*subscriptionData, error) {
-	if c.closing.Load() || c.sub == nil {
-		if c.closing.Load() {
-			return nil, net.ErrClosed
-		}
+	if c.closing.Load() {
+		return nil, net.ErrClosed
+	}
+	if c.sub == nil {
 		return nil, errSubscriptionUnavailable
 	}
 	_, data, err := c.subscribeWithInstall(ctx, canInstall)
@@ -510,7 +507,7 @@ func (c *Client) refreshSubscriptionDataWithInstall(ctx context.Context, canInst
 // retryReconcileSessionConnection retries reconciling a single session's
 // connection ID with exponential backoff, giving up after five attempts.
 func (c *Client) retryReconcileSessionConnection(session *Session, connectionID uuid.UUID, backgroundSeq uint64) {
-	canInstall := func() bool { return c.backgroundActive(backgroundSeq) }
+	canInstall := c.backgroundInstallGate(backgroundSeq)
 	for attempt := 0; ; attempt++ {
 		if !canInstall() {
 			return
@@ -630,6 +627,14 @@ func (c *Client) refreshSequenceActive(seq uint64) bool {
 // sequence and the Client is not closing.
 func (c *Client) backgroundActive(seq uint64) bool {
 	return c.backgroundSeq.Load() == seq && !c.closing.Load()
+}
+
+// backgroundInstallGate returns a canInstall predicate for a single
+// background-work generation.
+func (c *Client) backgroundInstallGate(backgroundSeq uint64) func() bool {
+	return func() bool {
+		return c.backgroundActive(backgroundSeq)
+	}
 }
 
 // startRefreshWave cancels any previous refresh wave and begins writing
