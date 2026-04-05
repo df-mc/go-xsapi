@@ -366,7 +366,7 @@ func (c *Client) repairSubscriptionAfterReconnectFailure(backgroundSeq uint64) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-		data, err := c.refreshSubscriptionDataWithInstall(ctx, canInstall)
+		data, err := c.subscriptionDataWithInstall(ctx, canInstall)
 		cancel()
 		if err == nil {
 			c.startRefreshWave(data.ConnectionID)
@@ -446,7 +446,7 @@ func (c *Client) reconcileSessionConnectionWithInstall(ctx context.Context, sess
 		}
 	}
 
-	data, err := c.reconcileSubscriptionDataWithInstall(ctx, canInstall)
+	data, err := c.subscriptionDataWithInstall(ctx, canInstall)
 	if err != nil {
 		return err
 	}
@@ -459,25 +459,39 @@ func (c *Client) reconcileSessionConnectionWithInstall(ctx context.Context, sess
 	return nil
 }
 
-// reconcileSubscriptionDataWithInstall returns the current subscription data,
-// re-establishing the subscription if it is stale or missing.
-func (c *Client) reconcileSubscriptionDataWithInstall(ctx context.Context, canInstall func() bool) (*subscriptionData, error) {
+// subscriptionDataWithInstall returns the current subscription data,
+// re-establishing the subscription when the cached state is stale or missing.
+func (c *Client) subscriptionDataWithInstall(ctx context.Context, canInstall func() bool) (*subscriptionData, error) {
+	refresh := func() (*subscriptionData, error) {
+		if c.closing.Load() {
+			return nil, net.ErrClosed
+		}
+		if c.sub == nil {
+			return nil, errSubscriptionUnavailable
+		}
+		_, data, err := c.subscribeWithInstall(ctx, canInstall)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
+	}
+
 	c.subscriptionMu.Lock()
 	subscription := c.subscription
 	if subscription == nil {
 		c.subscriptionMu.Unlock()
-		return c.refreshSubscriptionDataWithInstall(ctx, canInstall)
+		return refresh()
 	}
 	if c.active != nil && !c.active(subscription) {
 		c.clearSubscriptionLocked()
 		c.subscriptionMu.Unlock()
-		return c.refreshSubscriptionDataWithInstall(ctx, canInstall)
+		return refresh()
 	}
 	data, err := c.decodeSubscriptionData(subscription)
 	if err != nil {
 		c.resetSubscriptionLocked(subscription)
 		c.subscriptionMu.Unlock()
-		return c.refreshSubscriptionDataWithInstall(ctx, canInstall)
+		return refresh()
 	}
 	if !canInstall() {
 		c.subscriptionMu.Unlock()
@@ -485,22 +499,6 @@ func (c *Client) reconcileSubscriptionDataWithInstall(ctx context.Context, canIn
 	}
 	c.subscriptionData = data
 	c.subscriptionMu.Unlock()
-	return data, nil
-}
-
-// refreshSubscriptionDataWithInstall creates a new subscription and returns
-// its decoded data. It is called when the cached subscription is unavailable.
-func (c *Client) refreshSubscriptionDataWithInstall(ctx context.Context, canInstall func() bool) (*subscriptionData, error) {
-	if c.closing.Load() {
-		return nil, net.ErrClosed
-	}
-	if c.sub == nil {
-		return nil, errSubscriptionUnavailable
-	}
-	_, data, err := c.subscribeWithInstall(ctx, canInstall)
-	if err != nil {
-		return nil, err
-	}
 	return data, nil
 }
 

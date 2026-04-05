@@ -105,6 +105,83 @@ func TestClientCloseContextClearsStaleSubscribeBarrier(t *testing.T) {
 	}
 }
 
+func TestClientSubscribeReusesActiveCachedSubscription(t *testing.T) {
+	connectionID := uuid.New()
+	subscription := &rta.Subscription{}
+	sub := &fakeSubscriber{}
+	client := &Client{
+		sub: sub,
+		active: func(got *rta.Subscription) bool {
+			return got == subscription
+		},
+		decode: func(got *rta.Subscription) (*subscriptionData, error) {
+			if got != subscription {
+				t.Fatalf("decoded subscription = %p, want %p", got, subscription)
+			}
+			return &subscriptionData{ConnectionID: connectionID}, nil
+		},
+	}
+	client.subscription = subscription
+
+	gotSubscription, gotData, err := client.subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("subscribe returned error: %v", err)
+	}
+	if gotSubscription != subscription {
+		t.Fatalf("subscription = %p, want %p", gotSubscription, subscription)
+	}
+	if gotData == nil || gotData.ConnectionID != connectionID {
+		t.Fatalf("subscription data = %+v, want connection ID %s", gotData, connectionID)
+	}
+	if client.subscriptionData == nil || client.subscriptionData.ConnectionID != connectionID {
+		t.Fatalf("cached subscription data = %+v, want connection ID %s", client.subscriptionData, connectionID)
+	}
+	if sub.attempts != 0 {
+		t.Fatalf("subscribe attempts = %d, want 0", sub.attempts)
+	}
+}
+
+func TestClientSubscribeRefreshesInactiveCachedSubscription(t *testing.T) {
+	oldSubscription := &rta.Subscription{}
+	newSubscription := &rta.Subscription{}
+	connectionID := uuid.New()
+	sub := &fakeSubscriber{subscription: newSubscription}
+	client := &Client{
+		sub: sub,
+		log: slogDiscard(),
+		active: func(got *rta.Subscription) bool {
+			return got != oldSubscription
+		},
+		decode: func(got *rta.Subscription) (*subscriptionData, error) {
+			if got != newSubscription {
+				t.Fatalf("decoded subscription = %p, want %p", got, newSubscription)
+			}
+			return &subscriptionData{ConnectionID: connectionID}, nil
+		},
+	}
+	client.subscription = oldSubscription
+
+	gotSubscription, gotData, err := client.subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("subscribe returned error: %v", err)
+	}
+	if gotSubscription != newSubscription {
+		t.Fatalf("subscription = %p, want %p", gotSubscription, newSubscription)
+	}
+	if gotData == nil || gotData.ConnectionID != connectionID {
+		t.Fatalf("subscription data = %+v, want connection ID %s", gotData, connectionID)
+	}
+	if client.subscription != newSubscription {
+		t.Fatalf("cached subscription = %p, want %p", client.subscription, newSubscription)
+	}
+	if client.subscriptionData == nil || client.subscriptionData.ConnectionID != connectionID {
+		t.Fatalf("cached subscription data = %+v, want connection ID %s", client.subscriptionData, connectionID)
+	}
+	if sub.attempts != 1 {
+		t.Fatalf("subscribe attempts = %d, want 1", sub.attempts)
+	}
+}
+
 func TestClientRetryReconcileSessionConnectionRepairsSession(t *testing.T) {
 	connectionID1 := uuid.New()
 	connectionID2 := uuid.New()
