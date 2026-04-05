@@ -127,6 +127,15 @@ func TestClientSubscribeDoesNotRegisterHandlerWhenInitialSubscribeFails(t *testi
 	}
 }
 
+func TestClientSubscribeReturnsUnavailableWithoutSubscriber(t *testing.T) {
+	client := &Client{}
+
+	err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
+	if !errors.Is(err, errSubscriptionUnavailable) {
+		t.Fatalf("Subscribe error = %v, want %v", err, errSubscriptionUnavailable)
+	}
+}
+
 func TestClientCloseContextDoesNotBlockOnRecoverySubscribe(t *testing.T) {
 	sub := &blockingSubscriber{
 		started: make(chan struct{}, 1),

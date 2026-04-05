@@ -105,6 +105,15 @@ func TestClientCloseContextClearsStaleSubscribeBarrier(t *testing.T) {
 	}
 }
 
+func TestClientSubscribeReturnsUnavailableWithoutSubscriber(t *testing.T) {
+	client := &Client{}
+
+	_, _, err := client.subscribe(context.Background())
+	if !errors.Is(err, errSubscriptionUnavailable) {
+		t.Fatalf("subscribe error = %v, want %v", err, errSubscriptionUnavailable)
+	}
+}
+
 func TestClientSubscribeReusesActiveCachedSubscription(t *testing.T) {
 	connectionID := uuid.New()
 	subscription := &rta.Subscription{}

@@ -122,6 +122,9 @@ func (c *Client) subscribeWithInstall(ctx context.Context, canInstall func() boo
 // subscription data. On decode failure the raw subscription is still returned
 // so the caller can clean it up.
 func (c *Client) fetchSubscription(ctx context.Context) (_ *rta.Subscription, _ *subscriptionData, err error) {
+	if c.sub == nil {
+		return nil, nil, errSubscriptionUnavailable
+	}
 	subscription, err := c.sub.Subscribe(ctx, resourceURI)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)

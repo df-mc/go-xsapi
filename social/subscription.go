@@ -11,6 +11,10 @@ import (
 	"github.com/df-mc/go-xsapi/rta"
 )
 
+// errSubscriptionUnavailable is returned when no RTA subscriber is configured
+// and the social subscription cannot be refreshed.
+var errSubscriptionUnavailable = errors.New("xsapi/social: subscription unavailable")
+
 // Subscribe subscribes to RTA (Real-Time Activity) services to receive
 // notifications for changes in the caller's friend list.
 //
@@ -198,6 +202,9 @@ func (c *Client) ensureSubscriptionLocked(ctx context.Context, seq uint64) error
 // fetchSubscription performs the RTA subscribe call for the caller's friends
 // resource URI.
 func (c *Client) fetchSubscription(ctx context.Context) (*rta.Subscription, error) {
+	if c.sub == nil {
+		return nil, errSubscriptionUnavailable
+	}
 	resourceURI := socialEndpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
