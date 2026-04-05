@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/rta"
@@ -22,6 +23,13 @@ type unsubscriber interface {
 	Unsubscribe(context.Context, *rta.Subscription) error
 }
 
+// subscriber captures the part of the RTA connection needed to create new
+// subscriptions. Like [unsubscriber], the interface exists so tests can inject
+// controlled behavior without constructing a real [rta.Conn].
+type subscriber interface {
+	Subscribe(context.Context, string) (*rta.Subscription, error)
+}
+
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
@@ -29,7 +37,7 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	}
 	return &Client{
 		client:   client,
-		rta:      conn,
+		sub:      conn,
 		unsub:    conn,
 		userInfo: userInfo,
 		log:      log,
@@ -42,7 +50,7 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 //   - peoplehub.xboxlive.com for querying user profiles.
 type Client struct {
 	client *http.Client
-	rta    *rta.Conn
+	sub    subscriber
 	// unsub is the narrow shutdown dependency used for removing RTA
 	// subscriptions. In production it is the same value as rta.
 	// Keeping this separate allows tests to inject controlled failures for the
@@ -53,7 +61,19 @@ type Client struct {
 
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
+	// subscribeDone is closed when an in-flight subscription fetch finishes.
+	// It is nil when no fetch is currently running.
+	subscribeDone        chan struct{}
 	subscriptionHandlers []SubscriptionHandler
+	// recovering is true while a background goroutine is attempting to
+	// re-establish the subscription after a reconnect failure.
+	recovering bool
+	// closing is set while [Client.CloseContext] is running to prevent new
+	// background work from starting.
+	closing atomic.Bool
+	// subscriptionSeq is incremented on close to invalidate in-flight
+	// background goroutines.
+	subscriptionSeq atomic.Uint64
 }
 
 // Close closes the Client with a context of 15 seconds timeout.
@@ -74,14 +94,24 @@ func (c *Client) Close() error {
 // In most cases, [github.com/df-mc/go-xsapi.Client.CloseContext] should be preferred
 // over calling this method directly.
 func (c *Client) CloseContext(ctx context.Context) error {
+	c.closing.Store(true)
+	defer c.closing.Store(false)
+	c.subscriptionSeq.Add(1)
+
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
+	if c.subscribeDone != nil {
+		close(c.subscribeDone)
+		c.subscribeDone = nil
+	}
 
 	if c.subscription != nil {
 		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err)
 		}
-		c.subscription, c.subscriptionHandlers = nil, nil
+		c.subscription = nil
 	}
+	c.subscriptionHandlers = nil
+	c.recovering = false
 	return nil
 }

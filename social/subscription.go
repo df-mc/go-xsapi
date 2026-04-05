@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/df-mc/go-xsapi/rta"
 )
@@ -26,23 +27,15 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		return errors.New("xsapi/social: cannot subscribe with a nil SubscriptionHandler")
 	}
 
+	seq := c.subscriptionSeq.Load()
+	if err := c.ensureSubscription(ctx, seq); err != nil {
+		return err
+	}
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
-	if c.subscription == nil {
-		resourceURI := socialEndpoint.JoinPath(
-			"users",
-			"xuid("+c.userInfo.XUID+")",
-			"friends",
-		).String()
-		c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
-		if err != nil {
-			return err
-		}
-		c.subscription.Handle(&subscriptionHandler{
-			Client: c,
-		})
+	if !c.subscriptionActive(seq) {
+		return context.Canceled
 	}
-
 	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
 	return nil
 }
@@ -121,14 +114,161 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 // HandleReconnect implements [rta.SubscriptionHandler.HandleReconnect].
 func (h *subscriptionHandler) HandleReconnect(err error) {
 	if err != nil {
-		// currently we don't attempt to re-subscribe to the RTA service
-		// since the connection might be dead. but at least as a safeguard,
-		// we set both the subscription and subscriptionData to nil so it
-		// can be retired on next call.
 		h.subscriptionMu.Lock()
-		h.subscription, h.subscriptionHandlers = nil, nil
+		h.subscription = nil
+		if h.recovering || len(h.subscriptionHandlers) == 0 {
+			h.subscriptionMu.Unlock()
+			return
+		}
+		h.recovering = true
+		seq := h.subscriptionSeq.Load()
 		h.subscriptionMu.Unlock()
+		go h.retryRecoverSubscription(seq)
 		return
+	}
+}
+
+// ensureSubscriptionLocked ensures that a live RTA subscription exists on the
+// Client. If one already exists it returns immediately. Otherwise it fetches a
+// new subscription, coalescing concurrent callers behind a single in-flight
+// fetch via subscribeDone. The caller must hold subscriptionMu on entry; the
+// lock is released before returning.
+func (c *Client) ensureSubscriptionLocked(ctx context.Context, seq uint64) error {
+	for {
+		if !c.subscriptionActive(seq) {
+			c.subscriptionMu.Unlock()
+			return context.Canceled
+		}
+		if c.subscription != nil {
+			c.subscriptionMu.Unlock()
+			return nil
+		}
+		if c.subscribeDone != nil {
+			done := c.subscribeDone
+			c.subscriptionMu.Unlock()
+			select {
+			case <-done:
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				c.subscriptionMu.Lock()
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		done := make(chan struct{})
+		c.subscribeDone = done
+		c.subscriptionMu.Unlock()
+
+		subscription, err := c.fetchSubscription(ctx)
+
+		c.subscriptionMu.Lock()
+		if c.subscribeDone == done {
+			c.subscribeDone = nil
+			close(done)
+		}
+		discard := func() {
+			c.subscriptionMu.Unlock()
+			c.cleanupSubscription(subscription)
+		}
+		if err != nil {
+			discard()
+			return err
+		}
+		if !c.subscriptionActive(seq) {
+			discard()
+			return context.Canceled
+		}
+		if c.subscription != nil {
+			discard()
+			return nil
+		}
+		c.subscription = subscription
+		c.subscription.Handle(&subscriptionHandler{
+			Client: c,
+		})
+		c.recovering = false
+		c.subscriptionMu.Unlock()
+		return nil
+	}
+}
+
+// fetchSubscription performs the RTA subscribe call for the caller's friends
+// resource URI.
+func (c *Client) fetchSubscription(ctx context.Context) (*rta.Subscription, error) {
+	resourceURI := socialEndpoint.JoinPath(
+		"users",
+		"xuid("+c.userInfo.XUID+")",
+		"friends",
+	).String()
+	subscription, err := c.sub.Subscribe(ctx, resourceURI)
+	if err != nil {
+		return nil, err
+	}
+	return subscription, nil
+}
+
+// retryRecoverSubscription repeatedly attempts to re-establish the social
+// subscription after a reconnect failure, backing off between attempts.
+// It stops when the subscription is recovered, the Client is closing, or
+// no handlers remain.
+func (c *Client) retryRecoverSubscription(seq uint64) {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+		c.subscriptionMu.Lock()
+		if !c.recovering || len(c.subscriptionHandlers) == 0 || !c.subscriptionActive(seq) {
+			c.subscriptionMu.Unlock()
+			cancel()
+			return
+		}
+		needsRecover := c.subscription == nil
+		c.subscriptionMu.Unlock()
+
+		if !needsRecover {
+			cancel()
+			return
+		}
+		err := c.ensureSubscription(ctx, seq)
+		cancel()
+		if err == nil {
+			return
+		}
+		if errors.Is(err, context.Canceled) || !c.subscriptionActive(seq) {
+			return
+		}
+		time.Sleep(socialReconnectBackoff)
+	}
+}
+
+// socialReconnectBackoff is the fixed delay between recovery attempts after a
+// reconnect failure.
+const socialReconnectBackoff = time.Second
+
+// ensureSubscription acquires subscriptionMu and delegates to
+// ensureSubscriptionLocked.
+func (c *Client) ensureSubscription(ctx context.Context, seq uint64) error {
+	c.subscriptionMu.Lock()
+	return c.ensureSubscriptionLocked(ctx, seq)
+}
+
+// subscriptionActive reports whether seq matches the current subscription
+// sequence and the Client is not closing.
+func (c *Client) subscriptionActive(seq uint64) bool {
+	return c.subscriptionSeq.Load() == seq && !c.closing.Load()
+}
+
+// cleanupSubscription unsubscribes a discarded or failed RTA subscription
+// with a 15 second timeout.
+func (c *Client) cleanupSubscription(subscription *rta.Subscription) {
+	if subscription == nil || c.unsub == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	if err := c.unsub.Unsubscribe(ctx, subscription); err != nil {
+		c.log.Error("error cleaning up discarded social subscription", slog.Any("error", err))
 	}
 }
 

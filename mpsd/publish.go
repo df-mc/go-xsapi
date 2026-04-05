@@ -124,10 +124,26 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 
 	switch resp.StatusCode {
 	case http.StatusCreated:
-		return c.createSession(ctx, ref, resp)
+		return c.createSessionAndReconcile(ctx, ref, resp, payload.ConnectionID, "publish")
 	default:
 		return nil, internal.UnexpectedStatusCode(resp)
 	}
+}
+
+// createSessionAndReconcile creates a session from the HTTP response and then
+// ensures its connection ID matches the current subscription data. If the
+// immediate reconciliation fails, a background retry is spawned so the caller
+// still receives the session without blocking.
+func (c *Client) createSessionAndReconcile(ctx context.Context, ref SessionReference, resp *http.Response, connectionID uuid.UUID, action string) (*Session, error) {
+	s, err := c.createSession(ctx, ref, resp)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.reconcileSessionConnection(ctx, s, connectionID); err != nil {
+		s.log.Error("error reconciling session connection after "+action, slog.Any("error", err))
+		go c.retryReconcileSessionConnection(s, connectionID, c.backgroundSeq.Load())
+	}
+	return s, nil
 }
 
 // createSession creates a multiplayer session on the directory using the URL.

@@ -529,9 +529,22 @@ func (s *Session) finishUpdate(deleted bool, err error) error {
 // 412 responses after refreshing local state, and treats a remotely deleted
 // session as a successful delete.
 func (s *Session) synchronizedUpdate(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) (deleted bool, err error) {
+	return s.synchronizedUpdateWhile(ctx, changes, opts, nil)
+}
+
+// synchronizedUpdateWhile is synchronizedUpdate with an additional
+// shouldContinue predicate that is checked before each attempt. When
+// shouldContinue returns false the update is aborted with [context.Canceled].
+func (s *Session) synchronizedUpdateWhile(ctx context.Context, changes SessionDescription, opts []internal.RequestOption, shouldContinue func() bool) (deleted bool, err error) {
+	if shouldContinue == nil {
+		shouldContinue = func() bool { return true }
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, err
+		}
+		if !shouldContinue() {
+			return false, context.Canceled
 		}
 
 		deleted, conflict, err := s.commit(ctx, changes, preconditionCachedETag, opts)
@@ -543,6 +556,9 @@ func (s *Session) synchronizedUpdate(ctx context.Context, changes SessionDescrip
 		}
 		if !conflict {
 			return deleted, nil
+		}
+		if !shouldContinue() {
+			return false, context.Canceled
 		}
 		if err := s.Sync(ctx); err != nil {
 			return false, err
@@ -582,6 +598,33 @@ func (s *Session) currentETag(ctx context.Context) (string, error) {
 		return "", errors.New("mpsd: synchronized update requires ETag")
 	}
 	return etag, nil
+}
+
+// refreshConnection writes the given connection ID to the session's member
+// properties, marking the current user as active.
+func (s *Session) refreshConnection(ctx context.Context, connectionID uuid.UUID) error {
+	return s.refreshConnectionWhile(ctx, connectionID, nil)
+}
+
+// refreshConnectionWhile is refreshConnection with an additional
+// shouldContinue predicate passed through to [Session.synchronizedUpdateWhile].
+func (s *Session) refreshConnectionWhile(ctx context.Context, connectionID uuid.UUID, shouldContinue func() bool) error {
+	return s.finishUpdate(s.synchronizedUpdateWhile(ctx, SessionDescription{
+		Members: map[string]*MemberDescription{
+			"me": {
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{
+						// MPSD reconnect handling expects the title to mark the
+						// current user active again when rebinding to a new
+						// connection ID after RTA reconnect via the current-user
+						// status flow, not just rewrite the connection field.
+						Active:     true,
+						Connection: connectionID,
+					},
+				},
+			},
+		},
+	}, nil, shouldContinue))
 }
 
 // SessionReference encapsulates a reference to a multiplayer session.
