@@ -39,8 +39,11 @@ type Conn struct {
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
-	// pending holds subscriptions whose re-subscribe was interrupted by a
-	// replacement socket drop. They are retried in the next reconnect cycle.
+	// pending holds subscriptions taken out of the live map for a reconnect
+	// wave whose individual re-subscribe was interrupted by a replacement
+	// socket drop. Because reconnect clears the live subscription map before
+	// resubscribing, interrupted subscriptions must be carried into the next
+	// reconnect cycle explicitly instead of being retried in-place.
 	pending map[*Subscription]struct{}
 
 	log *slog.Logger
@@ -69,7 +72,7 @@ type Conn struct {
 // to be used during the handshake. A Subscription may be returned, which contains an ID
 // and Custom data as the result of handshake.
 func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
-	sub, err := c.subscribe(ctx, resourceURI, true)
+	sub, err := c.subscribe(ctx, resourceURI)
 	if err != nil {
 		return nil, err
 	}
@@ -86,12 +89,29 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
-func (c *Conn) subscribe(ctx context.Context, resourceURI string, waitReconnect bool) (*Subscription, error) {
-	h, err := c.call(ctx, operationSubscribe, []any{resourceURI}, waitReconnect)
+func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
+	h, err := c.call(ctx, operationSubscribe, []any{resourceURI})
 	if err != nil {
 		return nil, err
 	}
+	return c.readSubscribeHandshake(resourceURI, h)
+}
 
+// subscribeDuringReconnect re-establishes a subscription while a reconnect
+// wave is already in progress. If the replacement socket drops before the
+// handshake completes, the call returns [errReconnectInterrupted] so the
+// caller can carry the subscription into the next reconnect cycle.
+func (c *Conn) subscribeDuringReconnect(ctx context.Context, resourceURI string) (*Subscription, error) {
+	h, err := c.callDuringReconnect(ctx, operationSubscribe, []any{resourceURI})
+	if err != nil {
+		return nil, err
+	}
+	return c.readSubscribeHandshake(resourceURI, h)
+}
+
+// readSubscribeHandshake decodes a successful subscribe handshake into a
+// [Subscription].
+func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscription, error) {
 	switch h.status {
 	case StatusOK:
 		if len(h.payload) < 2 {
@@ -118,7 +138,7 @@ func (c *Conn) subscribe(ctx context.Context, resourceURI string, waitReconnect 
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
-	h, err := c.call(ctx, operationUnsubscribe, []any{sub.ID()}, true)
+	h, err := c.call(ctx, operationUnsubscribe, []any{sub.ID()})
 	if err != nil {
 		return err
 	}
@@ -139,8 +159,9 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 //
 // If the Conn is currently reconnecting, [call] blocks until the reconnect
 // completes before sending a message to the server.
-// errReconnectInterrupted is returned by [Conn.call] when waitReconnect is
-// false and the underlying connection drops during a re-subscribe attempt.
+//
+// errReconnectInterrupted is returned by [Conn.callDuringReconnect] when the
+// replacement socket drops during a re-subscribe attempt.
 var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 
 // reconnectSettleDelay is the time to wait after resubscribing before
@@ -148,31 +169,52 @@ var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 // prove it is stable.
 const reconnectSettleDelay = 50 * time.Millisecond
 
-func (c *Conn) call(ctx context.Context, op uint8, payload []any, waitReconnect bool) (*handshake, error) {
+func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {
 	for {
-		if waitReconnect {
-			if err := c.wait(ctx); err != nil {
-				return nil, err
-			}
+		if err := c.wait(ctx); err != nil {
+			return nil, err
 		}
 
 		seq := c.sequences[op].Add(1)
 		ch, err := c.expect(op, seq, payload)
 		if err != nil {
-			if !waitReconnect {
-				c.reconnectNext.Store(true)
-				return nil, errReconnectInterrupted
-			}
 			continue
 		}
 		select {
 		case result, ok := <-ch:
 			if !ok {
-				if !waitReconnect {
-					c.reconnectNext.Store(true)
-					return nil, errReconnectInterrupted
-				}
 				continue
+			}
+			c.release(op, seq)
+			return result, nil
+		case <-ctx.Done():
+			c.release(op, seq)
+			return nil, ctx.Err()
+		case <-c.ctx.Done():
+			c.release(op, seq)
+			return nil, context.Cause(c.ctx)
+		}
+	}
+}
+
+// callDuringReconnect is [Conn.call] for re-subscribe work that is already
+// running inside an active reconnect wave. It must not wait on reconnect
+// completion, because the current reconnect wave is blocked on the caller.
+// If the replacement socket drops mid-handshake, the caller is told to defer
+// the subscription to the next reconnect cycle.
+func (c *Conn) callDuringReconnect(ctx context.Context, op uint8, payload []any) (*handshake, error) {
+	for {
+		seq := c.sequences[op].Add(1)
+		ch, err := c.expect(op, seq, payload)
+		if err != nil {
+			c.reconnectNext.Store(true)
+			return nil, errReconnectInterrupted
+		}
+		select {
+		case result, ok := <-ch:
+			if !ok {
+				c.reconnectNext.Store(true)
+				return nil, errReconnectInterrupted
 			}
 			c.release(op, seq)
 			return result, nil
@@ -546,7 +588,7 @@ func (c *Conn) resubscribe() []*Subscription {
 			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 			defer cancel()
 
-			sub, err := c.subscribe(ctx, subscription.ResourceURI(), false)
+			sub, err := c.subscribeDuringReconnect(ctx, subscription.ResourceURI())
 			if err != nil {
 				if errors.Is(err, errReconnectInterrupted) {
 					c.subscriptionsMu.Lock()
