@@ -3,7 +3,7 @@ package xast
 import (
 	"context"
 
-	"github.com/df-mc/go-xsapi/xal/internal"
+	"github.com/df-mc/go-xsapi/v2/xal/internal"
 )
 
 // Token is an XAST (Xbox Authentication Services for Titles) token that
