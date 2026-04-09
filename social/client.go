@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/df-mc/go-xsapi/rta"
-	"github.com/df-mc/go-xsapi/xal/xsts"
+	"github.com/df-mc/go-xsapi/v2/rta"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 // unsubscriber captures just the part of the RTA connection needed during
