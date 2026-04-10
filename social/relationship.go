@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/df-mc/go-xsapi/v2/internal"
+	"github.com/df-mc/go-xsapi/internal"
 )
 
 // Follow establishes a one-way follow relationship with the user identified

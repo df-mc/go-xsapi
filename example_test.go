@@ -2,39 +2,34 @@ package xsapi
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"time"
 
-	"github.com/df-mc/go-xsapi/v2/presence"
-	"github.com/df-mc/go-xsapi/v2/xal"
-	"github.com/df-mc/go-xsapi/v2/xal/sisu"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/sisu"
 )
 
-// ExampleClient demonstrates how we can communicate with various Xbox Live network services.
-// It uses the SISU configuration dumped from Minecraft: Bedrock Edition for Android for authentication.
 func ExampleClient() {
 	// Notify for Ctrl+C and other interrupt signals so the user can abort
 	// the device authorization flow or other operations at any time.
 	signals, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	// Initiate Device Authorization Flow to sign in to a Microsoft Account.
+	// Use the Device Authorization Flow to sign in to a Microsoft Account.
 	da, err := MinecraftAndroid.DeviceAuth(signals)
 	if err != nil {
 		panic(fmt.Sprintf("error requesting device authorization flow: %s", err))
 	}
 
-	log.Printf(
+	_, _ = fmt.Fprintf(os.Stderr,
 		"Sign in to your Microsoft Account at %s using the code %s.",
 		da.VerificationURI, da.UserCode,
 	)
 
-	// Poll for the access token while the user completes the browser sign-in.
-	// The timeout is set to one minute. Increase if you need more time.
+	// Make a context for polling the access token while the user completes sign-in.
+	// In this case, we allow one minute to complete login (you may configure a longer timeout).
 	pollCtx, cancel := context.WithTimeout(signals, time.Minute)
 	defer cancel()
 	token, err := MinecraftAndroid.DeviceAccessToken(pollCtx, da)
@@ -46,15 +41,6 @@ func ExampleClient() {
 
 	// Make a SISU session using the Microsoft Account token source.
 	session := MinecraftAndroid.New(msa, nil)
-
-	// Request a XASU (Xbox Authentication Services for User) token using the SISU authorization endpoint.
-	if _, err := session.UserToken(signals); err != nil {
-		var acct *sisu.AccountRequiredError
-		if errors.As(err, &acct) {
-			log.Panicf("You need to create an Xbox Live account at: %s", acct.SignupURL)
-		}
-		panic(fmt.Sprintf("error requesting user token: %s", err))
-	}
 
 	// Log in to Xbox Live services using the SISU session.
 	client, err := NewClient(session)
@@ -68,14 +54,7 @@ func ExampleClient() {
 		}
 	}()
 
-	// Appear online in the social network.
-	if err := client.Presence().Update(signals, presence.TitleRequest{
-		State: presence.StateActive,
-	}); err != nil {
-		panic(fmt.Sprintf("error updating presence: %s", err))
-	}
-
-	// Use the social (peoplehub) endpoint to search a user using the query.
+	// Use social (peoplehub) endpoint to search a user using the query.
 	ctx, cancel := context.WithTimeout(signals, time.Second*15)
 	defer cancel()
 	users, err := client.Social().Search(ctx, "Lactyy")
@@ -91,13 +70,8 @@ func ExampleClient() {
 	fmt.Println(user.GamerTag)
 }
 
-// MinecraftAndroid is the SISU configuration for Minecraft: Bedrock Edition on Android.
-//
-// It provides all the parameters needed to authenticate a user with a Microsoft Account
-// and authorize them for Xbox Live services using the SISU endpoints.
-//
-// Note that ClientID, RedirectURI, and other title-specific fields are fixed values tied
-// to the Minecraft title. Do not modify them unless you are targeting a different title.
+// MinecraftAndroid is the SISU configuration used in Minecraft: Bedrock Edition for Android.
+// It is used for authenticating and authorizing with Xbox Live services.
 var MinecraftAndroid = sisu.Config{
 	Config: xal.Config{
 		// This indicates the device is running Android 13.

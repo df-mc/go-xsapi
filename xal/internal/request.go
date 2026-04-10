@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/df-mc/go-xsapi/v2/xal"
-	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
-	"github.com/df-mc/go-xsapi/v2/xal/nsal"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
+	"github.com/df-mc/go-xsapi/xal/nsal"
 	"github.com/go-jose/go-jose/v4"
 )
 

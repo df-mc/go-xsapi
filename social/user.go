@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/df-mc/go-xsapi/v2/internal"
+	"github.com/df-mc/go-xsapi/internal"
 )
 
 // Search returns users whose gamertag or display name matches the given query

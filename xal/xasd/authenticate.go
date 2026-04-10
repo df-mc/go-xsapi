@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/df-mc/go-xsapi/v2/xal"
-	"github.com/df-mc/go-xsapi/v2/xal/internal"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/internal"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 )

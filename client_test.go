@@ -10,11 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/df-mc/go-xsapi/v2/mpsd"
-	"github.com/df-mc/go-xsapi/v2/presence"
-	"github.com/df-mc/go-xsapi/v2/social"
-	"github.com/df-mc/go-xsapi/v2/xal/xasd"
-	"github.com/df-mc/go-xsapi/v2/xal/xsts"
+	"github.com/df-mc/go-xsapi/mpsd"
+	"github.com/df-mc/go-xsapi/presence"
+	"github.com/df-mc/go-xsapi/social"
+	"github.com/df-mc/go-xsapi/xal/xasd"
+	"github.com/df-mc/go-xsapi/xal/xsts"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/df-mc/go-xsapi/v2/xal"
+	"github.com/df-mc/go-xsapi/xal"
 )
 
 // TokenSource is the interface that supplies device tokens and the proof key

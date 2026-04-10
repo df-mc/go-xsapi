@@ -3,7 +3,7 @@ package xasu
 import (
 	"context"
 
-	"github.com/df-mc/go-xsapi/v2/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/internal"
 )
 
 // Token is an XASU (Xbox Authentication Services for Users) token that

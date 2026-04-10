@@ -3,7 +3,7 @@ package xal
 import (
 	"time"
 
-	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
+	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
 )
 
 // ServerTime returns the best known approximation of Microsoft's server time.

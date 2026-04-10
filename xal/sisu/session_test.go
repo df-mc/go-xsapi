@@ -6,9 +6,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
 	"log/slog"
 	"math/rand"
 	"net/url"
@@ -17,11 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/df-mc/go-xsapi/v2/mpsd"
-	"github.com/df-mc/go-xsapi/v2/presence"
-	"github.com/df-mc/go-xsapi/v2/rta"
-	"github.com/df-mc/go-xsapi/v2/xal"
-	"github.com/df-mc/go-xsapi/v2/xal/xasd"
+	"github.com/df-mc/go-xsapi"
+	"github.com/df-mc/go-xsapi/mpsd"
+	"github.com/df-mc/go-xsapi/presence"
+	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -74,15 +72,6 @@ func TestSession(t *testing.T) {
 		writeSnapshot(t, snapshotPath, cache)
 		t.Logf("cleanup: written session snapshot")
 	})
-
-	// Request a XASU (Xbox Authentication Services for User) token using the SISU authorization endpoint.
-	if _, err := s.UserToken(t.Context()); err != nil {
-		var acct *AccountRequiredError
-		if errors.As(err, &acct) {
-			log.Panicf("Create an Xbox Live account at: %s", acct.SignupURL)
-		}
-		panic(fmt.Sprintf("error requesting user token: %s", err))
-	}
 
 	device, err := s.DeviceToken(tokenContext(t))
 	if err != nil {

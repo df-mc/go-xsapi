@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/df-mc/go-xsapi/v2/xal"
-	"github.com/df-mc/go-xsapi/v2/xal/internal"
-	"github.com/df-mc/go-xsapi/v2/xal/xasd"
-	"github.com/df-mc/go-xsapi/v2/xal/xast"
-	"github.com/df-mc/go-xsapi/v2/xal/xasu"
+	"github.com/df-mc/go-xsapi/xal"
+	"github.com/df-mc/go-xsapi/xal/internal"
+	"github.com/df-mc/go-xsapi/xal/xasd"
+	"github.com/df-mc/go-xsapi/xal/xast"
+	"github.com/df-mc/go-xsapi/xal/xasu"
 )
 
 type (

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/df-mc/go-xsapi/v2/internal"
+	"github.com/df-mc/go-xsapi/internal"
 	"github.com/google/uuid"
 )
 

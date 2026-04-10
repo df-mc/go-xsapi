@@ -1,4 +1,4 @@
-module github.com/df-mc/go-xsapi/v2
+module github.com/df-mc/go-xsapi
 
 go 1.25.0
 
