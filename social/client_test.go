@@ -3,6 +3,8 @@ package social
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -136,22 +138,91 @@ func TestClientSubscribeReturnsUnavailableWithoutSubscriber(t *testing.T) {
 	}
 }
 
-func TestClientCloseContextDoesNotBlockOnRecoverySubscribe(t *testing.T) {
+func TestSubscriptionHandlerHandleReconnectErrorPreservesHandlers(t *testing.T) {
+	client := &Client{
+		subscriptionHandlers: []SubscriptionHandler{NopSubscriptionHandler{}},
+		subscription:         &rta.Subscription{},
+		log:                  slogDiscard(),
+	}
+	handler := &subscriptionHandler{Client: client}
+
+	handler.HandleReconnect(errors.New("reconnect failed"))
+
+	client.subscriptionMu.RLock()
+	defer client.subscriptionMu.RUnlock()
+	if client.subscription != nil {
+		t.Fatal("subscription was not cleared after reconnect failure")
+	}
+	if len(client.subscriptionHandlers) != 1 {
+		t.Fatalf("handlers length = %d, want 1 after reconnect failure", len(client.subscriptionHandlers))
+	}
+}
+
+func TestClientSubscribeDuplicatesComparableHandlerWithLiveSubscription(t *testing.T) {
+	handler := NopSubscriptionHandler{}
+	client := &Client{
+		sub:                  &fakeSubscriber{},
+		subscription:         &rta.Subscription{},
+		subscriptionHandlers: []SubscriptionHandler{handler},
+	}
+
+	if err := client.Subscribe(context.Background(), handler); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if len(client.subscriptionHandlers) != 2 {
+		t.Fatalf("handlers length = %d, want 2", len(client.subscriptionHandlers))
+	}
+}
+
+func TestClientSubscribeAfterReconnectLossRemainsAppendOnly(t *testing.T) {
+	handler := &pointerHandler{id: "A"}
+	client := &Client{
+		sub: &fakeSubscriber{},
+		log: slogDiscard(),
+	}
+	h := &subscriptionHandler{Client: client}
+	client.subscription = &rta.Subscription{}
+	client.subscriptionHandlers = []SubscriptionHandler{handler}
+
+	h.HandleReconnect(errors.New("reconnect failed"))
+
+	if err := client.Subscribe(context.Background(), handler); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if len(client.subscriptionHandlers) != 2 {
+		t.Fatalf("handlers length = %d, want 2 after recovery subscribe", len(client.subscriptionHandlers))
+	}
+	if client.subscription == nil {
+		t.Fatal("subscription was not re-established after reconnect loss")
+	}
+	if err := client.Subscribe(context.Background(), handler); err != nil {
+		t.Fatalf("second Subscribe returned error: %v", err)
+	}
+	if len(client.subscriptionHandlers) != 3 {
+		t.Fatalf("handlers length = %d, want 3 after second append-only subscribe", len(client.subscriptionHandlers))
+	}
+}
+
+func TestClientSubscribeAfterReconnectLossDoesNotCollapseConcurrentNewComparableHandlers(t *testing.T) {
 	sub := &blockingSubscriber{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
+	existing := namedHandler("existing")
+	newHandler := namedHandler("new")
 	client := &Client{
 		sub:                  sub,
-		subscriptionHandlers: []SubscriptionHandler{NopSubscriptionHandler{}},
-		recovering:           true,
+		log:                  slogDiscard(),
+		subscriptionHandlers: []SubscriptionHandler{existing},
+		subscription:         &rta.Subscription{},
 	}
+	h := &subscriptionHandler{Client: client}
 
-	done := make(chan struct{})
-	go func() {
-		client.retryRecoverSubscription(client.subscriptionSeq.Load())
-		close(done)
-	}()
+	h.HandleReconnect(errors.New("reconnect failed"))
+
+	errs := make(chan error, 2)
+	go func() { errs <- client.Subscribe(context.Background(), newHandler) }()
+	go func() { errs <- client.Subscribe(context.Background(), newHandler) }()
 
 	select {
 	case <-sub.started:
@@ -159,82 +230,24 @@ func TestClientCloseContextDoesNotBlockOnRecoverySubscribe(t *testing.T) {
 		t.Fatal("timed out waiting for recovery subscribe attempt")
 	}
 
-	closed := make(chan error, 1)
-	go func() {
-		closed <- client.CloseContext(context.Background())
-	}()
-
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatalf("CloseContext returned error: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("CloseContext blocked on background recovery subscribe")
-	}
-
 	close(sub.release)
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("recovery goroutine did not exit after in-flight subscribe finished")
-	}
-
-	if client.subscription != nil {
-		t.Fatal("recovery installed a subscription after CloseContext returned")
-	}
-}
-
-func TestClientSubscribeSharesInFlightRecoverySubscription(t *testing.T) {
-	sub := &blockingSubscriber{
-		started: make(chan struct{}, 2),
-		release: make(chan struct{}),
-	}
-	client := &Client{
-		sub:                  sub,
-		subscriptionHandlers: []SubscriptionHandler{NopSubscriptionHandler{}},
-		recovering:           true,
-	}
-
-	done := make(chan struct{})
-	go func() {
-		client.retryRecoverSubscription(client.subscriptionSeq.Load())
-		close(done)
-	}()
-
-	select {
-	case <-sub.started:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for background recovery subscribe")
-	}
-
-	subscribeErr := make(chan error, 1)
-	go func() {
-		subscribeErr <- client.Subscribe(context.Background(), NopSubscriptionHandler{})
-	}()
-
-	select {
-	case <-sub.started:
-		t.Fatal("manual Subscribe started a second concurrent subscribe instead of sharing recovery")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	close(sub.release)
-
-	select {
-	case err := <-subscribeErr:
-		if err != nil {
-			t.Fatalf("Subscribe returned error: %v", err)
+	for range 2 {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("Subscribe returned error: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent Subscribe calls")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for manual Subscribe to complete")
 	}
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for recovery goroutine to complete")
+	if len(client.subscriptionHandlers) != 3 {
+		t.Fatalf("handlers length = %d, want 3 after concurrent recovery subscribes", len(client.subscriptionHandlers))
+	}
+	if client.subscription == nil {
+		t.Fatal("subscription was not re-established after reconnect loss")
 	}
 }
 
@@ -373,3 +386,17 @@ func TestClientSubscribeDoesNotHoldLockDuringDiscardCleanup(t *testing.T) {
 		t.Fatal("first Subscribe did not finish after cleanup unblocked")
 	}
 }
+
+func slogDiscard() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+type namedHandler string
+
+func (namedHandler) HandleSocialNotification(string, []string)  {}
+func (namedHandler) HandleIncomingFriendRequestCountChange(int) {}
+
+type pointerHandler struct{ id string }
+
+func (*pointerHandler) HandleSocialNotification(string, []string)  {}
+func (*pointerHandler) HandleIncomingFriendRequestCountChange(int) {}

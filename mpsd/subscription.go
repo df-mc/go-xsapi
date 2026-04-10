@@ -107,8 +107,9 @@ func (c *Client) subscribeWithInstall(ctx context.Context, canInstall func() boo
 			c.subscription = subscription
 			c.subscriptionData = data
 			c.subscription.Handle(&subscriptionHandler{
-				Client: c,
-				log:    c.log.With("src", "subscription handler"),
+				Client:       c,
+				subscription: subscription,
+				log:          c.log.With("src", "subscription handler"),
 			})
 			c.subscriptionMu.Unlock()
 			return subscription, data, nil
@@ -180,7 +181,8 @@ type subscriptionData struct {
 // in order to synchronize the session properties with the latest state.
 type subscriptionHandler struct {
 	*Client
-	log *slog.Logger
+	subscription *rta.Subscription
+	log          *slog.Logger
 	rta.NopSubscriptionHandler
 }
 
@@ -242,14 +244,50 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 
 // HandleReconnect implements [rta.SubscriptionHandler].
 func (h *subscriptionHandler) HandleReconnect(err error) {
-	if err != nil {
-		h.subscriptionMu.Lock()
-		h.cancelRefreshWave()
-		h.clearSubscriptionLocked()
-		h.subscriptionMu.Unlock()
-		h.log.Error("error reconnecting MPSD subscription", slog.Any("error", err))
-		go h.repairSubscriptionAfterReconnectFailure(h.backgroundSeq.Load())
+	if err == nil {
+		return
 	}
+
+	h.subscriptionMu.Lock()
+	if h.handleStaleReconnectFailureLocked(err) {
+		return
+	}
+	lossSeq := h.handleSubscriptionLossLocked(nil)
+	h.subscriptionMu.Unlock()
+	h.logSubscriptionLoss("error reconnecting MPSD subscription", err, lossSeq)
+}
+
+// handleStaleReconnectFailureLocked handles reconnect failure from a stale
+// subscription handle while subscriptionMu is held. It returns true after
+// consuming the failure path and releasing subscriptionMu.
+func (h *subscriptionHandler) handleStaleReconnectFailureLocked(err error) bool {
+	if h.subscription == nil || h.subscription == h.Client.subscription {
+		return false
+	}
+
+	current := h.Client.subscription
+	if current == nil {
+		lossSeq := h.handleSubscriptionLossLocked(nil)
+		h.subscriptionMu.Unlock()
+		h.logSubscriptionLoss("error reconnecting MPSD subscription", err, lossSeq)
+		return true
+	}
+
+	currentData, currentErr := h.decodeSubscriptionData(current)
+	if currentErr != nil {
+		lossSeq := h.handleSubscriptionLossLocked(current)
+		h.subscriptionMu.Unlock()
+		h.logSubscriptionLoss("error decoding replacement MPSD subscription after stale reconnect failure", currentErr, lossSeq)
+		return true
+	}
+
+	oldData, oldErr := h.decodeSubscriptionData(h.subscription)
+	backgroundSeq := h.backgroundSeq.Load()
+	h.subscriptionMu.Unlock()
+	if oldErr != nil || oldData == nil || oldData.ConnectionID != currentData.ConnectionID {
+		h.startRefreshWaveIfCurrent(current, backgroundSeq, currentData.ConnectionID)
+	}
+	return true
 }
 
 // HandleReconnectReady implements [rta.ReconnectReadyHandler] so MPSD can
@@ -265,23 +303,26 @@ func (h *subscriptionHandler) handleReconnectSuccess() {
 	h.subscriptionMu.Lock()
 	subscription := h.subscription
 	if subscription == nil {
+		subscription = h.Client.subscription
+	}
+	if subscription == nil || (h.subscription != nil && subscription != h.Client.subscription) {
 		h.subscriptionMu.Unlock()
 		return
 	}
 	data, err := h.decodeSubscriptionData(subscription)
 	if err != nil {
-		h.resetSubscriptionLocked(subscription)
+		lossSeq := h.handleSubscriptionLossLocked(subscription)
 		h.subscriptionMu.Unlock()
-		h.log.Error("error decoding refreshed subscription data", slog.Any("error", err))
-		go h.repairSubscriptionAfterReconnectFailure(h.backgroundSeq.Load())
+		h.logSubscriptionLoss("error decoding refreshed subscription data", err, lossSeq)
 		return
 	}
 	prev := h.subscriptionData
 	h.subscriptionData = data
+	backgroundSeq := h.backgroundSeq.Load()
 	h.subscriptionMu.Unlock()
 
 	if prev == nil || prev.ConnectionID != data.ConnectionID {
-		h.startRefreshWave(data.ConnectionID)
+		h.startRefreshWaveIfCurrent(subscription, backgroundSeq, data.ConnectionID)
 	}
 }
 
@@ -354,35 +395,6 @@ func decodeSubscriptionData(subscription *rta.Subscription) (*subscriptionData, 
 	return &data, nil
 }
 
-// repairSubscriptionAfterReconnectFailure retries establishing an MPSD
-// subscription after a reconnect-time re-subscribe has failed. Once the
-// subscription is recovered, it starts a refresh wave to rebind tracked
-// sessions to the new connection ID.
-func (c *Client) repairSubscriptionAfterReconnectFailure(backgroundSeq uint64) {
-	canInstall := c.backgroundInstallGate(backgroundSeq)
-	// We intentionally try to recover the MPSD subscription for live sessions
-	// instead of tearing multiplayer down immediately. Once the subscription is
-	// re-established, the new connection ID is written back to tracked sessions
-	// via startRefreshWave so shoulder taps and disconnect detection resume.
-	for attempt := 0; ; attempt++ {
-		if !canInstall() {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-		data, err := c.subscriptionDataWithInstall(ctx, canInstall)
-		cancel()
-		if err == nil {
-			c.startRefreshWave(data.ConnectionID)
-			return
-		}
-		c.log.Error("error re-establishing MPSD subscription after reconnect failure", slog.Any("error", err))
-		if !canInstall() {
-			return
-		}
-		time.Sleep(reconnectBackoff(attempt))
-	}
-}
-
 // cleanupSubscription unsubscribes a discarded or failed RTA subscription in
 // the background with a 15 second timeout.
 func (c *Client) cleanupSubscription(subscription *rta.Subscription) {
@@ -430,15 +442,10 @@ func (c *Client) cancelRefreshWaveLocked() {
 	c.refreshingSeq = 0
 }
 
-// reconcileSessionConnection checks whether the session's connection ID still
-// matches the current subscription data and, if not, refreshes it.
-func (c *Client) reconcileSessionConnection(ctx context.Context, session *Session, connectionID uuid.UUID) error {
-	return c.reconcileSessionConnectionWithInstall(ctx, session, connectionID, c.backgroundInstallGate(c.backgroundSeq.Load()))
-}
-
-// reconcileSessionConnectionWithInstall is the canInstall-aware variant of
-// reconcileSessionConnection used by background goroutines that must stop
-// when the Client is closing.
+// reconcileSessionConnectionWithInstall checks whether the session's
+// connection ID still matches the current subscription data and, if not,
+// refreshes it. canInstall is used by background goroutines that must stop
+// when the Client is closing or their generation has been invalidated.
 func (c *Client) reconcileSessionConnectionWithInstall(ctx context.Context, session *Session, connectionID uuid.UUID, canInstall func() bool) error {
 	if c.closing.Load() {
 		return net.ErrClosed
@@ -510,23 +517,32 @@ func (c *Client) subscriptionDataWithInstall(ctx context.Context, canInstall fun
 func (c *Client) retryReconcileSessionConnection(session *Session, connectionID uuid.UUID, backgroundSeq uint64) {
 	canInstall := c.backgroundInstallGate(backgroundSeq)
 	for attempt := 0; ; attempt++ {
-		if !canInstall() {
+		if err := session.Context().Err(); err != nil {
 			return
 		}
-		if err := session.Context().Err(); err != nil {
+		if !canInstall() || c.closing.Load() {
+			session.markTrackingLost()
 			return
 		}
 
 		ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 		err := c.reconcileSessionConnectionWithInstall(ctx, session, connectionID, canInstall)
 		cancel()
-		if err == nil || errors.Is(err, net.ErrClosed) {
+		if err == nil {
+			if !c.reattachSession(session, backgroundSeq) {
+				session.log.Warn("automatic session tracking lost after late attach")
+			}
+			return
+		}
+		if errors.Is(err, net.ErrClosed) {
+			session.markTrackingLost()
 			return
 		}
 
 		session.log.Error("error reconciling session connection after reconnect", slog.Any("error", err))
 
 		if attempt >= 4 {
+			session.markTrackingLost()
 			return
 		}
 		select {
@@ -624,31 +640,68 @@ func (c *Client) refreshSequenceActive(seq uint64) bool {
 	return c.refreshingSeq == seq
 }
 
-// backgroundActive reports whether seq matches the current background
-// sequence and the Client is not closing.
-func (c *Client) backgroundActive(seq uint64) bool {
-	return c.backgroundSeq.Load() == seq && !c.closing.Load()
-}
-
 // backgroundInstallGate returns a canInstall predicate for a single
 // background-work generation.
 func (c *Client) backgroundInstallGate(backgroundSeq uint64) func() bool {
 	return func() bool {
-		return c.backgroundActive(backgroundSeq)
+		return c.backgroundSeq.Load() == backgroundSeq && !c.closing.Load()
 	}
 }
 
-// startRefreshWave cancels any previous refresh wave and begins writing
-// connectionID to all tracked sessions. It runs synchronously for the
-// initial pass and spawns retry goroutines for individual failures.
-func (c *Client) startRefreshWave(connectionID uuid.UUID) {
-	if c.closing.Load() {
-		return
+// handleSubscriptionLossLocked tears down MPSD subscription state while
+// holding subscriptionMu. It returns the new background-work generation used
+// to invalidate pre-loss retries and scope local session teardown.
+func (c *Client) handleSubscriptionLossLocked(subscription *rta.Subscription) uint64 {
+	lossSeq := c.backgroundSeq.Add(1)
+	c.resetSubscriptionLocked(subscription)
+	return lossSeq
+}
+
+// logSubscriptionLoss records MPSD subscription loss and shuts down tracked
+// sessions after subscription state has been torn down.
+func (c *Client) logSubscriptionLoss(msg string, err error, lossSeq uint64) {
+	c.log.Error(msg, slog.Any("error", err))
+	c.shutdownTrackedSessions(lossSeq)
+}
+
+// shutdownTrackedSessions tears down all locally tracked sessions without
+// making additional remote calls. It is used when MPSD subscription loss means
+// the client can no longer reliably maintain multiplayer session state.
+func (c *Client) shutdownTrackedSessions(lossSeq uint64) {
+	c.sessionsMu.RLock()
+	sessions := make([]*Session, 0, len(c.sessions))
+	for _, session := range c.sessions {
+		if session.backgroundSeq < lossSeq {
+			sessions = append(sessions, session)
+		}
 	}
+	c.sessionsMu.RUnlock()
+
+	for _, session := range sessions {
+		session.stopTrackingLocal(lossSeq)
+	}
+}
+
+// startRefreshWaveIfCurrent starts a refresh wave only if subscription is
+// still the active MPSD subscription and backgroundSeq is still current.
+// This prevents stale reconnect callbacks from mutating sessions after the
+// replacement subscription has already been invalidated.
+func (c *Client) startRefreshWaveIfCurrent(subscription *rta.Subscription, backgroundSeq uint64, connectionID uuid.UUID) bool {
+	if subscription == nil || c.closing.Load() {
+		return false
+	}
+
+	c.subscriptionMu.Lock()
+	if c.subscription != subscription || c.backgroundSeq.Load() != backgroundSeq || c.closing.Load() {
+		c.subscriptionMu.Unlock()
+		return false
+	}
+
 	c.refreshMu.Lock()
-	if c.closing.Load() {
+	if c.subscription != subscription || c.backgroundSeq.Load() != backgroundSeq || c.closing.Load() {
 		c.refreshMu.Unlock()
-		return
+		c.subscriptionMu.Unlock()
+		return false
 	}
 	c.cancelRefreshWaveLocked()
 	c.refreshSeq++
@@ -657,7 +710,10 @@ func (c *Client) startRefreshWave(connectionID uuid.UUID) {
 	waveCtx, cancel := context.WithCancel(context.Background())
 	c.refreshCancel = cancel
 	c.refreshMu.Unlock()
+	c.subscriptionMu.Unlock()
+
 	c.refreshSessionConnections(waveCtx, connectionID, seq)
+	return true
 }
 
 // refreshContext returns a context with a 15 second timeout that is also

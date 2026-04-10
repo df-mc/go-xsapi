@@ -26,22 +26,38 @@ var errSubscriptionUnavailable = errors.New("xsapi/social: subscription unavaila
 // reuse the existing subscription and append h to the list of active handlers.
 //
 // Subscribe returns an error if h is nil.
+//
+// A reconnect failure is terminal for the current live social subscription.
+// The registered handler set is preserved so a later Subscribe call can
+// re-establish the transport. Subscribe remains append-only even after
+// reconnect loss, so the provided handler is registered again like any other
+// call.
 func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err error) {
 	if h == nil {
 		return errors.New("xsapi/social: cannot subscribe with a nil SubscriptionHandler")
 	}
 
 	seq := c.subscriptionSeq.Load()
-	if err := c.ensureSubscription(ctx, seq); err != nil {
-		return err
+	for {
+		if err := c.ensureSubscription(ctx, seq); err != nil {
+			return err
+		}
+		c.subscriptionMu.Lock()
+		if !c.subscriptionActive(seq) {
+			c.subscriptionMu.Unlock()
+			return context.Canceled
+		}
+		if c.subscription == nil {
+			c.subscriptionMu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			continue
+		}
+		c.subscriptionHandlers = append(c.subscriptionHandlers, h)
+		c.subscriptionMu.Unlock()
+		return nil
 	}
-	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
-	if !c.subscriptionActive(seq) {
-		return context.Canceled
-	}
-	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
-	return nil
 }
 
 // subscriptionHandler is an internal implementation of [rta.SubscriptionHandler]
@@ -49,6 +65,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 // [SubscriptionHandler] implementations registered via [Client.Subscribe].
 type subscriptionHandler struct {
 	*Client
+	subscription *rta.Subscription
 	rta.NopSubscriptionHandler
 }
 
@@ -116,18 +133,19 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 }
 
 // HandleReconnect implements [rta.SubscriptionHandler.HandleReconnect].
+// A reconnect failure is terminal for the current social subscription
+// transport, but the registered handler set is preserved so callers may
+// re-establish the transport later without losing existing registrations.
 func (h *subscriptionHandler) HandleReconnect(err error) {
 	if err != nil {
 		h.subscriptionMu.Lock()
-		h.subscription = nil
-		if h.recovering || len(h.subscriptionHandlers) == 0 {
+		if h.subscription != nil && h.subscription != h.Client.subscription {
 			h.subscriptionMu.Unlock()
 			return
 		}
-		h.recovering = true
-		seq := h.subscriptionSeq.Load()
+		h.Client.subscription = nil
 		h.subscriptionMu.Unlock()
-		go h.retryRecoverSubscription(seq)
+		h.log.Error("error reconnecting social subscription", slog.Any("error", err))
 		return
 	}
 }
@@ -191,9 +209,9 @@ func (c *Client) ensureSubscriptionLocked(ctx context.Context, seq uint64) error
 		}
 		c.subscription = subscription
 		c.subscription.Handle(&subscriptionHandler{
-			Client: c,
+			Client:       c,
+			subscription: subscription,
 		})
-		c.recovering = false
 		c.subscriptionMu.Unlock()
 		return nil
 	}
@@ -216,42 +234,6 @@ func (c *Client) fetchSubscription(ctx context.Context) (*rta.Subscription, erro
 	}
 	return subscription, nil
 }
-
-// retryRecoverSubscription repeatedly attempts to re-establish the social
-// subscription after a reconnect failure, backing off between attempts.
-// It stops when the subscription is recovered, the Client is closing, or
-// no handlers remain.
-func (c *Client) retryRecoverSubscription(seq uint64) {
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-		c.subscriptionMu.Lock()
-		if !c.recovering || len(c.subscriptionHandlers) == 0 || !c.subscriptionActive(seq) {
-			c.subscriptionMu.Unlock()
-			cancel()
-			return
-		}
-		needsRecover := c.subscription == nil
-		c.subscriptionMu.Unlock()
-
-		if !needsRecover {
-			cancel()
-			return
-		}
-		err := c.ensureSubscription(ctx, seq)
-		cancel()
-		if err == nil {
-			return
-		}
-		if errors.Is(err, context.Canceled) || !c.subscriptionActive(seq) {
-			return
-		}
-		time.Sleep(socialReconnectBackoff)
-	}
-}
-
-// socialReconnectBackoff is the fixed delay between recovery attempts after a
-// reconnect failure.
-const socialReconnectBackoff = time.Second
 
 // ensureSubscription acquires subscriptionMu and delegates to
 // ensureSubscriptionLocked.

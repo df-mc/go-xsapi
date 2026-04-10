@@ -259,73 +259,235 @@ func TestClientRetryReconcileSessionConnectionRepairsSession(t *testing.T) {
 	}
 }
 
-func TestSubscriptionHandlerHandleReconnectErrorRebuildsSubscription(t *testing.T) {
-	connectionID := uuid.New()
-	sub := &fakeSubscriber{
-		subscription: &rta.Subscription{},
-		called:       make(chan struct{}, 1),
-	}
+func TestSubscriptionHandlerHandleReconnectErrorClearsSubscription(t *testing.T) {
 	client := &Client{
-		sub:  sub,
-		log:  slogDiscard(),
-		wait: func(context.Context) error { return nil },
-		decode: func(*rta.Subscription) (*subscriptionData, error) {
-			return &subscriptionData{ConnectionID: connectionID}, nil
-		},
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
 	}
 	client.subscription = &rta.Subscription{}
 	client.subscriptionData = &subscriptionData{ConnectionID: uuid.New()}
 	client.unsub = &fakeUnsubscriber{}
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	session := testSession(ref, client, SessionDescription{})
+	client.sessions[ref.URL().String()] = session
 	handler := &subscriptionHandler{
 		Client: client,
 		log:    slogDiscard(),
 	}
 
+	handler.HandleReconnect(errors.New("resubscribe failed"))
+
+	client.subscriptionMu.Lock()
+	defer client.subscriptionMu.Unlock()
+	if client.subscription != nil {
+		t.Fatal("subscription was not cleared after reconnect failure")
+	}
+	if client.subscriptionData != nil {
+		t.Fatal("subscription data was not cleared after reconnect failure")
+	}
+	if session.isClosed() {
+		t.Fatal("tracked session was closed after reconnect failure")
+	}
+	if _, ok := client.sessions[ref.URL().String()]; ok {
+		t.Fatal("tracked session was not removed after reconnect failure")
+	}
+}
+
+func TestSubscriptionHandlerHandleReconnectSuccessDecodeErrorClearsSubscription(t *testing.T) {
+	client := &Client{
+		log: slogDiscard(),
+		decode: func(*rta.Subscription) (*subscriptionData, error) {
+			return nil, errors.New("bad custom data")
+		},
+		sessions: map[string]*Session{},
+	}
+	subscription := &rta.Subscription{}
+	client.subscription = subscription
+	client.subscriptionData = &subscriptionData{ConnectionID: uuid.New()}
+	client.unsub = &fakeUnsubscriber{}
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	session := testSession(ref, client, SessionDescription{})
+	client.sessions[ref.URL().String()] = session
+	handler := &subscriptionHandler{
+		Client: client,
+		log:    slogDiscard(),
+	}
+
+	handler.handleReconnectSuccess()
+
+	client.subscriptionMu.Lock()
+	defer client.subscriptionMu.Unlock()
+	if client.subscription != nil {
+		t.Fatal("subscription was not cleared after decode failure")
+	}
+	if client.subscriptionData != nil {
+		t.Fatal("subscription data was not cleared after decode failure")
+	}
+	if session.isClosed() {
+		t.Fatal("tracked session was closed after decode failure")
+	}
+	if _, ok := client.sessions[ref.URL().String()]; ok {
+		t.Fatal("tracked session was not removed after decode failure")
+	}
+}
+
+func TestSubscriptionHandlerHandleReconnectErrorForStaleSubscriptionStartsRefreshWave(t *testing.T) {
+	oldConnectionID := uuid.New()
+	newConnectionID := uuid.New()
+	oldSubscription := &rta.Subscription{}
+	newSubscription := &rta.Subscription{}
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	refreshed := make(chan struct{}, 1)
+	client := &Client{
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+		decode: func(subscription *rta.Subscription) (*subscriptionData, error) {
+			switch subscription {
+			case oldSubscription:
+				return &subscriptionData{ConnectionID: oldConnectionID}, nil
+			case newSubscription:
+				return &subscriptionData{ConnectionID: newConnectionID}, nil
+			default:
+				return nil, errors.New("unexpected subscription")
+			}
+		},
+	}
+	client.subscription = newSubscription
+	client.subscriptionData = &subscriptionData{ConnectionID: newConnectionID}
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut {
+			t.Fatalf("request method = %s, want PUT", req.Method)
+		}
+		var body SessionDescription
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		member := body.Members["me"]
+		if member == nil || member.Properties == nil || member.Properties.System == nil {
+			t.Fatalf("member system properties missing: %+v", member)
+		}
+		if got := member.Properties.System.Connection; got != newConnectionID {
+			t.Fatalf("connection ID = %s, want %s", got, newConnectionID)
+		}
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		select {
+		case refreshed <- struct{}{}:
+		default:
+		}
+		return testResponse(req, http.StatusOK, header, []byte(`{}`)), nil
+	})}
+
+	session := testSession(ref, client, SessionDescription{})
+	session.log = slogDiscard()
+	session.etag = `"etag"`
+	client.sessions[ref.URL().String()] = session
+
+	handler := &subscriptionHandler{
+		Client:       client,
+		subscription: oldSubscription,
+		log:          slogDiscard(),
+	}
 	handler.HandleReconnect(errors.New("resubscribe failed"))
 
 	select {
-	case <-sub.called:
+	case <-refreshed:
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for MPSD subscription rebuild")
+		t.Fatal("timed out waiting for refresh wave from replacement subscription")
 	}
-
-	deadline := time.After(time.Second)
-	for {
-		client.subscriptionMu.Lock()
-		subscription := client.subscription
-		data := client.subscriptionData
-		client.subscriptionMu.Unlock()
-
-		if subscription != nil && data != nil && data.ConnectionID == connectionID {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("subscription rebuild did not complete: subscription=%v subscriptionData=%+v", subscription != nil, data)
-		default:
-			time.Sleep(time.Millisecond * 10)
-		}
+	if session.TrackingLost() {
+		t.Fatal("session reported tracking loss after replacement subscription refresh")
+	}
+	client.sessionsMu.RLock()
+	tracked := client.sessions[ref.URL().String()]
+	client.sessionsMu.RUnlock()
+	if tracked != session {
+		t.Fatal("session was not kept tracked after replacement subscription refresh")
 	}
 }
 
-func TestSubscriptionHandlerHandleReconnectErrorRetriesSubscriptionRepair(t *testing.T) {
-	connectionID := uuid.New()
-	sub := &fakeSubscriber{
-		subscription: &rta.Subscription{},
-		called:       make(chan struct{}, 4),
-		failures:     1,
+func TestStartRefreshWaveIfCurrentSkipsStaleReplacementAfterLoss(t *testing.T) {
+	subscription := &rta.Subscription{}
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
 	}
+
+	var requests atomic.Int32
 	client := &Client{
-		sub:  sub,
-		log:  slogDiscard(),
-		wait: func(context.Context) error { return nil },
-		decode: func(*rta.Subscription) (*subscriptionData, error) {
-			return &subscriptionData{ConnectionID: connectionID}, nil
-		},
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+	}
+	client.subscription = subscription
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		return testResponse(req, http.StatusOK, header, []byte(`{}`)), nil
+	})}
+
+	session := testSession(ref, client, SessionDescription{})
+	session.log = slogDiscard()
+	session.etag = `"etag"`
+	session.backgroundSeq = 0
+	client.sessions[ref.URL().String()] = session
+
+	client.subscriptionMu.Lock()
+	lossSeq := client.handleSubscriptionLossLocked(nil)
+	client.subscriptionMu.Unlock()
+	client.shutdownTrackedSessions(lossSeq)
+
+	if started := client.startRefreshWaveIfCurrent(subscription, 0, uuid.New()); started {
+		t.Fatal("refresh wave started after subscription loss invalidated the replacement")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("refresh requests = %d, want 0", requests.Load())
+	}
+	if !session.TrackingLost() {
+		t.Fatal("session did not report tracking loss after subscription loss")
+	}
+}
+
+func TestSubscriptionLossPreservesExplicitClose(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	requests := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.Method != http.MethodPut {
+			t.Fatalf("request method = %s, want PUT", req.Method)
+		}
+		return testResponse(req, http.StatusNoContent, nil, nil), nil
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
 	}
 	client.subscription = &rta.Subscription{}
 	client.subscriptionData = &subscriptionData{ConnectionID: uuid.New()}
-	client.unsub = &fakeUnsubscriber{}
+
+	session := testSession(ref, client, SessionDescription{})
+	client.sessions[ref.URL().String()] = session
 	handler := &subscriptionHandler{
 		Client: client,
 		log:    slogDiscard(),
@@ -333,36 +495,74 @@ func TestSubscriptionHandlerHandleReconnectErrorRetriesSubscriptionRepair(t *tes
 
 	handler.HandleReconnect(errors.New("resubscribe failed"))
 
-	deadline := time.After(time.Second * 3)
-	retries := 0
-	for {
-		select {
-		case <-sub.called:
-			retries++
-		default:
-		}
-		client.subscriptionMu.Lock()
-		data := client.subscriptionData
-		client.subscriptionMu.Unlock()
-		if retries >= 2 && data != nil && data.ConnectionID == connectionID {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("subscription repair did not retry successfully: retries=%d subscriptionData=%+v", retries, data)
-		default:
-			time.Sleep(time.Millisecond * 10)
-		}
+	if session.isClosed() {
+		t.Fatal("session should remain explicitly closable after subscription loss")
+	}
+	if err := session.CloseContext(context.Background()); err != nil {
+		t.Fatalf("CloseContext returned error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+	if !session.isClosed() {
+		t.Fatal("session was not closed after explicit CloseContext")
 	}
 }
 
-func TestPublishReturnsSessionWhenImmediateLateReconcileFails(t *testing.T) {
+func TestTrackSessionReplacementMarksDisplacedHandleTrackingLost(t *testing.T) {
+	client := &Client{
+		sessions: map[string]*Session{},
+	}
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	first := testSession(ref, client, SessionDescription{})
+	if !client.trackSession(first, client.backgroundSeq.Load()) {
+		t.Fatal("first session was not tracked")
+	}
+	if first.TrackingLost() {
+		t.Fatal("first session reported tracking loss immediately after initial track")
+	}
+
+	second := testSession(ref, client, SessionDescription{})
+	if !client.trackSession(second, client.backgroundSeq.Load()) {
+		t.Fatal("replacement session was not tracked")
+	}
+
+	client.sessionsMu.RLock()
+	tracked := client.sessions[ref.URL().String()]
+	client.sessionsMu.RUnlock()
+	if tracked != second {
+		t.Fatalf("tracked session = %p, want replacement %p", tracked, second)
+	}
+	if !first.TrackingLost() {
+		t.Fatal("displaced session did not report tracking loss after replacement")
+	}
+	if second.TrackingLost() {
+		t.Fatal("replacement session reported tracking loss")
+	}
+
+	close(first.closed)
+	close(second.closed)
+}
+
+func TestPublishTracksSessionBeforeImmediateReconcileCompletes(t *testing.T) {
 	initialConnectionID := uuid.New()
 	refreshedConnectionID := uuid.New()
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
 
 	var (
 		requests          atomic.Int32
 		currentConnection atomic.Value
+		reconcileStarted  = make(chan struct{}, 1)
+		reconcileRelease  = make(chan struct{})
 	)
 	currentConnection.Store(initialConnectionID)
 	client := &Client{
@@ -377,36 +577,383 @@ func TestPublishReturnsSessionWhenImmediateLateReconcileFails(t *testing.T) {
 		return &subscriptionData{ConnectionID: currentConnection.Load().(uuid.UUID)}, nil
 	}
 	client.wait = func(context.Context) error {
-		if requests.Load() >= 2 {
-			return errSubscriptionUnavailable
-		}
 		return nil
 	}
 	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch requests.Add(1) {
-		case 1:
+		requests.Add(1)
+		switch {
+		case req.Method == http.MethodPut && req.Header.Get("If-None-Match") == "*":
 			currentConnection.Store(refreshedConnectionID)
 			header := make(http.Header)
 			header.Set("ETag", `"etag"`)
 			return testResponse(req, http.StatusCreated, header, []byte(`{}`)), nil
-		case 2:
-			return testResponse(req, http.StatusCreated, nil, []byte(`{}`)), nil
+		case req.Method == http.MethodPost:
+			return testResponse(req, http.StatusOK, nil, nil), nil
+		case req.Method == http.MethodPut && req.Header.Get("If-Match") != "":
+			select {
+			case reconcileStarted <- struct{}{}:
+			default:
+			}
+			<-reconcileRelease
+			header := make(http.Header)
+			header.Set("ETag", `"etag"`)
+			return testResponse(req, http.StatusOK, header, []byte(`{}`)), nil
 		default:
 			t.Fatalf("unexpected request %d: %s %s", requests.Load(), req.Method, req.URL)
 			return nil, nil
 		}
 	})}
 
-	session, err := client.Publish(context.Background(), SessionReference{
-		ServiceConfigID: uuid.New(),
-		TemplateName:    "template",
-		Name:            "SESSION",
-	}, PublishConfig{})
+	publishDone := make(chan struct{})
+	var (
+		session *Session
+		err     error
+	)
+	go func() {
+		session, err = client.Publish(context.Background(), ref, PublishConfig{})
+		close(publishDone)
+	}()
+
+	select {
+	case <-reconcileStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for immediate reconcile to start")
+	}
+
+	client.sessionsMu.RLock()
+	tracked := client.sessions[ref.URL().String()]
+	client.sessionsMu.RUnlock()
+	if tracked == nil {
+		t.Fatal("session was not tracked while immediate reconcile was in flight")
+	}
+
+	close(reconcileRelease)
+
+	select {
+	case <-publishDone:
+	case <-time.After(time.Second):
+		t.Fatal("Publish did not finish after reconcile was released")
+	}
 	if err != nil {
 		t.Fatalf("Publish returned error: %v", err)
 	}
 	if session == nil {
 		t.Fatal("Publish returned nil session")
+	}
+	if session.TrackingLost() {
+		t.Fatal("session reported tracking loss after successful immediate reconcile")
+	}
+	close(session.closed)
+}
+
+func TestPublishReturnsTrackingLostSessionWhenGenerationChangesBeforeInitialTrack(t *testing.T) {
+	initialConnectionID := uuid.New()
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	var currentConnection atomic.Value
+	currentConnection.Store(initialConnectionID)
+	client := &Client{
+		sub:      &fakeSubscriber{subscription: &rta.Subscription{}},
+		userInfo: xsts.UserInfo{XUID: "1"},
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+	}
+	client.subscription = &rta.Subscription{}
+	client.active = func(*rta.Subscription) bool { return true }
+	client.decode = func(*rta.Subscription) (*subscriptionData, error) {
+		return &subscriptionData{ConnectionID: currentConnection.Load().(uuid.UUID)}, nil
+	}
+	client.wait = func(context.Context) error {
+		return nil
+	}
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPut && req.Header.Get("If-None-Match") == "*":
+			header := make(http.Header)
+			header.Set("ETag", `"etag"`)
+			return testResponse(req, http.StatusCreated, header, []byte(`{}`)), nil
+		case req.Method == http.MethodPost:
+			client.backgroundSeq.Add(1)
+			return testResponse(req, http.StatusOK, nil, nil), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})}
+
+	session, err := client.Publish(context.Background(), ref, PublishConfig{})
+	if err != nil {
+		t.Fatalf("Publish returned error: %v", err)
+	}
+	if session == nil {
+		t.Fatal("Publish returned nil session")
+	}
+
+	client.sessionsMu.RLock()
+	tracked := client.sessions[ref.URL().String()]
+	client.sessionsMu.RUnlock()
+	if tracked != nil {
+		t.Fatal("session was tracked after generation changed before initial attach")
+	}
+	if !session.TrackingLost() {
+		t.Fatal("session did not report tracking loss after generation changed before initial attach")
+	}
+	close(session.closed)
+}
+
+func TestRetryReconcileSessionConnectionMarksTrackingLostWhenLateAttachFails(t *testing.T) {
+	initialConnectionID := uuid.New()
+	refreshedConnectionID := uuid.New()
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	var reconcileRequests atomic.Int32
+	requestDone := make(chan struct{}, 1)
+
+	client := &Client{
+		sub:      &fakeSubscriber{subscription: &rta.Subscription{}},
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+	}
+	client.subscription = &rta.Subscription{}
+	client.active = func(*rta.Subscription) bool { return true }
+	client.decode = func(*rta.Subscription) (*subscriptionData, error) {
+		return &subscriptionData{ConnectionID: refreshedConnectionID}, nil
+	}
+	client.wait = func(context.Context) error {
+		return nil
+	}
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut || req.Header.Get("If-Match") == "" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+		}
+		if reconcileRequests.Add(1) == 1 {
+			client.backgroundSeq.Add(1)
+		}
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		select {
+		case requestDone <- struct{}{}:
+		default:
+		}
+		return testResponse(req, http.StatusOK, header, []byte(`{}`)), nil
+	})}
+
+	session := testSession(ref, client, SessionDescription{})
+	session.log = slogDiscard()
+	session.etag = `"etag"`
+
+	go client.retryReconcileSessionConnection(session, initialConnectionID, client.backgroundSeq.Load())
+
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reconcile retry request")
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		client.sessionsMu.RLock()
+		tracked := client.sessions[ref.URL().String()]
+		client.sessionsMu.RUnlock()
+		if tracked == nil && session.TrackingLost() {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("session state did not reflect tracking loss: tracked=%v trackingLost=%v", tracked != nil, session.TrackingLost())
+		default:
+			time.Sleep(time.Millisecond * 10)
+		}
+	}
+	if reconcileRequests.Load() != 1 {
+		t.Fatalf("reconcile requests = %d, want 1", reconcileRequests.Load())
+	}
+	close(session.closed)
+}
+
+func TestRetryReconcileSessionConnectionDoesNotStealTrackingFromReplacementHandle(t *testing.T) {
+	initialConnectionID := uuid.New()
+	refreshedConnectionID := uuid.New()
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	reconcileStarted := make(chan struct{}, 1)
+	reconcileRelease := make(chan struct{})
+	done := make(chan struct{})
+
+	client := &Client{
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+		decode: func(*rta.Subscription) (*subscriptionData, error) {
+			return &subscriptionData{ConnectionID: refreshedConnectionID}, nil
+		},
+		active: func(*rta.Subscription) bool { return true },
+	}
+	client.subscription = &rta.Subscription{}
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut || req.Header.Get("If-Match") == "" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+		}
+		select {
+		case reconcileStarted <- struct{}{}:
+		default:
+		}
+		<-reconcileRelease
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		return testResponse(req, http.StatusOK, header, []byte(`{}`)), nil
+	})}
+
+	oldSession := testSession(ref, client, SessionDescription{})
+	oldSession.log = slogDiscard()
+	oldSession.etag = `"etag"`
+	if !client.trackSession(oldSession, client.backgroundSeq.Load()) {
+		t.Fatal("old session was not initially tracked")
+	}
+
+	go func() {
+		client.retryReconcileSessionConnection(oldSession, initialConnectionID, client.backgroundSeq.Load())
+		close(done)
+	}()
+
+	select {
+	case <-reconcileStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for late reconcile retry to start")
+	}
+
+	newSession := testSession(ref, client, SessionDescription{})
+	newSession.log = slogDiscard()
+	if !client.trackSession(newSession, client.backgroundSeq.Load()) {
+		t.Fatal("replacement session was not tracked")
+	}
+
+	close(reconcileRelease)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("retryReconcileSessionConnection did not finish")
+	}
+
+	client.sessionsMu.RLock()
+	tracked := client.sessions[ref.URL().String()]
+	client.sessionsMu.RUnlock()
+	if tracked != newSession {
+		t.Fatalf("tracked session = %p, want replacement %p", tracked, newSession)
+	}
+	if !oldSession.TrackingLost() {
+		t.Fatal("old session did not report tracking loss after replacement took over")
+	}
+	if newSession.TrackingLost() {
+		t.Fatal("replacement session reported tracking loss")
+	}
+	close(oldSession.closed)
+	close(newSession.closed)
+}
+
+func TestRetryReconcileSessionConnectionMarksTrackingLostWhenGenerationChangesBeforeRetryStarts(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	client := &Client{
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+	}
+	session := testSession(ref, client, SessionDescription{})
+	session.log = slogDiscard()
+	backgroundSeq := client.backgroundSeq.Load()
+	client.backgroundSeq.Add(1)
+
+	done := make(chan struct{})
+	go func() {
+		client.retryReconcileSessionConnection(session, uuid.New(), backgroundSeq)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("retryReconcileSessionConnection did not finish")
+	}
+	if !session.TrackingLost() {
+		t.Fatal("session did not report tracking loss after generation changed before retry")
+	}
+	client.sessionsMu.RLock()
+	_, tracked := client.sessions[ref.URL().String()]
+	client.sessionsMu.RUnlock()
+	if tracked {
+		t.Fatal("session was tracked after generation changed before retry")
+	}
+	close(session.closed)
+}
+
+func TestRetryReconcileSessionConnectionMarksTrackingLostAfterRetryExhaustion(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	var attempts atomic.Int32
+	client := &Client{
+		sub:      &fakeSubscriber{subscription: &rta.Subscription{}},
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+	}
+	client.subscription = &rta.Subscription{}
+	client.active = func(*rta.Subscription) bool { return true }
+	client.decode = func(*rta.Subscription) (*subscriptionData, error) {
+		return &subscriptionData{ConnectionID: uuid.New()}, nil
+	}
+	client.wait = func(context.Context) error {
+		return nil
+	}
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts.Add(1)
+		return nil, errors.New("reconcile failed")
+	})}
+
+	session := testSession(ref, client, SessionDescription{})
+	session.log = slogDiscard()
+	session.etag = `"etag"`
+
+	done := make(chan struct{})
+	go func() {
+		client.retryReconcileSessionConnection(session, uuid.New(), client.backgroundSeq.Load())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retryReconcileSessionConnection did not finish after retry exhaustion")
+	}
+	if attempts.Load() != 5 {
+		t.Fatalf("reconcile attempts = %d, want 5", attempts.Load())
+	}
+	if !session.TrackingLost() {
+		t.Fatal("session did not report tracking loss after retry exhaustion")
+	}
+	client.sessionsMu.RLock()
+	_, tracked := client.sessions[ref.URL().String()]
+	client.sessionsMu.RUnlock()
+	if tracked {
+		t.Fatal("session was tracked after retry exhaustion")
 	}
 	close(session.closed)
 }

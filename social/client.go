@@ -59,15 +59,12 @@ type Client struct {
 	userInfo xsts.UserInfo
 	log      *slog.Logger
 
-	subscriptionMu       sync.RWMutex
-	subscription         *rta.Subscription
+	subscriptionMu sync.RWMutex
+	subscription   *rta.Subscription
 	// subscribeDone is closed when an in-flight subscription fetch finishes.
 	// It is nil when no fetch is currently running.
 	subscribeDone        chan struct{}
 	subscriptionHandlers []SubscriptionHandler
-	// recovering is true while a background goroutine is attempting to
-	// re-establish the subscription after a reconnect failure.
-	recovering bool
 	// closing is set while [Client.CloseContext] is running to prevent new
 	// background work from starting.
 	closing atomic.Bool
@@ -112,6 +109,5 @@ func (c *Client) CloseContext(ctx context.Context) error {
 		c.subscription = nil
 	}
 	c.subscriptionHandlers = nil
-	c.recovering = false
 	return nil
 }

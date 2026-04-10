@@ -134,14 +134,23 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 // ensures its connection ID matches the current subscription data. If the
 // immediate reconciliation fails, a background retry is spawned so the caller
 // still receives the session without blocking.
+//
+// Sessions created by this flow are tracked before reconcile starts so
+// shoulder taps and refresh waves can observe them even while the initial
+// connection reconciliation is still in flight.
 func (c *Client) createSessionAndReconcile(ctx context.Context, ref SessionReference, resp *http.Response, connectionID uuid.UUID, action string) (*Session, error) {
+	backgroundSeq := c.backgroundSeq.Load()
 	s, err := c.createSession(ctx, ref, resp)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.reconcileSessionConnection(ctx, s, connectionID); err != nil {
+	if !c.trackSession(s, backgroundSeq) {
+		s.log.Warn("automatic session tracking lost before initial reconcile")
+		return s, nil
+	}
+	if err := c.reconcileSessionConnectionWithInstall(ctx, s, connectionID, c.backgroundInstallGate(backgroundSeq)); err != nil {
 		s.log.Error("error reconciling session connection after "+action, slog.Any("error", err))
-		go c.retryReconcileSessionConnection(s, connectionID, c.backgroundSeq.Load())
+		go c.retryReconcileSessionConnection(s, connectionID, backgroundSeq)
 	}
 	return s, nil
 }
@@ -187,12 +196,61 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 		return nil, err
 	}
 
-	// Bind the session to the client so we can receive updates from RTA subscription.
-	c.sessionsMu.Lock()
-	c.sessions[s.ref.URL().String()] = s
-	c.sessionsMu.Unlock()
-
 	return s, nil
+}
+
+// trackSession registers s for automatic MPSD tracking under the specified
+// background-work generation. It reports whether the session was tracked.
+// A newly created handle may replace an older tracked handle for the same
+// session reference.
+//
+// If the background generation changed before attach completed, the session is
+// marked tracking-lost so callers can observe that automatic updates are no
+// longer wired up.
+func (c *Client) trackSession(s *Session, backgroundSeq uint64) bool {
+	return c.installSessionTracking(s, backgroundSeq, true)
+}
+
+// reattachSession registers s after a late reconcile retry succeeded.
+// Unlike trackSession, it does not steal the slot back from a different live
+// handle that already claimed the same session reference.
+func (c *Client) reattachSession(s *Session, backgroundSeq uint64) bool {
+	return c.installSessionTracking(s, backgroundSeq, false)
+}
+
+// installSessionTracking is the shared implementation for both initial session
+// tracking and late retry reattachment. When replace is false, a different
+// currently tracked handle for the same session reference wins and s is marked
+// tracking-lost instead of reclaiming the slot.
+func (c *Client) installSessionTracking(s *Session, backgroundSeq uint64, replace bool) bool {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.isClosed() {
+		return false
+	}
+	c.sessionsMu.Lock()
+	defer c.sessionsMu.Unlock()
+	key := s.ref.URL().String()
+	if currentSeq := c.backgroundSeq.Load(); currentSeq != backgroundSeq {
+		if current := c.sessions[key]; current == s {
+			delete(c.sessions, key)
+		}
+		if s.backgroundSeq < currentSeq {
+			s.trackingLost.Store(true)
+		}
+		return false
+	}
+	if current := c.sessions[key]; current != nil && current != s && !replace {
+		s.trackingLost.Store(true)
+		return false
+	}
+	if current := c.sessions[key]; current != nil && current != s {
+		current.trackingLost.Store(true)
+	}
+	s.backgroundSeq = backgroundSeq
+	s.trackingLost.Store(false)
+	c.sessions[key] = s
+	return true
 }
 
 // handleSessionClosure handles closure of a multiplayer session.
