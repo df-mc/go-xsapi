@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/v2/rta"
 )
 
 // Subscribe subscribes to RTA (Real-Time Activity) services to receive

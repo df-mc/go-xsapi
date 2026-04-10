@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/df-mc/go-xsapi/xal"
-	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
+	"github.com/df-mc/go-xsapi/v2/xal"
+	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
 )
 
 // Default returns the default TitleData used for generic Xbox Live services.
