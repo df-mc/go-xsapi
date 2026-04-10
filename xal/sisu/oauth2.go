@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/df-mc/go-xsapi/xal/internal/timestamp"
-	"github.com/df-mc/go-xsapi/xal/nsal"
-	"github.com/df-mc/go-xsapi/xal/xasd"
+	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
+	"github.com/df-mc/go-xsapi/v2/xal/nsal"
+	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/microsoft"
 )

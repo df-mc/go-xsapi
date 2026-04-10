@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/df-mc/go-xsapi/internal"
+	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/google/uuid"
 )
 
