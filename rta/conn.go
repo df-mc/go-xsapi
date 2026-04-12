@@ -278,8 +278,8 @@ func (s *Subscription) Handle(h SubscriptionHandler) {
 
 // handler returns the [SubscriptionHandler] currently registered on the [Subscription].
 func (s *Subscription) handler() SubscriptionHandler {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.h
 }
 
