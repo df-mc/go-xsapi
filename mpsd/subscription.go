@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/google/uuid"
 )
 

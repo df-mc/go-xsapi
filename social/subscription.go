@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/df-mc/go-xsapi/rta"
+	"github.com/df-mc/go-xsapi/v2/rta"
 )
 
 // errSubscriptionUnavailable is returned when no RTA subscriber is configured
