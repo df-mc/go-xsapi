@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 
 	"github.com/df-mc/go-xsapi/v2/xal/internal"
@@ -377,84 +378,221 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		}
 		s.resp = r
 		return r, nil
-	case http.StatusUnauthorized:
-		if resp.Header.Get("X-Err") == "2148916233" {
-			sessionID := resp.Header.Get("X-SessionId")
-			if sessionID == "" {
-				return nil, errors.New("xal/sisu: X-SessionId header is absent from authorization response")
-			}
-
-			var r *authorizationResponse
-			if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-				return nil, fmt.Errorf("decode response body: %w", err)
-			}
-			if r.WebPage == "" {
-				return nil, fmt.Errorf("xal/sisu: account creation page URL is absent from authorization response")
-			}
-
-			reqURL := endpoint.JoinPath("proxy")
-			reqURL.RawQuery = url.Values{
-				"sessionid": []string{sessionID},
-			}.Encode()
-			signingRequest, err := http.NewRequest(http.MethodPost, reqURL.String(), nil)
+	default:
+		errs := []error{
+			fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status),
+			wwwAuthenticate(resp.Header),
+		}
+		xerr := resp.Header.Get("X-Err")
+		if xerr != "" {
+			n, err := strconv.ParseInt(xerr, 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("make request for computing signature: %w", err)
-			}
-			signature := nsal.AuthPolicy.Generate(signingRequest, nil, s.ProofKey(), timestamp.Now())
-
-			u, err := url.Parse(r.WebPage)
-			if err != nil {
-				return nil, fmt.Errorf("xal/sisu: parse account creation page URL: %w", err)
-			}
-			q := u.Query()
-			// GRTS only: q.Set("consent", "prompt")
-			q.Set("sig", base64.StdEncoding.EncodeToString(signature))
-			q.Set("did", "0x"+device.DisplayClaims.DeviceInfo.DeviceID)
-			// GRTS only: q.Set("mgt", "true")
-			// Allowed values: "https://login.live.com/oauth20_desktop.srf" for GRTS, "ms-xal-*://" for Android/iOS devices.
-			// "https://login.live.com/oauth20_desktop.srf" is a placeholder URL which simply displays an error message saying "You shouldn't be here, call Microsoft Support Center".
-			// When "redirect" query parameter is absent, the web page will fall back to "https://sisu.xboxlive.com/sisu_desktop.srf".
-			q.Set("redirect", "https://sisu.xboxlive.com/sisu_desktop.srf")
-			q.Set("sid", sessionID)
-			// If Auth Code Flow: q.Set("state", "...")
-			u.RawQuery = q.Encode()
-
-			// The script embedded in the web page uses either 'sig' or 'spt' query parameter
-			// to set 'Signature' or 'Authorization' header.
-			// Most native apps use 'sig' since it is not safe to include XSTS token in the URL query.
-
-			return nil, &AccountRequiredError{
-				SignupURL: u,
+				errs = append(errs, fmt.Errorf("parse X-Err header as numerical error code: %w", err))
+			} else {
+				code := ErrorCode(n)
+				//noinspection GoDirectComparisonOfErrors
+				if code == ErrorCodeAccountCreationRequired {
+					acct, err := accountCreationRequired(resp, device, s.ProofKey())
+					if err != nil {
+						errs = append(errs, fmt.Errorf("generate account creation URL: %w", err))
+					} else {
+						return nil, acct
+					}
+				}
+				errs = append(errs, code)
 			}
 		}
-
-		// We currently ignore all other errors and handle them as unknown status code error.
-		// TODO: Handle other errors as well
-		fallthrough
-	default:
-		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return nil, errors.Join(errs...)
 	}
 }
 
-// AccountRequiredError is returned when the Microsoft Account has no linked Xbox Live account.
-// The caller can unwrap the error and direct the user to [AccountRequiredError.SignupURL] to create one.
-type AccountRequiredError struct {
-	// SignupURL is the URL of the web page where the user can create an Xbox Live account.
-	// It is derived from the authorization response returned by SISU.
+// wwwAuthenticate returns an error wrapping the value fo the 'WWW-Authenticate' response header,
+// or nil if the header is absent.
+func wwwAuthenticate(header http.Header) error {
+	value := header.Get("WWW-Authenticate")
+	if value == "" {
+		return nil
+	}
+	return fmt.Errorf("WWW-Authenticate: %s", value)
+}
+
+// accountCreationRequired generates a URL that the user can visit to create a new Xbox Live
+// account and link it their Microsoft Account. The device token and proof key is used to sign
+// the WebPage field contained in the response so that the user is automatically authenticated
+// regardless of which browser session opens the link.
+func accountCreationRequired(resp *http.Response, device *xasd.Token, proofKey *ecdsa.PrivateKey) (*AccountCreationRequiredError, error) {
+	sessionID := resp.Header.Get("X-SessionId")
+	if sessionID == "" {
+		return nil, errors.New("xal/sisu: X-SessionId header is absent from authorization response")
+	}
+
+	var r *authorizationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, fmt.Errorf("decode response body: %w", err)
+	}
+	if r.WebPage == "" {
+		return nil, fmt.Errorf("xal/sisu: account creation page URL is absent from authorization response")
+	}
+
+	reqURL := endpoint.JoinPath("proxy")
+	reqURL.RawQuery = url.Values{
+		"sessionid": []string{sessionID},
+	}.Encode()
+	signingRequest, err := http.NewRequest(http.MethodPost, reqURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("make request for computing signature: %w", err)
+	}
+	signature := nsal.AuthPolicy.Generate(signingRequest, nil, proofKey, timestamp.Now())
+
+	u, err := url.Parse(r.WebPage)
+	if err != nil {
+		return nil, fmt.Errorf("xal/sisu: parse account creation page URL: %w", err)
+	}
+	q := u.Query()
+	// GRTS only: q.Set("consent", "prompt")
+	q.Set("sig", base64.StdEncoding.EncodeToString(signature))
+	q.Set("did", "0x"+device.DisplayClaims.DeviceInfo.DeviceID)
+	// GRTS only: q.Set("mgt", "true")
+	// Allowed values: "https://login.live.com/oauth20_desktop.srf" for GRTS, "ms-xal-*://" for Android/iOS devices.
+	// "https://login.live.com/oauth20_desktop.srf" is a placeholder URL which simply displays an error message saying "You shouldn't be here, call Microsoft Support Center".
+	// When "redirect" query parameter is absent, the web page will fall back to "https://sisu.xboxlive.com/sisu_desktop.srf".
+	q.Set("redirect", "https://sisu.xboxlive.com/sisu_desktop.srf")
+	q.Set("sid", sessionID)
+	// If Auth Code Flow: q.Set("state", "...")
+	u.RawQuery = q.Encode()
+
+	// The JavaScript embedded in the account creation page reads either 'sig' or 'spt'
+	// query parameter to set the 'Signature' or 'Authorization' header on proxy requests.
+	// Native apps prefer 'sig' because including an XSTS token directly in a URL query
+	// is considered insecure.
+
+	return &AccountCreationRequiredError{
+		SignupURL: u,
+	}, nil
+}
+
+// ErrorCode represents a numeric error code returned by SISU and other Xbox Live services.
+// An error returned by this package may wrap an ErrorCode alongside other errors.
+// Use [errors.As] to extract it:
+//
+//	var code sisu.ErrorCode
+//	if errors.As(err, &code) {
+//	    // handle code
+//	}
+type ErrorCode int
+
+// String returns a human-readable description of the error code suitable for display to users.
+func (c ErrorCode) String() (s string) {
+	switch c {
+	case ErrorCodeAccountSuspended:
+		s = "Your account has been suspended from Xbox Live due to a violation of the Community Standards. Visit https://enforcement.xbox.com for details"
+	case ErrorCodeParentallyRestricted:
+		s = "Online features have been disabled for this account by a guardian. A guardian can manage their family settings at https://accounts.microsoft.com/family"
+	case ErrorCodeTermsOfUseNotAccepted:
+		s = "You must accept Terms of Use on your Microsoft Account before signing in"
+	case ErrorCodeCountryNotAuthorized:
+		s = "Xbox Live is not available in your country"
+	case ErrorCodeAgeVerificationRequired:
+		s = "You must complete age verification on this Microsoft Account before signing in to Xbox Live"
+	case ErrorCodeScreenTimeExceeded:
+		s = "You have reached the screen time limit set by a guardian. A guardian can adjust the limit at https://accounts.microsoft.com/family"
+	case ErrorCodeChildNotInFamily:
+		s = "This account belongs to a user under 18 who has not been added to a family group. A guardian must add the account at https://accounts.microsoft.com/family"
+	case ErrorCodeAccountCreationRequired:
+		s = "No Xbox Live account is linked to this Microsoft Account. Please create one to continue"
+	case ErrorCodeAccountNameChangeRequired:
+		s = "Your gamertag is no longer valid. Please follow the steps at https://support.xbox.com/en-us/help/account-profile/profile/change-xbox-live-gamertag and choose a new one to continue"
+	case ErrorCodeSignInCountByDeviceTypeExceeded:
+		s = "You are already signed in on the maximum number of devices of this type. Sign out from another devie and try again"
+	case ErrorCodeTitleSinglePointOfPresenceViolated:
+		s = "You are already signed in to this title on another device. Sign out from another device and try again"
+	default:
+		return fmt.Sprintf("unknown error code: 0x%X", int(c))
+	}
+	// We can't use %#X because it also capitalizes the X letter like 0X23EEB3
+	return fmt.Sprintf("%s (error code 0x%X)", s, int(c))
+}
+
+// Error implements the error interface so it can be wrapped alongside other related errors.
+func (c ErrorCode) Error() string {
+	return fmt.Sprintf("xal/sisu: %s", c.String())
+}
+
+const (
+	// ErrorCodeAccountSuspended indicates that the user has been banned from Xbox Live for
+	// violating one or more [Community Standards](https://www.xbox.com/en-US/legal/community-standards).
+	// Refer to https://enforcement.xbox.com for details.
+	ErrorCodeAccountSuspended ErrorCode = 0x8015DC03
+
+	// ErrorCodeParentallyRestricted indicates that the user has been restricted from
+	// accessing online features by parental controls.
+	ErrorCodeParentallyRestricted ErrorCode = 0x8015DC05
+
+	// ErrorCodeTermsOfUseNotAccepted indicates that the user must accept Microsoft's
+	// Terms of Use before signing in.
+	ErrorCodeTermsOfUseNotAccepted ErrorCode = 0x8015DC0A
+
+	// ErrorCodeCountryNotAuthorized indicates that Xbox Live is not available in the
+	// user's region.
+	ErrorCodeCountryNotAuthorized ErrorCode = 0x8015DC0B
+
+	// ErrorCodeAgeVerificationRequired indicates that the user must complete age
+	// verification on their Microsoft Account before signing in to Xbox Live.
+	ErrorCodeAgeVerificationRequired ErrorCode = 0x8015DC0C
+
+	// ErrorCodeScreenTimeExceeded indicates that the user has exceeded the daily
+	// screen time limit configured by a parent. The limit can be adjusted at
+	// https://account.microsoft.com/family.
+	ErrorCodeScreenTimeExceeded ErrorCode = 0x8015DC0D
+
+	// ErrorCodeChildNotInFamily indicates that the user is under 18 has not yet been
+	// added to a family group. A parent must add the child account at
+	// https://accounts.microsoft.com/family before signing in to Xbox Live.
+	ErrorCodeChildNotInFamily ErrorCode = 0x8015DC0E
+
+	// ErrorCodeAccountCreationRequired indicates that no Xbox Live account is linked to
+	// the user's Microsoft Account. When this error occurs, the response body typically contains
+	// a partial authorization response that includes a WebPage field. Adding the required
+	// authentication query parameters to that URL allows the user to visit it and create
+	// a new Xbox Live account in any browser session.
+	ErrorCodeAccountCreationRequired ErrorCode = 0x8015DC09
+
+	// ErrorCodeAccountNameChangeRequired indicates that the user must update their
+	// gamertag before sign-in can proceed. This might be caused when using an inappropriate gamertag.
+	ErrorCodeAccountNameChangeRequired ErrorCode = 0x8015DC13
+
+	// ErrorCodeSignInCountByDeviceTypeExceeded indicates that the user is already signed
+	// in on the maximum number of allowed devices of this type and must sign out elsewhere
+	// before signing in.
+	ErrorCodeSignInCountByDeviceTypeExceeded ErrorCode = 0x8015DC16
+
+	// ErrorCodeTitleSinglePointOfPresenceViolated indicates that the user is already
+	// signed in to the same title on another device. They must sign out from that session
+	// before signing in on this device. This restriction may apply only to certain titles.
+	ErrorCodeTitleSinglePointOfPresenceViolated ErrorCode = 0x8015DC1E
+)
+
+// AccountCreationRequiredError is returned when the Microsoft Account has no linked Xbox Live
+// account. Callers should unwrap this error and direct the user to [AccountCreationRequiredError.SignupURL]
+// to complete account creation.
+type AccountCreationRequiredError struct {
+	// SignupURL is the Xbox Live account creation page derived from the SISU authorization
+	// response. Query parameters embedded in the URL authenticate the user automatically,
+	// ensuring the newly created Xbox Live account is linked to the correct Microsoft Account
+	// regardless of which browser opens the link.
 	//
-	// The URL includes a signature in its query parameters that authenticates the user,
-	// so the Xbox Live account created via this URL will be linked to the correct Microsoft Account
-	// regardless of which browser opens it. For this reason, the URL must not be shared publicly.
+	// Because of the reason described above, it carries a signature in the query and must not be
+	// shared publicly.
 	//
-	// An arbitrary 'redirect' query parameter may be set to the URL. After the user completes
-	// account creation, they will be redirected to that URL. No sensitive information is included
-	// in the redirect.
+	// An optional 'redirect' query parameter may be appended to the URL. After the user
+	// completes account creation, they will be redirected to that destination. No sensitive
+	// data is included in the redirect.
 	SignupURL *url.URL
 }
 
 // Error implements the error interface.
-func (e *AccountRequiredError) Error() string {
-	return fmt.Sprintf("xal/sisu: Xbox Live account required, create one at %s", e.SignupURL)
+func (e *AccountCreationRequiredError) Error() string {
+	return fmt.Sprintf("xal/sisu: Xbox Live account not linked to Microsoft Account, sign up at: %s", e.SignupURL)
 }
 
 // defaultRelyingParty is the default relying party desired on the Authorization Token present in

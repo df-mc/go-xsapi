@@ -49,7 +49,7 @@ func ExampleClient() {
 
 	// Request a XASU (Xbox Authentication Services for User) token using the SISU authorization endpoint.
 	if _, err := session.UserToken(signals); err != nil {
-		var acct *sisu.AccountRequiredError
+		var acct *sisu.AccountCreationRequiredError
 		if errors.As(err, &acct) {
 			log.Panicf("You need to create an Xbox Live account at: %s", acct.SignupURL)
 		}
