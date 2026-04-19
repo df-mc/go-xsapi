@@ -368,7 +368,7 @@ func TestClientCloseContextClearsStaleSubscribeBarrier(t *testing.T) {
 	}
 }
 
-func TestClientSubscribeDoesNotHoldLockDuringDiscardCleanup(t *testing.T) {
+func TestClientSubscribeReturnsBeforeDiscardCleanupCompletes(t *testing.T) {
 	sub := &blockingSubscriber{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),
@@ -400,34 +400,21 @@ func TestClientSubscribeDoesNotHoldLockDuringDiscardCleanup(t *testing.T) {
 	close(sub.release)
 
 	select {
-	case <-unsub.called:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for discarded subscription cleanup")
-	}
-
-	secondDone := make(chan error, 1)
-	go func() {
-		secondDone <- client.Subscribe(context.Background(), NopSubscriptionHandler{})
-	}()
-
-	select {
-	case err := <-secondDone:
-		if err != nil {
-			t.Fatalf("second Subscribe returned error: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second Subscribe blocked behind cleanup unsubscribe")
-	}
-
-	close(unsub.release)
-	select {
 	case err := <-firstDone:
 		if err != nil {
 			t.Fatalf("first Subscribe returned error: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("first Subscribe did not finish after cleanup unblocked")
+		t.Fatal("Subscribe blocked behind cleanup unsubscribe")
 	}
+
+	select {
+	case <-unsub.called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for discarded subscription cleanup")
+	}
+
+	close(unsub.release)
 }
 
 var slogDiscard = testutil.SlogDiscard

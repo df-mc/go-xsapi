@@ -249,16 +249,19 @@ func (c *Client) subscriptionActive(seq uint64) bool {
 }
 
 // cleanupSubscription unsubscribes a discarded or failed RTA subscription
-// with a 15 second timeout.
+// in the background with a 15 second timeout.
 func (c *Client) cleanupSubscription(subscription *rta.Subscription) {
-	if subscription == nil || c.unsub == nil {
+	unsub := c.unsub
+	if subscription == nil || unsub == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-	defer cancel()
-	if err := c.unsub.Unsubscribe(ctx, subscription); err != nil {
-		c.log.Error("error cleaning up discarded social subscription", slog.Any("error", err))
-	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+		defer cancel()
+		if err := unsub.Unsubscribe(ctx, subscription); err != nil {
+			c.log.Error("error cleaning up discarded social subscription", slog.Any("error", err))
+		}
+	}()
 }
 
 // SubscriptionHandler is the interface for receiving real-time notifications

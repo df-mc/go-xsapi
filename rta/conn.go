@@ -204,28 +204,26 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, e
 // If the replacement socket drops mid-handshake, the caller is told to defer
 // the subscription to the next reconnect cycle.
 func (c *Conn) callDuringReconnect(ctx context.Context, op uint8, payload []any) (*handshake, error) {
-	for {
-		seq := c.sequences[op].Add(1)
-		ch, err := c.expect(op, seq, payload)
-		if err != nil {
+	seq := c.sequences[op].Add(1)
+	ch, err := c.expect(op, seq, payload)
+	if err != nil {
+		c.reconnectNext.Store(true)
+		return nil, errReconnectInterrupted
+	}
+	select {
+	case result, ok := <-ch:
+		if !ok {
 			c.reconnectNext.Store(true)
 			return nil, errReconnectInterrupted
 		}
-		select {
-		case result, ok := <-ch:
-			if !ok {
-				c.reconnectNext.Store(true)
-				return nil, errReconnectInterrupted
-			}
-			c.release(op, seq)
-			return result, nil
-		case <-ctx.Done():
-			c.release(op, seq)
-			return nil, ctx.Err()
-		case <-c.ctx.Done():
-			c.release(op, seq)
-			return nil, context.Cause(c.ctx)
-		}
+		c.release(op, seq)
+		return result, nil
+	case <-ctx.Done():
+		c.release(op, seq)
+		return nil, ctx.Err()
+	case <-c.ctx.Done():
+		c.release(op, seq)
+		return nil, context.Cause(c.ctx)
 	}
 }
 

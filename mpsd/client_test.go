@@ -67,6 +67,24 @@ func (f *fakeSubscriber) Subscribe(context.Context, string) (*rta.Subscription, 
 	return f.subscription, nil
 }
 
+type blockingSubscriber struct {
+	started      chan struct{}
+	release      chan struct{}
+	subscription *rta.Subscription
+}
+
+func (b *blockingSubscriber) Subscribe(context.Context, string) (*rta.Subscription, error) {
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-b.release
+	if b.subscription == nil {
+		b.subscription = &rta.Subscription{}
+	}
+	return b.subscription, nil
+}
+
 func TestClientCloseContextPreservesSubscriptionOnUnsubscribeError(t *testing.T) {
 	subscription := &rta.Subscription{}
 	subscriptionData := &subscriptionData{ConnectionID: uuid.New()}
@@ -243,6 +261,86 @@ func TestClientSubscribeRefreshesInactiveCachedSubscription(t *testing.T) {
 	if sub.attempts != 1 {
 		t.Fatalf("subscribe attempts = %d, want 1", sub.attempts)
 	}
+}
+
+func TestClientSubscribeReturnsBeforeDiscardCleanupCompletes(t *testing.T) {
+	fetchedSubscription := &rta.Subscription{}
+	winnerSubscription := &rta.Subscription{}
+	winnerConnectionID := uuid.New()
+
+	sub := &blockingSubscriber{
+		started:      make(chan struct{}, 1),
+		release:      make(chan struct{}),
+		subscription: fetchedSubscription,
+	}
+	unsub := &fakeUnsubscriber{
+		called:  make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	client := &Client{
+		sub:   sub,
+		unsub: unsub,
+		log:   slogDiscard(),
+		decode: func(subscription *rta.Subscription) (*subscriptionData, error) {
+			switch subscription {
+			case fetchedSubscription:
+				return &subscriptionData{ConnectionID: uuid.New()}, nil
+			case winnerSubscription:
+				return &subscriptionData{ConnectionID: winnerConnectionID}, nil
+			default:
+				return nil, errors.New("unexpected subscription")
+			}
+		},
+	}
+
+	result := make(chan struct {
+		subscription *rta.Subscription
+		data         *subscriptionData
+		err          error
+	}, 1)
+	go func() {
+		subscription, data, err := client.subscribe(context.Background())
+		result <- struct {
+			subscription *rta.Subscription
+			data         *subscriptionData
+			err          error
+		}{subscription: subscription, data: data, err: err}
+	}()
+
+	select {
+	case <-sub.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for subscribe fetch")
+	}
+
+	client.subscriptionMu.Lock()
+	client.subscription = winnerSubscription
+	client.subscriptionMu.Unlock()
+
+	close(sub.release)
+
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("subscribe returned error: %v", got.err)
+		}
+		if got.subscription != winnerSubscription {
+			t.Fatalf("subscription = %p, want %p", got.subscription, winnerSubscription)
+		}
+		if got.data == nil || got.data.ConnectionID != winnerConnectionID {
+			t.Fatalf("subscription data = %+v, want connection ID %s", got.data, winnerConnectionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscribe blocked behind cleanup unsubscribe")
+	}
+
+	select {
+	case <-unsub.called:
+	case <-time.After(time.Second):
+		t.Fatal("discarded subscription was not cleaned up")
+	}
+
+	close(unsub.release)
 }
 
 func TestClientRetryReconcileSessionConnectionRepairsSession(t *testing.T) {

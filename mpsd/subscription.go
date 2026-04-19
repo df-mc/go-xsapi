@@ -402,14 +402,17 @@ func decodeSubscriptionData(subscription *rta.Subscription) (*subscriptionData, 
 // cleanupSubscription unsubscribes a discarded or failed RTA subscription in
 // the background with a 15 second timeout.
 func (c *Client) cleanupSubscription(subscription *rta.Subscription) {
-	if subscription == nil || c.unsub == nil {
+	unsub := c.unsub
+	if subscription == nil || unsub == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-	defer cancel()
-	if err := c.unsub.Unsubscribe(ctx, subscription); err != nil {
-		c.log.Error("error resetting broken subscription", slog.Any("error", err))
-	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+		defer cancel()
+		if err := unsub.Unsubscribe(ctx, subscription); err != nil {
+			c.log.Error("error resetting broken subscription", slog.Any("error", err))
+		}
+	}()
 }
 
 // clearSubscriptionLocked nils both the subscription and its decoded data.
@@ -424,10 +427,7 @@ func (c *Client) clearSubscriptionLocked() {
 func (c *Client) resetSubscriptionLocked(subscription *rta.Subscription) {
 	c.cancelRefreshWave()
 	c.clearSubscriptionLocked()
-	if subscription == nil || c.unsub == nil {
-		return
-	}
-	go c.cleanupSubscription(subscription)
+	c.cleanupSubscription(subscription)
 }
 
 // cancelRefreshWave cancels the currently active refresh wave, if any.
@@ -599,6 +599,7 @@ func (c *Client) retryRefreshSessionConnection(session *Session, waveCtx context
 		select {
 		case <-time.After(reconnectBackoff(attempt)):
 		case <-session.Context().Done():
+			return
 		case <-waveCtx.Done():
 			return
 		}
