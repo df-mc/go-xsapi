@@ -15,8 +15,7 @@ import (
 )
 
 func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
-	conn := &Conn{}
-	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
+	conn := newTestConn()
 	first := make(chan struct{})
 	second := make(chan struct{})
 
@@ -54,6 +53,12 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Wait to unblock after chained reconnect")
 	}
+}
+
+func newTestConn() *Conn {
+	conn := &Conn{}
+	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
+	return conn
 }
 
 func TestConnReconnectsAndResubscribesAfterReadFailure(t *testing.T) {
@@ -350,19 +355,27 @@ func TestConnReconnectRetriesIfReplacementSocketDropsAfterGraceWindow(t *testing
 }
 
 type testSubscriptionHandler struct {
-	handleReconnect func()
-	handleEvent     func(json.RawMessage)
+	handleReconnect      func()
+	handleReconnectError func(error)
+	handleEvent          func(json.RawMessage)
 }
 
 func (h testSubscriptionHandler) HandleReconnect(err error) {
 	if err != nil {
+		if h.handleReconnectError != nil {
+			h.handleReconnectError(err)
+		}
 		return
 	}
-	h.handleReconnect()
+	if h.handleReconnect != nil {
+		h.handleReconnect()
+	}
 }
 
 func (h testSubscriptionHandler) HandleEvent(custom json.RawMessage) {
-	h.handleEvent(custom)
+	if h.handleEvent != nil {
+		h.handleEvent(custom)
+	}
 }
 
 func useTestConnectURL(t *testing.T, rawURL string) {

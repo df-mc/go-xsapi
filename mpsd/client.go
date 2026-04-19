@@ -93,7 +93,7 @@ type Client struct {
 	// connection. It is nil when no [rta.Conn] is configured.
 	active func(*rta.Subscription) bool
 	// decode decodes a [subscriptionData] from an RTA subscription's custom
-	// payload. Tests may override this to inject controlled data.
+	// payload. Tests may override or clear this to inject controlled data.
 	decode func(*rta.Subscription) (*subscriptionData, error)
 
 	// sessions maps session URLs to their live [Session] handles.
@@ -118,7 +118,7 @@ type Client struct {
 }
 
 // decodeSubscriptionData decodes subscription data using the configured
-// decoder, falling back to the package-level [decodeSubscriptionData].
+// decoder, falling back to the package-level helper when tests clear it.
 func (c *Client) decodeSubscriptionData(subscription *rta.Subscription) (*subscriptionData, error) {
 	if c.decode != nil {
 		return c.decode(subscription)

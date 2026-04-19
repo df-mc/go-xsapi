@@ -193,6 +193,7 @@ func TestClientSubscribeRefreshesInactiveCachedSubscription(t *testing.T) {
 func TestClientRetryReconcileSessionConnectionRepairsSession(t *testing.T) {
 	connectionID1 := uuid.New()
 	connectionID2 := uuid.New()
+	transientErr := errors.New("transient failure")
 
 	var (
 		attempts   int
@@ -211,7 +212,7 @@ func TestClientRetryReconcileSessionConnectionRepairsSession(t *testing.T) {
 				t.Fatalf("member system properties missing: %+v", body.Members["me"])
 			}
 			if attempts == 1 {
-				return nil, errSubscriptionUnavailable
+				return nil, transientErr
 			}
 			if got := member.Properties.System.Connection; got != connectionID2 {
 				t.Fatalf("connection ID = %s, want %s", got, connectionID2)
