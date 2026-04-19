@@ -651,14 +651,9 @@ func (s *Session) currentETag(ctx context.Context) (string, error) {
 	return etag, nil
 }
 
-// refreshConnection writes the given connection ID to the session's member
-// properties, marking the current user as active.
-func (s *Session) refreshConnection(ctx context.Context, connectionID uuid.UUID) error {
-	return s.refreshConnectionWhile(ctx, connectionID, nil)
-}
-
-// refreshConnectionWhile is refreshConnection with an additional
-// shouldContinue predicate passed through to [Session.synchronizedUpdateWhile].
+// refreshConnectionWhile writes the given connection ID to the session's
+// member properties, marking the current user as active. The optional
+// shouldContinue predicate is passed through to [Session.synchronizedUpdateWhile].
 func (s *Session) refreshConnectionWhile(ctx context.Context, connectionID uuid.UUID, shouldContinue func() bool) error {
 	return s.finishUpdate(s.synchronizedUpdateWhile(ctx, SessionDescription{
 		Members: map[string]*MemberDescription{
