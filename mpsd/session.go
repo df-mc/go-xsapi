@@ -585,7 +585,7 @@ func (s *Session) synchronizedUpdate(ctx context.Context, changes SessionDescrip
 
 // synchronizedUpdateWhile is synchronizedUpdate with an additional
 // shouldContinue predicate that is checked before each attempt. When
-// shouldContinue returns false the update is aborted with [context.Canceled].
+// shouldContinue returns false the update is aborted with [net.ErrClosed].
 func (s *Session) synchronizedUpdateWhile(ctx context.Context, changes SessionDescription, opts []internal.RequestOption, shouldContinue func() bool) (deleted bool, err error) {
 	if shouldContinue == nil {
 		shouldContinue = func() bool { return true }
@@ -595,7 +595,7 @@ func (s *Session) synchronizedUpdateWhile(ctx context.Context, changes SessionDe
 			return false, err
 		}
 		if !shouldContinue() {
-			return false, context.Canceled
+			return false, net.ErrClosed
 		}
 
 		deleted, conflict, err := s.commit(ctx, changes, preconditionCachedETag, opts)
@@ -609,7 +609,7 @@ func (s *Session) synchronizedUpdateWhile(ctx context.Context, changes SessionDe
 			return deleted, nil
 		}
 		if !shouldContinue() {
-			return false, context.Canceled
+			return false, net.ErrClosed
 		}
 		if err := s.Sync(ctx); err != nil {
 			return false, err

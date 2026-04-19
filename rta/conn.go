@@ -307,8 +307,8 @@ type SubscriptionHandler interface {
 }
 
 // ReconnectReadyHandler is an optional extension interface for subscriptions
-// that can safely react as soon as their own re-subscribe has succeeded and the
-// replacement socket survives a short stabilization window.
+// that can safely react once their re-subscribe has succeeded and the overall
+// reconnect wave has survived a short stabilization window.
 type ReconnectReadyHandler interface {
 	HandleReconnectReady()
 }
@@ -503,6 +503,7 @@ func (c *Conn) reconnect(done chan struct{}) {
 		}
 		if !c.reconnectNext.Load() {
 			for _, subscription := range successes {
+				go c.notifyReconnectReady(subscription)
 				go subscription.handler().HandleReconnect(nil)
 				c.log.Debug("resubscribed", slog.Group("subscription",
 					slog.Uint64("id", uint64(subscription.ID())),
@@ -621,7 +622,6 @@ func (c *Conn) resubscribe() []*Subscription {
 			successesMu.Lock()
 			successes = append(successes, subscription)
 			successesMu.Unlock()
-			c.scheduleReconnectReady(subscription)
 		}(s)
 	}
 
@@ -633,25 +633,15 @@ func (c *Conn) resubscribe() []*Subscription {
 	return successes
 }
 
-// scheduleReconnectReady fires [ReconnectReadyHandler.HandleReconnectReady]
-// after the settle delay, provided the replacement socket has not been flagged
-// for another reconnect.
-func (c *Conn) scheduleReconnectReady(subscription *Subscription) {
-	go func() {
-		select {
-		case <-time.After(reconnectSettleDelay):
-		case <-c.ctx.Done():
-			return
-		}
-		if c.reconnectNext.Load() {
-			return
-		}
-		handler, ok := subscription.handler().(ReconnectReadyHandler)
-		if !ok {
-			return
-		}
-		handler.HandleReconnectReady()
-	}()
+// notifyReconnectReady fires [ReconnectReadyHandler.HandleReconnectReady] for
+// the currently registered handler once the reconnect wave itself is already
+// known to be stable.
+func (c *Conn) notifyReconnectReady(subscription *Subscription) {
+	handler, ok := subscription.handler().(ReconnectReadyHandler)
+	if !ok {
+		return
+	}
+	handler.HandleReconnectReady()
 }
 
 // Active reports whether sub is currently registered on this connection.

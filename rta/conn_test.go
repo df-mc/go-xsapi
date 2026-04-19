@@ -354,17 +354,14 @@ func TestConnReconnectRetriesIfReplacementSocketDropsAfterGraceWindow(t *testing
 	}
 }
 
-func TestScheduleReconnectReadyUsesCurrentHandlerAtFireTime(t *testing.T) {
-	conn := newTestConn()
-	defer conn.cancel(nil)
-
+func TestNotifyReconnectReadyUsesCurrentHandlerAtFireTime(t *testing.T) {
 	oldReady := make(chan struct{}, 1)
 	newReady := make(chan struct{}, 1)
 	sub := &Subscription{}
 	sub.Handle(reconnectReadyTestHandler{ready: oldReady})
 
-	conn.scheduleReconnectReady(sub)
 	sub.Handle(reconnectReadyTestHandler{ready: newReady})
+	newTestConn().notifyReconnectReady(sub)
 
 	select {
 	case <-newReady:

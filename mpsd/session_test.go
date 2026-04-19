@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -120,6 +121,14 @@ func TestSessionMembersReturnsDetachedCopies(t *testing.T) {
 	}
 	if got := string(gotMember.Properties.Custom); got != `{"memberProperty":"original"}` {
 		t.Fatalf("cache member properties custom mutated: got %s", got)
+	}
+}
+
+func TestSessionRefreshConnectionWhileReturnsNetErrClosedWhenShouldContinueStops(t *testing.T) {
+	session := testSession(SessionReference{}, nil, SessionDescription{})
+	err := session.refreshConnectionWhile(context.Background(), uuid.New(), func() bool { return false })
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("refreshConnectionWhile error = %v, want %v", err, net.ErrClosed)
 	}
 }
 
