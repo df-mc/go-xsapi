@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"slices"
 	"time"
 
@@ -45,7 +46,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		c.subscriptionMu.Lock()
 		if !c.subscriptionActive(seq) {
 			c.subscriptionMu.Unlock()
-			return context.Canceled
+			return net.ErrClosed
 		}
 		if c.subscription == nil {
 			c.subscriptionMu.Unlock()
@@ -159,7 +160,7 @@ func (c *Client) ensureSubscriptionLocked(ctx context.Context, seq uint64) error
 	for {
 		if !c.subscriptionActive(seq) {
 			c.subscriptionMu.Unlock()
-			return context.Canceled
+			return net.ErrClosed
 		}
 		if c.subscription != nil {
 			c.subscriptionMu.Unlock()
@@ -201,7 +202,7 @@ func (c *Client) ensureSubscriptionLocked(ctx context.Context, seq uint64) error
 		}
 		if !c.subscriptionActive(seq) {
 			discard()
-			return context.Canceled
+			return net.ErrClosed
 		}
 		if c.subscription != nil {
 			discard()

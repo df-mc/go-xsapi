@@ -46,7 +46,7 @@ func (c *Client) subscribeWithInstall(ctx context.Context, canInstall func() boo
 		c.subscriptionMu.Lock()
 		if c.subscription != nil {
 			if c.active != nil && !c.active(c.subscription) {
-				c.clearSubscriptionLocked()
+				c.invalidateSubscriptionLocked()
 			} else {
 				data, err := c.decodeSubscriptionData(c.subscription)
 				if err != nil {
@@ -421,12 +421,19 @@ func (c *Client) clearSubscriptionLocked() {
 	c.subscription, c.subscriptionData = nil, nil
 }
 
+// invalidateSubscriptionLocked cancels any running refresh wave and clears the
+// cached subscription state when the current subscription is already known to
+// be stale. The caller must hold subscriptionMu.
+func (c *Client) invalidateSubscriptionLocked() {
+	c.cancelRefreshWave()
+	c.clearSubscriptionLocked()
+}
+
 // resetSubscriptionLocked cancels any running refresh wave, clears the
 // subscription state, and asynchronously cleans up the given subscription.
 // The caller must hold subscriptionMu.
 func (c *Client) resetSubscriptionLocked(subscription *rta.Subscription) {
-	c.cancelRefreshWave()
-	c.clearSubscriptionLocked()
+	c.invalidateSubscriptionLocked()
 	c.cleanupSubscription(subscription)
 }
 
@@ -500,7 +507,7 @@ func (c *Client) subscriptionDataWithInstall(ctx context.Context, canInstall fun
 		return refresh()
 	}
 	if c.active != nil && !c.active(subscription) {
-		c.clearSubscriptionLocked()
+		c.invalidateSubscriptionLocked()
 		c.subscriptionMu.Unlock()
 		return refresh()
 	}

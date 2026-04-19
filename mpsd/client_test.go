@@ -263,6 +263,86 @@ func TestClientSubscribeRefreshesInactiveCachedSubscription(t *testing.T) {
 	}
 }
 
+func TestClientSubscribeCancelsRefreshWaveWhenCachedSubscriptionInactive(t *testing.T) {
+	canceled := make(chan struct{}, 1)
+	client := &Client{
+		active: func(*rta.Subscription) bool {
+			return false
+		},
+		subscription:     &rta.Subscription{},
+		subscriptionData: &subscriptionData{ConnectionID: uuid.New()},
+		refreshingSeq:    1,
+		refreshCancel: func() {
+			select {
+			case canceled <- struct{}{}:
+			default:
+			}
+		},
+	}
+
+	_, _, err := client.subscribe(context.Background())
+	if !errors.Is(err, errSubscriptionUnavailable) {
+		t.Fatalf("subscribe error = %v, want %v", err, errSubscriptionUnavailable)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("inactive cached subscription did not cancel refresh wave")
+	}
+	if client.subscription != nil {
+		t.Fatal("inactive cached subscription was not cleared")
+	}
+	if client.subscriptionData != nil {
+		t.Fatal("inactive cached subscription data was not cleared")
+	}
+	if client.refreshCancel != nil {
+		t.Fatal("refreshCancel was not cleared after invalidating inactive subscription")
+	}
+	if client.refreshingSeq != 0 {
+		t.Fatalf("refreshingSeq = %d, want 0", client.refreshingSeq)
+	}
+}
+
+func TestSubscriptionDataWithInstallCancelsRefreshWaveWhenCachedSubscriptionInactive(t *testing.T) {
+	canceled := make(chan struct{}, 1)
+	client := &Client{
+		active: func(*rta.Subscription) bool {
+			return false
+		},
+		subscription:     &rta.Subscription{},
+		subscriptionData: &subscriptionData{ConnectionID: uuid.New()},
+		refreshingSeq:    1,
+		refreshCancel: func() {
+			select {
+			case canceled <- struct{}{}:
+			default:
+			}
+		},
+	}
+
+	_, err := client.subscriptionDataWithInstall(context.Background(), func() bool { return true })
+	if !errors.Is(err, errSubscriptionUnavailable) {
+		t.Fatalf("subscriptionDataWithInstall error = %v, want %v", err, errSubscriptionUnavailable)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("inactive cached subscription did not cancel refresh wave")
+	}
+	if client.subscription != nil {
+		t.Fatal("inactive cached subscription was not cleared")
+	}
+	if client.subscriptionData != nil {
+		t.Fatal("inactive cached subscription data was not cleared")
+	}
+	if client.refreshCancel != nil {
+		t.Fatal("refreshCancel was not cleared after invalidating inactive subscription")
+	}
+	if client.refreshingSeq != 0 {
+		t.Fatalf("refreshingSeq = %d, want 0", client.refreshingSeq)
+	}
+}
+
 func TestClientSubscribeReturnsBeforeDiscardCleanupCompletes(t *testing.T) {
 	fetchedSubscription := &rta.Subscription{}
 	winnerSubscription := &rta.Subscription{}

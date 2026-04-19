@@ -637,11 +637,7 @@ func (c *Conn) resubscribe() []*Subscription {
 // after the settle delay, provided the replacement socket has not been flagged
 // for another reconnect.
 func (c *Conn) scheduleReconnectReady(subscription *Subscription) {
-	handler, ok := subscription.handler().(ReconnectReadyHandler)
-	if !ok {
-		return
-	}
-	go func(handler ReconnectReadyHandler) {
+	go func() {
 		select {
 		case <-time.After(reconnectSettleDelay):
 		case <-c.ctx.Done():
@@ -650,8 +646,12 @@ func (c *Conn) scheduleReconnectReady(subscription *Subscription) {
 		if c.reconnectNext.Load() {
 			return
 		}
+		handler, ok := subscription.handler().(ReconnectReadyHandler)
+		if !ok {
+			return
+		}
 		handler.HandleReconnectReady()
-	}(handler)
+	}()
 }
 
 // Active reports whether sub is currently registered on this connection.

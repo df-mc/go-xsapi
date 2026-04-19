@@ -354,10 +354,50 @@ func TestConnReconnectRetriesIfReplacementSocketDropsAfterGraceWindow(t *testing
 	}
 }
 
+func TestScheduleReconnectReadyUsesCurrentHandlerAtFireTime(t *testing.T) {
+	conn := newTestConn()
+	defer conn.cancel(nil)
+
+	oldReady := make(chan struct{}, 1)
+	newReady := make(chan struct{}, 1)
+	sub := &Subscription{}
+	sub.Handle(reconnectReadyTestHandler{ready: oldReady})
+
+	conn.scheduleReconnectReady(sub)
+	sub.Handle(reconnectReadyTestHandler{ready: newReady})
+
+	select {
+	case <-newReady:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reconnect-ready callback on replacement handler")
+	}
+
+	select {
+	case <-oldReady:
+		t.Fatal("stale reconnect-ready handler was called after replacement")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 type testSubscriptionHandler struct {
 	handleReconnect      func()
 	handleReconnectError func(error)
 	handleEvent          func(json.RawMessage)
+}
+
+type reconnectReadyTestHandler struct {
+	ready chan struct{}
+}
+
+func (h reconnectReadyTestHandler) HandleEvent(json.RawMessage) {}
+
+func (h reconnectReadyTestHandler) HandleReconnect(error) {}
+
+func (h reconnectReadyTestHandler) HandleReconnectReady() {
+	select {
+	case h.ready <- struct{}{}:
+	default:
+	}
 }
 
 func (h testSubscriptionHandler) HandleReconnect(err error) {

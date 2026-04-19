@@ -3,6 +3,7 @@ package social
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -334,8 +335,8 @@ func TestClientCloseContextPreventsInflightSubscribeInstall(t *testing.T) {
 
 	select {
 	case err := <-subscribeErr:
-		if err == nil {
-			t.Fatal("expected Subscribe to fail after close invalidated the in-flight install")
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Subscribe error = %v, want %v", err, net.ErrClosed)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Subscribe to finish")
