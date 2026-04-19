@@ -494,14 +494,16 @@ func (c *Conn) reconnect(done chan struct{}) {
 		c.startReader(conn)
 
 		successes := c.resubscribe()
+		readerDone := c.currentReaderDone()
 		if len(successes) != 0 {
 			select {
 			case <-time.After(reconnectSettleDelay):
+			case <-readerDone:
 			case <-c.ctx.Done():
 				return
 			}
 		}
-		if !c.reconnectNext.Load() {
+		if c.reconnectWaveStable(readerDone) {
 			for _, subscription := range successes {
 				go c.notifyReconnectReady(subscription)
 				go subscription.handler().HandleReconnect(nil)
@@ -599,7 +601,7 @@ func (c *Conn) resubscribe() []*Subscription {
 					c.subscriptionsMu.Unlock()
 					return
 				}
-				go subscription.handler().HandleReconnect(err)
+				subscription.handler().HandleReconnect(err)
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
 						slog.Uint64("id", uint64(subscription.ID())),
@@ -631,6 +633,25 @@ func (c *Conn) resubscribe() []*Subscription {
 		slog.Int("successful", len(successes)),
 	)
 	return successes
+}
+
+// reconnectWaveStable reports whether the reconnect wave still points at the
+// same live reader channel and has not already been marked for another retry.
+func (c *Conn) reconnectWaveStable(readerDone chan struct{}) bool {
+	if c.reconnectNext.Load() {
+		return false
+	}
+	if readerDone != nil {
+		if c.currentReaderDone() != readerDone {
+			return false
+		}
+		select {
+		case <-readerDone:
+			return false
+		default:
+		}
+	}
+	return !c.reconnectNext.Load()
 }
 
 // notifyReconnectReady fires [ReconnectReadyHandler.HandleReconnectReady] for

@@ -309,7 +309,7 @@ func (h *subscriptionHandler) handleReconnectSuccess() {
 	if subscription == nil {
 		subscription = h.Client.subscription
 	}
-	if subscription == nil || (h.subscription != nil && subscription != h.Client.subscription) {
+	if subscription == nil || subscription != h.Client.subscription {
 		h.subscriptionMu.Unlock()
 		return
 	}
@@ -474,10 +474,7 @@ func (c *Client) reconcileSessionConnectionWithInstall(ctx context.Context, sess
 	if data.ConnectionID == connectionID {
 		return nil
 	}
-	if err := session.refreshConnection(ctx, data.ConnectionID); err != nil && !errors.Is(err, net.ErrClosed) {
-		return err
-	}
-	return nil
+	return session.refreshConnectionWhile(ctx, data.ConnectionID, canInstall)
 }
 
 // subscriptionDataWithInstall returns the current subscription data,

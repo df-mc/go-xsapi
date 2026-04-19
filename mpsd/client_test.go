@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -934,6 +935,48 @@ func TestPublishReturnsTrackingLostSessionWhenGenerationChangesBeforeInitialTrac
 	}
 	if !session.TrackingLost() {
 		t.Fatal("session did not report tracking loss after generation changed before initial attach")
+	}
+	close(session.closed)
+}
+
+func TestReconcileSessionConnectionWithInstallStopsBeforeWriteWhenGenerationChanges(t *testing.T) {
+	initialConnectionID := uuid.New()
+	refreshedConnectionID := uuid.New()
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	var requests atomic.Int32
+	client := &Client{
+		log:      slogDiscard(),
+		sessions: map[string]*Session{},
+		decode: func(*rta.Subscription) (*subscriptionData, error) {
+			return &subscriptionData{ConnectionID: refreshedConnectionID}, nil
+		},
+		active: func(*rta.Subscription) bool { return true },
+	}
+	client.subscription = &rta.Subscription{}
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		t.Fatalf("unexpected reconcile request after generation invalidation: %s %s", req.Method, req.URL)
+		return nil, nil
+	})}
+
+	session := testSession(ref, client, SessionDescription{})
+	session.log = slogDiscard()
+	session.etag = `"etag"`
+
+	canInstallCalls := atomic.Int32{}
+	err := client.reconcileSessionConnectionWithInstall(context.Background(), session, initialConnectionID, func() bool {
+		return canInstallCalls.Add(1) == 1
+	})
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("reconcileSessionConnectionWithInstall error = %v, want %v", err, net.ErrClosed)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("reconcile requests = %d, want 0", requests.Load())
 	}
 	close(session.closed)
 }

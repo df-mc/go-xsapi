@@ -354,6 +354,104 @@ func TestConnReconnectRetriesIfReplacementSocketDropsAfterGraceWindow(t *testing
 	}
 }
 
+func TestWaitBlocksUntilReconnectErrorHandlersFinish(t *testing.T) {
+	originalURL := connectURL
+	defer func() { connectURL = originalURL }()
+
+	var connections atomic.Int32
+	closeFirstConnection := make(chan struct{})
+	errorHandlerStarted := make(chan struct{}, 1)
+	releaseErrorHandler := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+
+		number := connections.Add(1)
+		go func() {
+			defer conn.Close(websocket.StatusNormalClosure, "")
+
+			sequence, _, ok := readSubscribeRequest(t, conn, number)
+			if !ok {
+				return
+			}
+
+			switch number {
+			case 1:
+				if !writeSubscribeHandshake(t, conn, "first", sequence, 7, `{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`) {
+					return
+				}
+				<-closeFirstConnection
+				_ = conn.Close(websocket.StatusInternalError, "force reconnect")
+			case 2:
+				if !writeSubscribeErrorHandshake(t, conn, "second", sequence, StatusUnknownResource, `"missing resource"`) {
+					return
+				}
+				go drainServerReads(conn)
+				<-releaseErrorHandler
+			default:
+				t.Errorf("unexpected connection attempt %d", number)
+			}
+		}()
+	}))
+	defer server.Close()
+
+	useTestConnectURL(t, server.URL)
+
+	conn, err := Dial(t.Context(), http.DefaultClient, nil)
+	if err != nil {
+		t.Fatalf("dial RTA connection: %v", err)
+	}
+	defer conn.Close()
+
+	sub, err := conn.Subscribe(t.Context(), "resource://session")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	sub.Handle(testSubscriptionHandler{
+		handleReconnectError: func(error) {
+			select {
+			case errorHandlerStarted <- struct{}{}:
+			default:
+			}
+			<-releaseErrorHandler
+		},
+	})
+
+	close(closeFirstConnection)
+
+	select {
+	case <-errorHandlerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reconnect error handler to start")
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- conn.Wait(context.Background())
+	}()
+
+	select {
+	case err := <-waitDone:
+		t.Fatalf("Wait returned early with %v while reconnect error handler was still running", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseErrorHandler)
+
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("Wait returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Wait after reconnect error handler finished")
+	}
+}
+
 func TestNotifyReconnectReadyUsesCurrentHandlerAtFireTime(t *testing.T) {
 	oldReady := make(chan struct{}, 1)
 	newReady := make(chan struct{}, 1)
@@ -470,6 +568,21 @@ func writeSubscribeHandshake(t *testing.T, conn *websocket.Conn, label string, s
 		json.RawMessage(custom),
 	}); err != nil {
 		t.Errorf("write %s subscribe handshake: %v", label, err)
+		return false
+	}
+	return true
+}
+
+func writeSubscribeErrorHandshake(t *testing.T, conn *websocket.Conn, label string, sequence uint32, status int32, message string) bool {
+	t.Helper()
+
+	if err := wsjson.Write(context.Background(), conn, []any{
+		typeSubscribe,
+		sequence,
+		status,
+		json.RawMessage(message),
+	}); err != nil {
+		t.Errorf("write %s subscribe error handshake: %v", label, err)
 		return false
 	}
 	return true
