@@ -13,7 +13,7 @@ import (
 
 // errSubscriptionUnavailable is returned when no RTA subscriber is configured
 // and the social subscription cannot be refreshed.
-var errSubscriptionUnavailable = errors.New("xsapi/social: subscription unavailable")
+var errSubscriptionUnavailable = errors.New("social: subscription unavailable")
 
 // Subscribe subscribes to RTA (Real-Time Activity) services to receive
 // notifications for changes in the caller's friend list.

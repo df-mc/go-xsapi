@@ -3,11 +3,10 @@ package social
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/internal/testutil"
 	"github.com/df-mc/go-xsapi/v2/rta"
 )
 
@@ -387,9 +386,7 @@ func TestClientSubscribeDoesNotHoldLockDuringDiscardCleanup(t *testing.T) {
 	}
 }
 
-func slogDiscard() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
+var slogDiscard = testutil.SlogDiscard
 
 type namedHandler string
 

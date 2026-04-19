@@ -166,7 +166,8 @@ var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 
 // reconnectSettleDelay is the time to wait after resubscribing before
 // dispatching reconnect handlers, giving the replacement socket a chance to
-// prove it is stable.
+// prove it is stable. A short delay (50ms) prioritizes responsiveness over
+// stability detection; increase if flaky networks cause spurious reconnects.
 const reconnectSettleDelay = 50 * time.Millisecond
 
 func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {

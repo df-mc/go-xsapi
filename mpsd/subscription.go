@@ -20,6 +20,10 @@ import (
 // and the subscription cannot be refreshed.
 var errSubscriptionUnavailable = errors.New("mpsd: subscription unavailable")
 
+// maxReconcileAttempts is the number of times to retry reconciling a session's
+// connection ID before giving up and marking tracking as lost.
+const maxReconcileAttempts = 5
+
 // subscribe subscribes with the RTA (Real-Time Activity) Services in Xbox Live.
 // The subscription is used to associate with a multiplayer session to receive
 // notifications for changes in the session.
@@ -473,6 +477,9 @@ func (c *Client) reconcileSessionConnectionWithInstall(ctx context.Context, sess
 // re-establishing the subscription when the cached state is stale or missing.
 func (c *Client) subscriptionDataWithInstall(ctx context.Context, canInstall func() bool) (*subscriptionData, error) {
 	refresh := func() (*subscriptionData, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if c.closing.Load() {
 			return nil, net.ErrClosed
 		}
@@ -541,7 +548,7 @@ func (c *Client) retryReconcileSessionConnection(session *Session, connectionID 
 
 		session.log.Error("error reconciling session connection after reconnect", slog.Any("error", err))
 
-		if attempt >= 4 {
+		if attempt+1 >= maxReconcileAttempts {
 			session.markTrackingLost()
 			return
 		}
@@ -586,7 +593,7 @@ func (c *Client) retryRefreshSessionConnection(session *Session, waveCtx context
 			slog.Group("session", slog.String("ref", session.Reference().URL().String())),
 		)
 
-		if attempt >= 4 {
+		if attempt+1 >= maxReconcileAttempts {
 			return
 		}
 		select {

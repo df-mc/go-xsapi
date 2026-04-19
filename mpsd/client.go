@@ -57,6 +57,9 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 }
 
 // Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
+//
+// Lock ordering: subscriptionMu → refreshMu → sessionsMu. Always acquire in
+// this order to prevent deadlocks.
 type Client struct {
 	client   *http.Client
 	sub      subscriber

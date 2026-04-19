@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/internal/testutil"
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 	"github.com/google/uuid"
@@ -958,6 +957,4 @@ func TestRetryReconcileSessionConnectionMarksTrackingLostAfterRetryExhaustion(t 
 	close(session.closed)
 }
 
-func slogDiscard() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
+var slogDiscard = testutil.SlogDiscard
