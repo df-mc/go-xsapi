@@ -18,10 +18,21 @@ import (
 type fakeUnsubscriber struct {
 	attempts int
 	failures int
+	called   chan struct{}
+	release  chan struct{}
 }
 
 func (f *fakeUnsubscriber) Unsubscribe(context.Context, *rta.Subscription) error {
 	f.attempts++
+	if f.called != nil {
+		select {
+		case f.called <- struct{}{}:
+		default:
+		}
+	}
+	if f.release != nil {
+		<-f.release
+	}
 	if f.attempts <= f.failures {
 		return errors.New("unsubscribe failed")
 	}
@@ -101,6 +112,50 @@ func TestClientCloseContextClearsStaleSubscribeBarrier(t *testing.T) {
 	}
 	if client.subscribeDone != nil {
 		t.Fatal("subscribeDone was not cleared on close")
+	}
+}
+
+func TestClientCloseContextSerializesConcurrentCalls(t *testing.T) {
+	unsub := &fakeUnsubscriber{
+		called:  make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	client := &Client{
+		subscription:     &rta.Subscription{},
+		subscriptionData: &subscriptionData{ConnectionID: uuid.New()},
+		unsub:            unsub,
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- client.CloseContext(context.Background())
+	}()
+
+	select {
+	case <-unsub.called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first close to start unsubscribe")
+	}
+
+	go func() {
+		errCh <- client.CloseContext(context.Background())
+	}()
+
+	select {
+	case <-unsub.called:
+		t.Fatal("second close entered unsubscribe before the first completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(unsub.release)
+
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("CloseContext returned error: %v", err)
+		}
+	}
+	if unsub.attempts != 1 {
+		t.Fatalf("unsubscribe attempts = %d, want 1", unsub.attempts)
 	}
 }
 

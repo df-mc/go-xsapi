@@ -65,6 +65,9 @@ type Client struct {
 	sub      subscriber
 	userInfo xsts.UserInfo
 	log      *slog.Logger
+	// closeMu serializes CloseContext so the closing gate cannot be reopened
+	// by a concurrent caller before the active shutdown attempt finishes.
+	closeMu sync.Mutex
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.
@@ -157,6 +160,9 @@ func (c *Client) Close() error {
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+
 	c.closing.Store(true)
 	defer c.closing.Store(false)
 	c.backgroundSeq.Add(1)

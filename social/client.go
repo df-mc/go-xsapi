@@ -51,6 +51,9 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 type Client struct {
 	client *http.Client
 	sub    subscriber
+	// closeMu serializes CloseContext so the closing gate cannot be reopened
+	// by a concurrent caller before the active shutdown attempt finishes.
+	closeMu sync.Mutex
 	// unsub is the narrow shutdown dependency used for removing RTA
 	// subscriptions. In production it is the same value as rta.
 	// Keeping this separate allows tests to inject controlled failures for the
@@ -91,6 +94,9 @@ func (c *Client) Close() error {
 // In most cases, [github.com/df-mc/go-xsapi.Client.CloseContext] should be preferred
 // over calling this method directly.
 func (c *Client) CloseContext(ctx context.Context) error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+
 	c.closing.Store(true)
 	defer c.closing.Store(false)
 	c.subscriptionSeq.Add(1)

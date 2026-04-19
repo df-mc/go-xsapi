@@ -112,6 +112,50 @@ func TestClientCloseContextClearsHandlersWithoutSubscription(t *testing.T) {
 	}
 }
 
+func TestClientCloseContextSerializesConcurrentCalls(t *testing.T) {
+	unsub := &fakeUnsubscriber{
+		called:  make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	client := &Client{
+		subscription:         &rta.Subscription{},
+		subscriptionHandlers: []SubscriptionHandler{NopSubscriptionHandler{}},
+		unsub:                unsub,
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- client.CloseContext(context.Background())
+	}()
+
+	select {
+	case <-unsub.called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first close to start unsubscribe")
+	}
+
+	go func() {
+		errCh <- client.CloseContext(context.Background())
+	}()
+
+	select {
+	case <-unsub.called:
+		t.Fatal("second close entered unsubscribe before the first completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(unsub.release)
+
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("CloseContext returned error: %v", err)
+		}
+	}
+	if unsub.attempts != 1 {
+		t.Fatalf("unsubscribe attempts = %d, want 1", unsub.attempts)
+	}
+}
+
 func TestClientSubscribeDoesNotRegisterHandlerWhenInitialSubscribeFails(t *testing.T) {
 	handler := NopSubscriptionHandler{}
 	sub := &fakeSubscriber{err: errors.New("subscribe failed")}
