@@ -85,7 +85,7 @@ type Client struct {
 	subscribeDone chan struct{}
 
 	// unsub is the narrow shutdown dependency used for removing RTA
-	// subscriptions. In production it is the same value as rta.
+	// subscriptions. In production it is the same value as sub.
 	// Keeping this separate allows tests to inject controlled failures for the
 	// retry path without having to construct a real rta.Conn.
 	unsub unsubscriber

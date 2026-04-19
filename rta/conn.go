@@ -626,7 +626,10 @@ func (c *Conn) resubscribe() []*Subscription {
 	}
 
 	wg.Wait()
-	c.log.Info("resubscribed existing subscriptions", slog.Int("count", len(subscriptions)))
+	c.log.Info("resubscribed existing subscriptions",
+		slog.Int("attempted", len(subscriptions)),
+		slog.Int("successful", len(successes)),
+	)
 	return successes
 }
 
