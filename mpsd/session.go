@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -29,6 +30,8 @@ import (
 // Activity) subscription. RTA delivers session change notifications over a
 // WebSocket connection, allowing the Session to update its cache as soon
 // as the remote multiplayer session changes (e.g. member is joining/leaving).
+// If the client loses MPSD subscription tracking, automatic updates stop for
+// that Session until it is reattached by the client; see [Session.TrackingLost].
 //
 // Session is safe for concurrent use unless otherwise documented.
 //
@@ -48,6 +51,13 @@ type Session struct {
 
 	// ref contains a reference to the multiplayer session.
 	ref SessionReference
+	// backgroundSeq is the client's background-work generation when this
+	// session was registered. It is used to avoid tearing down sessions created
+	// after a prior MPSD subscription-loss event.
+	backgroundSeq uint64
+	// trackingLost reports whether the session is no longer maintained by the
+	// client's automatic MPSD tracking.
+	trackingLost atomic.Bool
 
 	// etag holds the most recently observed E-Tag for the session resource.
 	// When reading or accessing etag, cacheMu must be held for concurrent safety.
@@ -268,6 +278,47 @@ func (s *Session) closeLocked() {
 		s.client.handleSessionClose(s)
 		close(s.closed)
 	}
+}
+
+// stopTrackingLocal unregisters the Session from automatic client-side
+// tracking without attempting a remote leave or delete request. It is used
+// when the client can no longer maintain multiplayer session state after MPSD
+// subscription loss, while still allowing callers to explicitly close or leave
+// the remote session later.
+func (s *Session) stopTrackingLocal(lossSeq uint64) {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.isClosed() {
+		return
+	}
+	if s.backgroundSeq >= lossSeq {
+		return
+	}
+	s.markTrackingLostLocked()
+}
+
+// markTrackingLost marks the session as no longer maintained by the client's
+// automatic MPSD tracking and removes it from the client's tracked-session map
+// if it is still registered there.
+func (s *Session) markTrackingLost() {
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.isClosed() {
+		return
+	}
+	s.markTrackingLostLocked()
+}
+
+// markTrackingLostLocked is markTrackingLost with s.closeMu already held.
+func (s *Session) markTrackingLostLocked() {
+	s.client.handleSessionClose(s)
+	s.trackingLost.Store(true)
+}
+
+// TrackingLost reports whether the session is no longer kept up to date
+// automatically through the client's MPSD tracking.
+func (s *Session) TrackingLost() bool {
+	return s.trackingLost.Load()
 }
 
 // isClosed checks if the session is closed.
@@ -529,9 +580,22 @@ func (s *Session) finishUpdate(deleted bool, err error) error {
 // 412 responses after refreshing local state, and treats a remotely deleted
 // session as a successful delete.
 func (s *Session) synchronizedUpdate(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) (deleted bool, err error) {
+	return s.synchronizedUpdateWhile(ctx, changes, opts, nil)
+}
+
+// synchronizedUpdateWhile is synchronizedUpdate with an additional
+// shouldContinue predicate that is checked before each attempt. When
+// shouldContinue returns false the update is aborted with [net.ErrClosed].
+func (s *Session) synchronizedUpdateWhile(ctx context.Context, changes SessionDescription, opts []internal.RequestOption, shouldContinue func() bool) (deleted bool, err error) {
+	if shouldContinue == nil {
+		shouldContinue = func() bool { return true }
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return false, err
+		}
+		if !shouldContinue() {
+			return false, net.ErrClosed
 		}
 
 		deleted, conflict, err := s.commit(ctx, changes, preconditionCachedETag, opts)
@@ -543,6 +607,9 @@ func (s *Session) synchronizedUpdate(ctx context.Context, changes SessionDescrip
 		}
 		if !conflict {
 			return deleted, nil
+		}
+		if !shouldContinue() {
+			return false, net.ErrClosed
 		}
 		if err := s.Sync(ctx); err != nil {
 			return false, err
@@ -582,6 +649,28 @@ func (s *Session) currentETag(ctx context.Context) (string, error) {
 		return "", errors.New("mpsd: synchronized update requires ETag")
 	}
 	return etag, nil
+}
+
+// refreshConnectionWhile writes the given connection ID to the session's
+// member properties, marking the current user as active. The optional
+// shouldContinue predicate is passed through to [Session.synchronizedUpdateWhile].
+func (s *Session) refreshConnectionWhile(ctx context.Context, connectionID uuid.UUID, shouldContinue func() bool) error {
+	return s.finishUpdate(s.synchronizedUpdateWhile(ctx, SessionDescription{
+		Members: map[string]*MemberDescription{
+			"me": {
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{
+						// MPSD reconnect handling expects the title to mark the
+						// current user active again when rebinding to a new
+						// connection ID after RTA reconnect via the current-user
+						// status flow, not just rewrite the connection field.
+						Active:     true,
+						Connection: connectionID,
+					},
+				},
+			},
+		},
+	}, nil, shouldContinue))
 }
 
 // SessionReference encapsulates a reference to a multiplayer session.

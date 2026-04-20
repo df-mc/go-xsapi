@@ -3,8 +3,10 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -14,53 +16,129 @@ import (
 	"github.com/google/uuid"
 )
 
+// errSubscriptionUnavailable is returned when no RTA subscriber is configured
+// and the subscription cannot be refreshed.
+var errSubscriptionUnavailable = errors.New("mpsd: subscription unavailable")
+
+// maxReconcileAttempts is the number of times to retry reconciling a session's
+// connection ID before giving up and marking tracking as lost.
+const maxReconcileAttempts = 5
+
 // subscribe subscribes with the RTA (Real-Time Activity) Services in Xbox Live.
 // The subscription is used to associate with a multiplayer session to receive
 // notifications for changes in the session.
 func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscriptionData, err error) {
-	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
-	if c.subscription != nil && c.subscriptionData != nil {
-		// If the subscription was already made with RTA, return the cached
-		// subscription along with its decoded payload.
-		return c.subscription, c.subscriptionData, nil
-	}
-
-	defer func() {
-		if err != nil {
-			if c.subscription != nil {
-				// If the subscription was unsuccessful, we reset the subscription state
-				// along with the custom data so it can be retried.
-				go func(subscription *rta.Subscription) {
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-					defer cancel()
-					if err := c.rta.Unsubscribe(ctx, subscription); err != nil {
-						c.log.Error("error resetting broken subscription", slog.Any("error", err))
-					}
-				}(c.subscription)
-			}
-			c.subscription, c.subscriptionData = nil, nil
+	if c.wait != nil {
+		if err := c.wait(ctx); err != nil {
+			return nil, nil, err
 		}
-	}()
+	}
+	return c.subscribeWithInstall(ctx, c.backgroundInstallGate(c.backgroundSeq.Load()))
+}
 
-	c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
+// subscribeWithInstall returns an active subscription, reusing the cached one
+// when possible. If no subscription exists it fetches a new one and installs it
+// on the Client. canInstall is checked before installing; when it returns false
+// the in-flight subscription is discarded and [net.ErrClosed] is returned.
+// Concurrent callers coalesce behind a single in-flight fetch via subscribeDone.
+func (c *Client) subscribeWithInstall(ctx context.Context, canInstall func() bool) (_ *rta.Subscription, _ *subscriptionData, err error) {
+	for {
+		c.subscriptionMu.Lock()
+		if c.subscription != nil {
+			if c.active != nil && !c.active(c.subscription) {
+				c.invalidateSubscriptionLocked()
+			} else {
+				data, err := c.decodeSubscriptionData(c.subscription)
+				if err != nil {
+					c.resetSubscriptionLocked(c.subscription)
+					c.subscriptionMu.Unlock()
+					return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
+				}
+				if !canInstall() {
+					c.subscriptionMu.Unlock()
+					return nil, nil, net.ErrClosed
+				}
+				c.subscriptionData = data
+				subscription := c.subscription
+				c.subscriptionMu.Unlock()
+				// If the subscription was already made with RTA, return the cached
+				// subscription along with its refreshed decoded payload.
+				return subscription, data, nil
+			}
+		}
+
+		if c.subscribeDone != nil {
+			done := c.subscribeDone
+			c.subscriptionMu.Unlock()
+			select {
+			case <-done:
+				if err := ctx.Err(); err != nil {
+					return nil, nil, err
+				}
+				continue
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			}
+		}
+
+		done := make(chan struct{})
+		c.subscribeDone = done
+		c.subscriptionMu.Unlock()
+
+		subscription, data, err := c.fetchSubscription(ctx)
+
+		c.subscriptionMu.Lock()
+		if c.subscribeDone == done {
+			c.subscribeDone = nil
+			close(done)
+		}
+
+		if err != nil {
+			c.subscriptionMu.Unlock()
+			if subscription != nil {
+				c.cleanupSubscription(subscription)
+			}
+			return nil, nil, err
+		}
+
+		if !canInstall() {
+			c.subscriptionMu.Unlock()
+			c.cleanupSubscription(subscription)
+			return nil, nil, net.ErrClosed
+		}
+
+		if c.subscription == nil {
+			c.subscription = subscription
+			c.subscriptionData = data
+			c.subscription.Handle(&subscriptionHandler{
+				Client:             c,
+				sourceSubscription: subscription,
+				log:                c.log.With("src", "subscription handler"),
+			})
+			c.subscriptionMu.Unlock()
+			return subscription, data, nil
+		}
+		c.subscriptionMu.Unlock()
+		c.cleanupSubscription(subscription)
+	}
+}
+
+// fetchSubscription performs the RTA subscribe call and decodes the resulting
+// subscription data. On decode failure the raw subscription is still returned
+// so the caller can clean it up.
+func (c *Client) fetchSubscription(ctx context.Context) (_ *rta.Subscription, _ *subscriptionData, err error) {
+	if c.sub == nil {
+		return nil, nil, errSubscriptionUnavailable
+	}
+	subscription, err := c.sub.Subscribe(ctx, resourceURI)
 	if err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	// The custom data includes a connection ID which can be used for the
-	// Connection field in the member constants for receiving notifications for
-	// the changes to its participating multiplayer session.
-	if err := json.Unmarshal(c.subscription.Custom(), &c.subscriptionData); err != nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
+	data, err := c.decodeSubscriptionData(subscription)
+	if err != nil {
+		return subscription, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
 	}
-	if c.subscriptionData == nil || c.subscriptionData.ConnectionID == uuid.Nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.Custom())
-	}
-	c.subscription.Handle(&subscriptionHandler{
-		Client: c,
-		log:    c.log.With("src", "subscription handler"),
-	})
-	return c.subscription, c.subscriptionData, nil
+	return subscription, data, nil
 }
 
 // resourceURI is the resource URI used to subscribe with RTA (Real-Time Activity) Services
@@ -107,7 +185,11 @@ type subscriptionData struct {
 // in order to synchronize the session properties with the latest state.
 type subscriptionHandler struct {
 	*Client
-	log *slog.Logger
+	// sourceSubscription is the specific RTA subscription handle that invoked
+	// this handler. It may differ from Client.subscription once the client has
+	// already replaced the live subscription after a reconnect race.
+	sourceSubscription *rta.Subscription
+	log                *slog.Logger
 	rta.NopSubscriptionHandler
 }
 
@@ -169,76 +251,86 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 
 // HandleReconnect implements [rta.SubscriptionHandler].
 func (h *subscriptionHandler) HandleReconnect(err error) {
-	if err != nil {
-		h.subscriptionMu.Lock()
-		h.subscription, h.subscriptionData = nil, nil
-		h.subscriptionMu.Unlock()
+	if err == nil {
 		return
 	}
 
-	if err := h.handleReconnect(); err != nil {
-		h.log.Error("error reconnecting subscription", slog.Any("error", err))
+	h.subscriptionMu.Lock()
+	if h.handleStaleReconnectFailureLocked(err) {
+		return
 	}
+	lossSeq := h.handleSubscriptionLossLocked(nil)
+	h.subscriptionMu.Unlock()
+	h.logSubscriptionLoss("error reconnecting MPSD subscription", err, lossSeq)
 }
 
-// handleReconnect is called when the RTA connection has re-established the subscription.
-func (h *subscriptionHandler) handleReconnect() (err error) {
+// handleStaleReconnectFailureLocked handles reconnect failure from a stale
+// subscription handle while subscriptionMu is held. It returns true after
+// consuming the failure path and releasing subscriptionMu.
+func (h *subscriptionHandler) handleStaleReconnectFailureLocked(err error) bool {
+	if h.sourceSubscription == nil || h.sourceSubscription == h.Client.subscription {
+		return false
+	}
+
+	current := h.Client.subscription
+	if current == nil {
+		lossSeq := h.handleSubscriptionLossLocked(nil)
+		h.subscriptionMu.Unlock()
+		h.logSubscriptionLoss("error reconnecting MPSD subscription", err, lossSeq)
+		return true
+	}
+
+	currentData, currentErr := h.decodeSubscriptionData(current)
+	if currentErr != nil {
+		lossSeq := h.handleSubscriptionLossLocked(current)
+		h.subscriptionMu.Unlock()
+		h.logSubscriptionLoss("error decoding replacement MPSD subscription after stale reconnect failure", currentErr, lossSeq)
+		return true
+	}
+
+	oldData, oldErr := h.decodeSubscriptionData(h.sourceSubscription)
+	backgroundSeq := h.backgroundSeq.Load()
+	h.subscriptionMu.Unlock()
+	if oldErr != nil || oldData == nil || oldData.ConnectionID != currentData.ConnectionID {
+		h.startRefreshWaveIfCurrent(current, backgroundSeq, currentData.ConnectionID)
+	}
+	return true
+}
+
+// HandleReconnectReady implements [rta.ReconnectReadyHandler] so MPSD can
+// rebind tracked sessions as soon as its own subscription has been refreshed.
+func (h *subscriptionHandler) HandleReconnectReady() {
+	h.handleReconnectSuccess()
+}
+
+// handleReconnectSuccess is called when the RTA connection has successfully
+// re-established the subscription. It decodes the refreshed subscription data
+// and starts a refresh wave if the connection ID changed.
+func (h *subscriptionHandler) handleReconnectSuccess() {
 	h.subscriptionMu.Lock()
-	defer h.subscriptionMu.Unlock()
-
-	defer func() {
-		if err != nil {
-			if h.subscription != nil {
-				// If the subscription was unsuccessful, we reset the subscription state
-				// along with the custom data so it can be retried.
-				go func(subscription *rta.Subscription) {
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-					defer cancel()
-					if err := h.rta.Unsubscribe(ctx, subscription); err != nil {
-						h.log.Error("error resetting broken subscription", slog.Any("error", err))
-					}
-				}(h.subscription)
-			}
-			h.subscription, h.subscriptionData = nil, nil
-		}
-	}()
-
-	var data subscriptionData
-	if err := json.Unmarshal(h.subscription.Custom(), &data); err != nil {
-		return fmt.Errorf("decode subscription custom data: %w", err)
+	subscription := h.sourceSubscription
+	if subscription == nil {
+		subscription = h.Client.subscription
 	}
-	h.subscriptionData = &data
-
-	wg := new(sync.WaitGroup)
-	h.sessionsMu.RLock()
-	wg.Add(len(h.sessions))
-	for _, s := range h.sessions {
-		go func(session *Session) {
-			defer wg.Done()
-
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-			defer cancel()
-			if _, err := session.update(ctx, SessionDescription{
-				Members: map[string]*MemberDescription{
-					"me": {
-						Properties: &MemberProperties{
-							System: &MemberPropertiesSystem{
-								Connection: data.ConnectionID,
-							},
-						},
-					},
-				},
-			}, nil); err != nil {
-				session.log.Error("error updating connection ID", slog.Any("error", err))
-				return
-			}
-		}(s)
+	if subscription == nil || subscription != h.Client.subscription {
+		h.subscriptionMu.Unlock()
+		return
 	}
-	h.sessionsMu.RUnlock()
+	data, err := h.decodeSubscriptionData(subscription)
+	if err != nil {
+		lossSeq := h.handleSubscriptionLossLocked(subscription)
+		h.subscriptionMu.Unlock()
+		h.logSubscriptionLoss("error decoding refreshed subscription data", err, lossSeq)
+		return
+	}
+	prev := h.subscriptionData
+	h.subscriptionData = data
+	backgroundSeq := h.backgroundSeq.Load()
+	h.subscriptionMu.Unlock()
 
-	wg.Wait()
-	h.log.Debug("reconnected subscription")
-	return nil
+	if prev == nil || prev.ConnectionID != data.ConnectionID {
+		h.startRefreshWaveIfCurrent(subscription, backgroundSeq, data.ConnectionID)
+	}
 }
 
 // parseReference parses a SessionReference from a resource identifier included
@@ -295,4 +387,371 @@ type shoulderTap struct {
 
 	// Branch is a unique identifier for the current branch of the resource.
 	Branch uuid.UUID `json:"branch"`
+}
+
+// decodeSubscriptionData unmarshals the custom payload of an RTA subscription
+// into [subscriptionData] and validates the connection ID.
+func decodeSubscriptionData(subscription *rta.Subscription) (*subscriptionData, error) {
+	var data subscriptionData
+	if err := json.Unmarshal(subscription.Custom(), &data); err != nil {
+		return nil, err
+	}
+	if data.ConnectionID == uuid.Nil {
+		return nil, fmt.Errorf("invalid subscription data: %q", subscription.Custom())
+	}
+	return &data, nil
+}
+
+// cleanupSubscription unsubscribes a discarded or failed RTA subscription in
+// the background with a 15 second timeout.
+func (c *Client) cleanupSubscription(subscription *rta.Subscription) {
+	unsub := c.unsub
+	if subscription == nil || unsub == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+		defer cancel()
+		if err := unsub.Unsubscribe(ctx, subscription); err != nil {
+			c.log.Error("error resetting broken subscription", slog.Any("error", err))
+		}
+	}()
+}
+
+// clearSubscriptionLocked nils both the subscription and its decoded data.
+// The caller must hold subscriptionMu.
+func (c *Client) clearSubscriptionLocked() {
+	c.subscription, c.subscriptionData = nil, nil
+}
+
+// invalidateSubscriptionLocked cancels any running refresh wave and clears the
+// cached subscription state when the current subscription is already known to
+// be stale. The caller must hold subscriptionMu.
+func (c *Client) invalidateSubscriptionLocked() {
+	c.cancelRefreshWave()
+	c.clearSubscriptionLocked()
+}
+
+// resetSubscriptionLocked cancels any running refresh wave, clears the
+// subscription state, and asynchronously cleans up the given subscription.
+// The caller must hold subscriptionMu.
+func (c *Client) resetSubscriptionLocked(subscription *rta.Subscription) {
+	c.invalidateSubscriptionLocked()
+	c.cleanupSubscription(subscription)
+}
+
+// cancelRefreshWave cancels the currently active refresh wave, if any.
+func (c *Client) cancelRefreshWave() {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	c.cancelRefreshWaveLocked()
+}
+
+// cancelRefreshWaveLocked is cancelRefreshWave with refreshMu already held.
+func (c *Client) cancelRefreshWaveLocked() {
+	if c.refreshCancel != nil {
+		c.refreshCancel()
+		c.refreshCancel = nil
+	}
+	c.refreshingSeq = 0
+}
+
+// reconcileSessionConnectionWithInstall checks whether the session's
+// connection ID still matches the current subscription data and, if not,
+// refreshes it. canInstall is used by background goroutines that must stop
+// when the Client is closing or their generation has been invalidated.
+func (c *Client) reconcileSessionConnectionWithInstall(ctx context.Context, session *Session, connectionID uuid.UUID, canInstall func() bool) error {
+	if c.closing.Load() {
+		return net.ErrClosed
+	}
+	if c.wait != nil {
+		if err := c.wait(ctx); err != nil {
+			return err
+		}
+	}
+
+	data, err := c.subscriptionDataWithInstall(ctx, canInstall)
+	if err != nil {
+		return err
+	}
+	if data.ConnectionID == connectionID {
+		return nil
+	}
+	return session.refreshConnectionWhile(ctx, data.ConnectionID, canInstall)
+}
+
+// subscriptionDataWithInstall returns the current subscription data,
+// re-establishing the subscription when the cached state is stale or missing.
+func (c *Client) subscriptionDataWithInstall(ctx context.Context, canInstall func() bool) (*subscriptionData, error) {
+	refresh := func() (*subscriptionData, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if c.closing.Load() {
+			return nil, net.ErrClosed
+		}
+		if c.sub == nil {
+			return nil, errSubscriptionUnavailable
+		}
+		_, data, err := c.subscribeWithInstall(ctx, canInstall)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
+	}
+
+	c.subscriptionMu.Lock()
+	subscription := c.subscription
+	if subscription == nil {
+		c.subscriptionMu.Unlock()
+		return refresh()
+	}
+	if c.active != nil && !c.active(subscription) {
+		c.invalidateSubscriptionLocked()
+		c.subscriptionMu.Unlock()
+		return refresh()
+	}
+	data, err := c.decodeSubscriptionData(subscription)
+	if err != nil {
+		c.resetSubscriptionLocked(subscription)
+		c.subscriptionMu.Unlock()
+		return refresh()
+	}
+	if !canInstall() {
+		c.subscriptionMu.Unlock()
+		return nil, net.ErrClosed
+	}
+	c.subscriptionData = data
+	c.subscriptionMu.Unlock()
+	return data, nil
+}
+
+// retryReconcileSessionConnection retries reconciling a single session's
+// connection ID with exponential backoff, giving up after five attempts.
+func (c *Client) retryReconcileSessionConnection(session *Session, connectionID uuid.UUID, backgroundSeq uint64) {
+	canInstall := c.backgroundInstallGate(backgroundSeq)
+	for attempt := 0; ; attempt++ {
+		if err := session.Context().Err(); err != nil {
+			return
+		}
+		if !canInstall() || c.closing.Load() {
+			session.markTrackingLost()
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
+		err := c.reconcileSessionConnectionWithInstall(ctx, session, connectionID, canInstall)
+		cancel()
+		if err == nil {
+			if !c.reattachSession(session, backgroundSeq) {
+				session.log.Warn("automatic session tracking lost after late attach")
+			}
+			return
+		}
+		if errors.Is(err, net.ErrClosed) {
+			session.markTrackingLost()
+			return
+		}
+
+		session.log.Error("error reconciling session connection after reconnect", slog.Any("error", err))
+
+		if attempt+1 >= maxReconcileAttempts {
+			session.markTrackingLost()
+			return
+		}
+		select {
+		case <-time.After(reconnectBackoff(attempt)):
+		case <-session.Context().Done():
+			return
+		}
+	}
+}
+
+// refreshWaveActive reports whether the current refresh wave is still valid.
+func (c *Client) refreshWaveActive(waveCtx context.Context, seq uint64) bool {
+	return !c.closing.Load() && waveCtx.Err() == nil && c.refreshSequenceActive(seq)
+}
+
+// refreshSessionConnection writes the new connection ID to a single session,
+// respecting both the session and wave lifetimes.
+func (c *Client) refreshSessionConnection(session *Session, waveCtx context.Context, connectionID uuid.UUID, seq uint64) error {
+	ctx, cancel := refreshContext(session.Context(), waveCtx)
+	defer cancel()
+	return session.refreshConnectionWhile(ctx, connectionID, func() bool {
+		return c.refreshWaveActive(waveCtx, seq)
+	})
+}
+
+// retryRefreshSessionConnection retries refreshing a single session's
+// connection ID within a refresh wave, giving up after five attempts.
+func (c *Client) retryRefreshSessionConnection(session *Session, waveCtx context.Context, connectionID uuid.UUID, seq uint64) {
+	for attempt := 0; ; attempt++ {
+		if err := session.Context().Err(); err != nil || !c.refreshWaveActive(waveCtx, seq) {
+			return
+		}
+
+		err := c.refreshSessionConnection(session, waveCtx, connectionID, seq)
+		if err == nil || errors.Is(err, net.ErrClosed) || refreshInterrupted(err, session.Context(), waveCtx) || !c.refreshSequenceActive(seq) {
+			return
+		}
+
+		c.log.Error("error refreshing session connection ID after reconnect",
+			slog.Any("error", err),
+			slog.Group("session", slog.String("ref", session.Reference().URL().String())),
+		)
+
+		if attempt+1 >= maxReconcileAttempts {
+			return
+		}
+		select {
+		case <-time.After(reconnectBackoff(attempt)):
+		case <-session.Context().Done():
+			return
+		case <-waveCtx.Done():
+			return
+		}
+	}
+}
+
+// refreshSessionConnections writes the new connection ID to all tracked
+// sessions concurrently, retrying failures individually.
+func (c *Client) refreshSessionConnections(waveCtx context.Context, connectionID uuid.UUID, seq uint64) {
+	if !c.refreshWaveActive(waveCtx, seq) {
+		return
+	}
+
+	c.sessionsMu.RLock()
+	sessions := make([]*Session, 0, len(c.sessions))
+	for _, session := range c.sessions {
+		sessions = append(sessions, session)
+	}
+	c.sessionsMu.RUnlock()
+
+	var wg sync.WaitGroup
+	wg.Add(len(sessions))
+	for _, session := range sessions {
+		go func(session *Session) {
+			defer wg.Done()
+			if !c.refreshWaveActive(waveCtx, seq) {
+				return
+			}
+			err := c.refreshSessionConnection(session, waveCtx, connectionID, seq)
+			if err == nil || errors.Is(err, net.ErrClosed) || refreshInterrupted(err, session.Context(), waveCtx) {
+				return
+			}
+			if c.refreshSequenceActive(seq) {
+				go c.retryRefreshSessionConnection(session, waveCtx, connectionID, seq)
+			}
+		}(session)
+	}
+	wg.Wait()
+}
+
+// refreshSequenceActive reports whether seq is the currently active refresh
+// wave sequence number.
+func (c *Client) refreshSequenceActive(seq uint64) bool {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	return c.refreshingSeq == seq
+}
+
+// backgroundInstallGate returns a canInstall predicate for a single
+// background-work generation.
+func (c *Client) backgroundInstallGate(backgroundSeq uint64) func() bool {
+	return func() bool {
+		return c.backgroundSeq.Load() == backgroundSeq && !c.closing.Load()
+	}
+}
+
+// handleSubscriptionLossLocked tears down MPSD subscription state while
+// holding subscriptionMu. It returns the new background-work generation used
+// to invalidate pre-loss retries and scope local session teardown.
+func (c *Client) handleSubscriptionLossLocked(subscription *rta.Subscription) uint64 {
+	lossSeq := c.backgroundSeq.Add(1)
+	c.resetSubscriptionLocked(subscription)
+	return lossSeq
+}
+
+// logSubscriptionLoss records MPSD subscription loss and shuts down tracked
+// sessions after subscription state has been torn down.
+func (c *Client) logSubscriptionLoss(msg string, err error, lossSeq uint64) {
+	c.log.Error(msg, slog.Any("error", err))
+	c.shutdownTrackedSessions(lossSeq)
+}
+
+// shutdownTrackedSessions tears down all locally tracked sessions without
+// making additional remote calls. It is used when MPSD subscription loss means
+// the client can no longer reliably maintain multiplayer session state.
+func (c *Client) shutdownTrackedSessions(lossSeq uint64) {
+	c.sessionsMu.RLock()
+	sessions := make([]*Session, 0, len(c.sessions))
+	for _, session := range c.sessions {
+		if session.backgroundSeq < lossSeq {
+			sessions = append(sessions, session)
+		}
+	}
+	c.sessionsMu.RUnlock()
+
+	for _, session := range sessions {
+		session.stopTrackingLocal(lossSeq)
+	}
+}
+
+// startRefreshWaveIfCurrent starts a refresh wave only if subscription is
+// still the active MPSD subscription and backgroundSeq is still current.
+// This prevents stale reconnect callbacks from mutating sessions after the
+// replacement subscription has already been invalidated.
+func (c *Client) startRefreshWaveIfCurrent(subscription *rta.Subscription, backgroundSeq uint64, connectionID uuid.UUID) bool {
+	if subscription == nil || c.closing.Load() {
+		return false
+	}
+
+	c.subscriptionMu.Lock()
+	if c.subscription != subscription || c.backgroundSeq.Load() != backgroundSeq || c.closing.Load() {
+		c.subscriptionMu.Unlock()
+		return false
+	}
+
+	c.refreshMu.Lock()
+	if c.subscription != subscription || c.backgroundSeq.Load() != backgroundSeq || c.closing.Load() {
+		c.refreshMu.Unlock()
+		c.subscriptionMu.Unlock()
+		return false
+	}
+	c.cancelRefreshWaveLocked()
+	c.refreshSeq++
+	seq := c.refreshSeq
+	c.refreshingSeq = seq
+	waveCtx, cancel := context.WithCancel(context.Background())
+	c.refreshCancel = cancel
+	c.refreshMu.Unlock()
+	c.subscriptionMu.Unlock()
+
+	c.refreshSessionConnections(waveCtx, connectionID, seq)
+	return true
+}
+
+// refreshContext returns a context with a 15 second timeout that is also
+// cancelled when either the session or the wave context is done.
+func refreshContext(sessionCtx, waveCtx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	stopSession := context.AfterFunc(sessionCtx, cancel)
+	stopWave := context.AfterFunc(waveCtx, cancel)
+	return ctx, func() {
+		stopSession()
+		stopWave()
+		cancel()
+	}
+}
+
+// refreshInterrupted reports whether err is a cancellation caused by either
+// the session or wave context being done.
+func refreshInterrupted(err error, sessionCtx, waveCtx context.Context) bool {
+	return errors.Is(err, context.Canceled) && (sessionCtx.Err() != nil || waveCtx.Err() != nil)
+}
+
+// reconnectBackoff returns an exponential backoff duration starting at 200ms
+// and capping at 5 seconds.
+func reconnectBackoff(attempt int) time.Duration {
+	return min(200*time.Millisecond<<attempt, 5*time.Second)
 }

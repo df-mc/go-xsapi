@@ -32,12 +32,13 @@ func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, er
 		dialer:        d,
 		log:           log,
 		subscriptions: make(map[uint32]*Subscription),
+		pending:       make(map[*Subscription]struct{}),
 	}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	for i := range cap(conn.expected) {
 		conn.expected[i] = make(map[uint32]chan<- *handshake)
 	}
-	go conn.read()
+	conn.startReader(c)
 	return conn, nil
 }
 

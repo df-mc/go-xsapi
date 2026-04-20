@@ -100,7 +100,7 @@ func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig
 		if err != nil {
 			return nil, fmt.Errorf("parse session reference from Content-Location header: %w", err)
 		}
-		return c.createSession(ctx, ref, resp)
+		return c.createSessionAndReconcile(ctx, ref, resp, payload.ConnectionID, "join")
 	default:
 		return nil, internal.UnexpectedStatusCode(resp)
 	}
