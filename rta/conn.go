@@ -54,10 +54,14 @@ type Conn struct {
 	// reconnect cycle finished, so a new dial should begin immediately after
 	// the current resubscribe wave ends.
 	reconnectNext atomic.Bool
-	// reconnectDone is a channel that is closed when the reconnect is complete.
-	// It is nil when no reconnect is in progress.
+	// reconnectDone is a channel that is closed when the reconnect dial/
+	// resubscribe wave is complete. It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
-	// reconnectMu guards reconnectDone from concurrent read/write access.
+	// reconnectHandlersDone is closed when all asynchronous reconnect failure
+	// handlers have finished. It is nil when no such handlers are running.
+	reconnectHandlersDone chan struct{}
+	reconnectHandlers     int
+	// reconnectMu guards reconnectDone and reconnect failure-handler tracking.
 	reconnectMu sync.RWMutex
 
 	// once ensures that the Conn is closed only once.
@@ -327,14 +331,16 @@ func (c *Conn) write(typ uint32, payload []any) error {
 	return wsjson.Write(context.Background(), c.currentConn(), append([]any{typ}, payload...))
 }
 
-// wait blocks until any in-progress reconnect attempt has finished.
+// wait blocks until any in-progress reconnect attempt and its tracked failure
+// handlers have finished.
 func (c *Conn) wait(ctx context.Context) error {
 	for {
 		c.reconnectMu.RLock()
 		done := c.reconnectDone
+		handlersDone := c.reconnectHandlersDone
 		c.reconnectMu.RUnlock()
 
-		if done == nil {
+		if done == nil && handlersDone == nil {
 			if err := context.Cause(c.ctx); err != nil {
 				return err
 			}
@@ -342,6 +348,10 @@ func (c *Conn) wait(ctx context.Context) error {
 		}
 		select {
 		case <-done:
+			if err := context.Cause(c.ctx); err != nil {
+				return err
+			}
+		case <-handlersDone:
 			if err := context.Cause(c.ctx); err != nil {
 				return err
 			}
@@ -353,7 +363,8 @@ func (c *Conn) wait(ctx context.Context) error {
 	}
 }
 
-// Wait blocks until any in-progress reconnect attempt has finished.
+// Wait blocks until any in-progress reconnect attempt and its tracked failure
+// handlers have finished.
 func (c *Conn) Wait(ctx context.Context) error {
 	return c.wait(ctx)
 }
@@ -505,8 +516,7 @@ func (c *Conn) reconnect(done chan struct{}) {
 		}
 		if c.reconnectWaveStable(readerDone) {
 			for _, subscription := range successes {
-				go c.notifyReconnectReady(subscription)
-				go subscription.handler().HandleReconnect(nil)
+				go c.notifyReconnectSuccess(subscription)
 				c.log.Debug("resubscribed", slog.Group("subscription",
 					slog.Uint64("id", uint64(subscription.ID())),
 					slog.String("custom", string(subscription.Custom())),
@@ -601,7 +611,11 @@ func (c *Conn) resubscribe() []*Subscription {
 					c.subscriptionsMu.Unlock()
 					return
 				}
-				subscription.handler().HandleReconnect(err)
+				c.startReconnectFailureHandler()
+				go func(subscription *Subscription, err error) {
+					defer c.finishReconnectFailureHandler()
+					subscription.handler().HandleReconnect(err)
+				}(subscription, err)
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
 						slog.Uint64("id", uint64(subscription.ID())),
@@ -652,6 +666,35 @@ func (c *Conn) reconnectWaveStable(readerDone chan struct{}) bool {
 		}
 	}
 	return !c.reconnectNext.Load()
+}
+
+func (c *Conn) startReconnectFailureHandler() {
+	c.reconnectMu.Lock()
+	if c.reconnectHandlers == 0 {
+		c.reconnectHandlersDone = make(chan struct{})
+	}
+	c.reconnectHandlers++
+	c.reconnectMu.Unlock()
+}
+
+func (c *Conn) finishReconnectFailureHandler() {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+	if c.reconnectHandlers == 0 {
+		return
+	}
+	c.reconnectHandlers--
+	if c.reconnectHandlers == 0 {
+		close(c.reconnectHandlersDone)
+		c.reconnectHandlersDone = nil
+	}
+}
+
+// notifyReconnectSuccess delivers reconnect success before any ready-to-act
+// callback for the same subscription.
+func (c *Conn) notifyReconnectSuccess(subscription *Subscription) {
+	subscription.handler().HandleReconnect(nil)
+	c.notifyReconnectReady(subscription)
 }
 
 // notifyReconnectReady fires [ReconnectReadyHandler.HandleReconnectReady] for

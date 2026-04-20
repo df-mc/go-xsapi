@@ -452,6 +452,20 @@ func TestWaitBlocksUntilReconnectErrorHandlersFinish(t *testing.T) {
 	}
 }
 
+func TestNotifyReconnectSuccessCallsReadyAfterReconnect(t *testing.T) {
+	events := make(chan string, 2)
+	sub := &Subscription{}
+	sub.Handle(reconnectSuccessOrderTestHandler{events: events})
+
+	newTestConn().notifyReconnectSuccess(sub)
+
+	first := <-events
+	second := <-events
+	if first != "reconnect" || second != "ready" {
+		t.Fatalf("callback order = [%s %s], want [reconnect ready]", first, second)
+	}
+}
+
 func TestNotifyReconnectReadyUsesCurrentHandlerAtFireTime(t *testing.T) {
 	oldReady := make(chan struct{}, 1)
 	newReady := make(chan struct{}, 1)
@@ -484,6 +498,10 @@ type reconnectReadyTestHandler struct {
 	ready chan struct{}
 }
 
+type reconnectSuccessOrderTestHandler struct {
+	events chan string
+}
+
 func (h reconnectReadyTestHandler) HandleEvent(json.RawMessage) {}
 
 func (h reconnectReadyTestHandler) HandleReconnect(error) {}
@@ -493,6 +511,16 @@ func (h reconnectReadyTestHandler) HandleReconnectReady() {
 	case h.ready <- struct{}{}:
 	default:
 	}
+}
+
+func (h reconnectSuccessOrderTestHandler) HandleEvent(json.RawMessage) {}
+
+func (h reconnectSuccessOrderTestHandler) HandleReconnect(error) {
+	h.events <- "reconnect"
+}
+
+func (h reconnectSuccessOrderTestHandler) HandleReconnectReady() {
+	h.events <- "ready"
 }
 
 func (h testSubscriptionHandler) HandleReconnect(err error) {
