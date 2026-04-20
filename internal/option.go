@@ -16,9 +16,10 @@ import (
 type RequestOption func(req *http.Request)
 
 // Apply applies the given RequestOptions to the request in order.
-// Caller-provided opts take precedence over any defaults appended after them.
-// For example, append caller opts before defaults like append(opts, internal.DefaultLanguage)
-// so that the caller's preferences are evaluated first.
+// Later options take precedence for settings that overwrite earlier values,
+// such as options implemented with [RequestHeader].
+// For additive options like [AcceptLanguage], append caller opts before defaults
+// like append(opts, internal.DefaultLanguage) so fallback languages are added last.
 func Apply(req *http.Request, opts []RequestOption) {
 	for _, opt := range opts {
 		if opt != nil {
