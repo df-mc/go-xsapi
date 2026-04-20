@@ -6,7 +6,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
-	"log/slog"
+	"errors"
 	"math/rand"
 	"net/url"
 	"os"
@@ -17,7 +17,6 @@ import (
 	"github.com/df-mc/go-xsapi/v2"
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
-	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"github.com/go-jose/go-jose/v4"
@@ -73,6 +72,15 @@ func TestSession(t *testing.T) {
 		t.Logf("cleanup: written session snapshot")
 	})
 
+	// Request a XASU (Xbox Authentication Services for User) token using the SISU authorization endpoint.
+	if _, err := s.UserToken(t.Context()); err != nil {
+		var acct *AccountCreationRequiredError
+		if errors.As(err, &acct) {
+			t.Logf("create an Xbox Live account at: %s", acct.SignupURL)
+		}
+		t.Fatalf("error requesting user token: %s", err)
+	}
+
 	device, err := s.DeviceToken(tokenContext(t))
 	if err != nil {
 		t.Fatalf("error requesting XASD token: %s", err)
@@ -97,9 +105,6 @@ func TestSession(t *testing.T) {
 
 	client, err := xsapi.ClientConfig{
 		// EnableChat: true,
-		Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})),
 	}.New(t.Context(), s)
 	if err != nil {
 		t.Fatalf("error creating API client: %s", err)
@@ -109,8 +114,6 @@ func TestSession(t *testing.T) {
 			t.Errorf("error closing API client: %s", err)
 		}
 	})
-
-	testSubscription(t, client)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 	defer cancel()
@@ -162,40 +165,6 @@ func TestSession(t *testing.T) {
 	for _, activity := range activities {
 		t.Logf("%#v", activity)
 	}
-}
-
-func testSubscription(t testing.TB, client *xsapi.Client) {
-	sub, err := client.RTA().Subscribe(t.Context(), "https://sessiondirectory.xboxlive.com/connections/")
-	if err != nil {
-		t.Fatalf("error subscribing: %s", err)
-	}
-	t.Log(sub.ResourceURI())
-	sub.Handle(&subscriptionHandler{
-		TB:  t,
-		sub: sub,
-	})
-
-	/*if err := rta.CloseDaConn(client.RTA()); err != nil {
-		t.Fatalf("error closing WebSocket: %s", err)
-	}*/
-	// time.Sleep(time.Second * 15)
-}
-
-type subscriptionHandler struct {
-	testing.TB
-	sub *rta.Subscription
-}
-
-func (h subscriptionHandler) HandleEvent(custom json.RawMessage) {
-	h.Logf("HandleEvent(%s)", custom)
-}
-
-func (h subscriptionHandler) HandleReconnect(err error) {
-	if err != nil {
-		h.Logf("HandleReconnect(%s)", err)
-		return
-	}
-	h.Logf("HandleReconnect(%#v)", h.sub)
 }
 
 func subscribeSocial(t testing.TB, client *xsapi.Client) {
