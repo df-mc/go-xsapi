@@ -36,16 +36,20 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
+	var sub subscriber
+	var unsub unsubscriber
 	var wait func(context.Context) error
 	var active func(*rta.Subscription) bool
 	if conn != nil {
+		sub = conn
+		unsub = conn
 		wait = conn.Wait
 		active = conn.Active
 	}
 	return &Client{
 		client:   client,
-		sub:      conn,
-		unsub:    conn,
+		sub:      sub,
+		unsub:    unsub,
 		wait:     wait,
 		active:   active,
 		decode:   decodeSubscriptionData,

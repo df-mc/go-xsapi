@@ -9,6 +9,7 @@ import (
 
 	"github.com/df-mc/go-xsapi/v2/internal/testutil"
 	"github.com/df-mc/go-xsapi/v2/rta"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 type fakeUnsubscriber struct {
@@ -175,6 +176,16 @@ func TestClientSubscribeDoesNotRegisterHandlerWhenInitialSubscribeFails(t *testi
 
 func TestClientSubscribeReturnsUnavailableWithoutSubscriber(t *testing.T) {
 	client := &Client{}
+
+	err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
+	if !errors.Is(err, errSubscriptionUnavailable) {
+		t.Fatalf("Subscribe error = %v, want %v", err, errSubscriptionUnavailable)
+	}
+}
+
+func TestNewWithNilConnLeavesSubscriberNil(t *testing.T) {
+	var conn *rta.Conn
+	client := New(nil, conn, xsts.UserInfo{}, nil)
 
 	err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
 	if !errors.Is(err, errSubscriptionUnavailable) {
