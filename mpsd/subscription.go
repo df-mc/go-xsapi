@@ -111,9 +111,9 @@ func (c *Client) subscribeWithInstall(ctx context.Context, canInstall func() boo
 			c.subscription = subscription
 			c.subscriptionData = data
 			c.subscription.Handle(&subscriptionHandler{
-				Client:       c,
-				subscription: subscription,
-				log:          c.log.With("src", "subscription handler"),
+				Client:             c,
+				sourceSubscription: subscription,
+				log:                c.log.With("src", "subscription handler"),
 			})
 			c.subscriptionMu.Unlock()
 			return subscription, data, nil
@@ -185,8 +185,11 @@ type subscriptionData struct {
 // in order to synchronize the session properties with the latest state.
 type subscriptionHandler struct {
 	*Client
-	subscription *rta.Subscription
-	log          *slog.Logger
+	// sourceSubscription is the specific RTA subscription handle that invoked
+	// this handler. It may differ from Client.subscription once the client has
+	// already replaced the live subscription after a reconnect race.
+	sourceSubscription *rta.Subscription
+	log                *slog.Logger
 	rta.NopSubscriptionHandler
 }
 
@@ -265,7 +268,7 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 // subscription handle while subscriptionMu is held. It returns true after
 // consuming the failure path and releasing subscriptionMu.
 func (h *subscriptionHandler) handleStaleReconnectFailureLocked(err error) bool {
-	if h.subscription == nil || h.subscription == h.Client.subscription {
+	if h.sourceSubscription == nil || h.sourceSubscription == h.Client.subscription {
 		return false
 	}
 
@@ -285,7 +288,7 @@ func (h *subscriptionHandler) handleStaleReconnectFailureLocked(err error) bool 
 		return true
 	}
 
-	oldData, oldErr := h.decodeSubscriptionData(h.subscription)
+	oldData, oldErr := h.decodeSubscriptionData(h.sourceSubscription)
 	backgroundSeq := h.backgroundSeq.Load()
 	h.subscriptionMu.Unlock()
 	if oldErr != nil || oldData == nil || oldData.ConnectionID != currentData.ConnectionID {
@@ -305,7 +308,7 @@ func (h *subscriptionHandler) HandleReconnectReady() {
 // and starts a refresh wave if the connection ID changed.
 func (h *subscriptionHandler) handleReconnectSuccess() {
 	h.subscriptionMu.Lock()
-	subscription := h.subscription
+	subscription := h.sourceSubscription
 	if subscription == nil {
 		subscription = h.Client.subscription
 	}

@@ -66,7 +66,10 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 // [SubscriptionHandler] implementations registered via [Client.Subscribe].
 type subscriptionHandler struct {
 	*Client
-	subscription *rta.Subscription
+	// sourceSubscription is the specific RTA subscription handle that invoked
+	// this handler. It may differ from Client.subscription once the client has
+	// already replaced the live subscription after a reconnect race.
+	sourceSubscription *rta.Subscription
 	rta.NopSubscriptionHandler
 }
 
@@ -140,7 +143,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 func (h *subscriptionHandler) HandleReconnect(err error) {
 	if err != nil {
 		h.subscriptionMu.Lock()
-		if h.subscription != nil && h.subscription != h.Client.subscription {
+		if h.sourceSubscription != nil && h.sourceSubscription != h.Client.subscription {
 			h.subscriptionMu.Unlock()
 			return
 		}
@@ -210,8 +213,8 @@ func (c *Client) ensureSubscriptionLocked(ctx context.Context, seq uint64) error
 		}
 		c.subscription = subscription
 		c.subscription.Handle(&subscriptionHandler{
-			Client:       c,
-			subscription: subscription,
+			Client:             c,
+			sourceSubscription: subscription,
 		})
 		c.subscriptionMu.Unlock()
 		return nil

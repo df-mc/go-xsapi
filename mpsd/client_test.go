@@ -631,9 +631,9 @@ func TestSubscriptionHandlerHandleReconnectErrorForStaleSubscriptionStartsRefres
 	client.sessions[ref.URL().String()] = session
 
 	handler := &subscriptionHandler{
-		Client:       client,
-		subscription: oldSubscription,
-		log:          slogDiscard(),
+		Client:             client,
+		sourceSubscription: oldSubscription,
+		log:                slogDiscard(),
 	}
 	handler.HandleReconnect(errors.New("resubscribe failed"))
 
