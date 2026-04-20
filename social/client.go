@@ -35,10 +35,16 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
+	var sub subscriber
+	var unsub unsubscriber
+	if conn != nil {
+		sub = conn
+		unsub = conn
+	}
 	return &Client{
 		client:   client,
-		sub:      conn,
-		unsub:    conn,
+		sub:      sub,
+		unsub:    unsub,
 		userInfo: userInfo,
 		log:      log,
 	}

@@ -187,6 +187,16 @@ func TestClientSubscribeReturnsUnavailableWithoutSubscriber(t *testing.T) {
 	}
 }
 
+func TestNewWithNilConnLeavesSubscriberNil(t *testing.T) {
+	var conn *rta.Conn
+	client := New(nil, conn, xsts.UserInfo{}, nil)
+
+	_, _, err := client.subscribe(context.Background())
+	if !errors.Is(err, errSubscriptionUnavailable) {
+		t.Fatalf("subscribe error = %v, want %v", err, errSubscriptionUnavailable)
+	}
+}
+
 func TestClientSubscribeReusesActiveCachedSubscription(t *testing.T) {
 	connectionID := uuid.New()
 	subscription := &rta.Subscription{}
