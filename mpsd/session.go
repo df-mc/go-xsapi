@@ -497,6 +497,13 @@ func (ref SessionReference) URL() *url.URL {
 	)
 }
 
+// Equal reports whether ref and target refer to the same multiplayer session.
+func (ref SessionReference) Equal(target SessionReference) bool {
+	return ref.ServiceConfigID == target.ServiceConfigID &&
+		strings.EqualFold(ref.TemplateName, target.TemplateName) &&
+		strings.EqualFold(ref.Name, target.Name)
+}
+
 // parseSessionReference parses a [SessionReference] from the value of the
 // 'Content-Location' header.
 //

@@ -143,7 +143,11 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 
 	h.sessionsMu.RLock()
 	for _, session := range h.sessions {
-		if slices.Contains(refs, session.ref) {
+		if slices.ContainsFunc(refs, func(reference SessionReference) bool {
+			// Shoulder taps may deliver TemplateName and Name in lowercase,
+			// so use Compare for case-insensitive matching.
+			return reference.Equal(session.Reference())
+		}) {
 			go func(s *Session) {
 				ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
 				defer cancel()
