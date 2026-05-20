@@ -25,10 +25,11 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	if err := c.closingErr(); err != nil {
 		return nil, nil, err
 	}
-	if c.subscription != nil && c.subscriptionData != nil {
+	oldData := c.subscriptionData
+	if c.subscription != nil && oldData != nil {
 		// If the subscription was already made with RTA, return the cached
 		// subscription along with its decoded payload.
-		return c.subscription, c.subscriptionData, nil
+		return c.subscription, oldData, nil
 	}
 
 	defer func() {
@@ -65,6 +66,9 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 		Client: c,
 		log:    c.log.With("src", "subscription handler"),
 	})
+	if oldData == nil {
+		(&subscriptionHandler{Client: c}).refreshSessionConnections(c.subscriptionData.ConnectionID)
+	}
 	return c.subscription, c.subscriptionData, nil
 }
 

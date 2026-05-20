@@ -133,6 +133,9 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 			return nil, fmt.Errorf("decode subscription ID: %w", err)
 		}
 		sub.Custom = h.payload[1]
+		sub.currentID = sub.ID
+		sub.currentCustom = sub.Custom
+		sub.currentSet = true
 		return sub, nil
 	default:
 		return nil, unexpectedStatusCode(h.status, h.payload)
@@ -252,7 +255,10 @@ type Subscription struct {
 	// data may change if the Conn has reconnected to RTA service.
 	Custom json.RawMessage
 
-	resourceURI string
+	currentID     uint32
+	currentCustom json.RawMessage
+	currentSet    bool
+	resourceURI   string
 
 	h  SubscriptionHandler
 	mu sync.RWMutex
@@ -261,12 +267,18 @@ type Subscription struct {
 func (s *Subscription) id() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.currentSet {
+		return s.currentID
+	}
 	return s.ID
 }
 
 func (s *Subscription) custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.currentSet {
+		return s.currentCustom
+	}
 	return s.Custom
 }
 
@@ -509,7 +521,9 @@ func (c *Conn) reconnect(done chan struct{}) {
 
 		c.reconnectNext.Store(false)
 
-		conn, err := c.dialer.dial(c.ctx)
+		dialCtx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+		conn, err := c.dialer.dial(dialCtx)
+		cancel()
 		if err != nil {
 			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
 			_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
@@ -643,10 +657,11 @@ func (c *Conn) resubscribe() []*Subscription {
 				return
 			}
 
+			subscriptionID := sub.id()
 			subscription.mu.Lock()
-			subscription.ID = sub.id()
-			subscription.Custom = sub.custom()
-			subscriptionID := subscription.ID
+			subscription.currentID = subscriptionID
+			subscription.currentCustom = sub.custom()
+			subscription.currentSet = true
 			subscription.mu.Unlock()
 
 			c.subscriptionsMu.Lock()
