@@ -546,8 +546,10 @@ func (c *Conn) reconnect(done chan struct{}) {
 		conn, err := c.dialer.dial(dialCtx)
 		cancel()
 		if err != nil {
+			cause := fmt.Errorf("rta: reconnect: %w", err)
 			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
-			_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
+			c.notifyReconnectFailure(cause)
+			_ = c.close(cause)
 			return
 		}
 		c.startReader(conn)
@@ -577,6 +579,16 @@ func (c *Conn) reconnect(done chan struct{}) {
 			}
 			return
 		}
+	}
+}
+
+func (c *Conn) notifyReconnectFailure(err error) {
+	for _, subscription := range c.takeSubscriptionsForReconnect() {
+		c.startReconnectFailureHandler()
+		go func(subscription *Subscription) {
+			defer c.finishReconnectFailureHandler()
+			c.notifyReconnect(subscription, err)
+		}(subscription)
 	}
 }
 

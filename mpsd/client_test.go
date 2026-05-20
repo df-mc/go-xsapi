@@ -275,6 +275,34 @@ func TestSubscriptionHandlerReconnectUsesCurrentSubscriptionCustom(t *testing.T)
 	}
 }
 
+func TestSubscribeRefreshesCachedDataFromCurrentSubscriptionCustom(t *testing.T) {
+	oldConnectionID := uuid.New()
+	newConnectionID := uuid.New()
+	subscription := &rta.Subscription{
+		Custom: []byte(`{"ConnectionId":"` + oldConnectionID.String() + `"}`),
+	}
+	setSubscriptionCurrentForTest(subscription, 1, []byte(`{"ConnectionId":"`+newConnectionID.String()+`"}`))
+	client := &Client{
+		subscription:     subscription,
+		subscriptionData: &subscriptionData{ConnectionID: oldConnectionID},
+		sessions:         map[string]*Session{},
+	}
+
+	gotSubscription, gotData, err := client.subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("subscribe returned error: %v", err)
+	}
+	if gotSubscription != subscription {
+		t.Fatal("subscribe returned a different subscription")
+	}
+	if gotData.ConnectionID != newConnectionID {
+		t.Fatalf("connection ID = %v, want %v", gotData.ConnectionID, newConnectionID)
+	}
+	if client.subscriptionData.ConnectionID != newConnectionID {
+		t.Fatalf("cached connection ID = %v, want %v", client.subscriptionData.ConnectionID, newConnectionID)
+	}
+}
+
 func setSubscriptionCurrentForTest(subscription *rta.Subscription, id uint32, custom []byte) {
 	value := reflect.ValueOf(subscription).Elem()
 	setUnexportedFieldForTest(value.FieldByName("currentID"), reflect.ValueOf(id))

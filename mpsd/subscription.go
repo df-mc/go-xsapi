@@ -27,9 +27,20 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	}
 	oldData := c.subscriptionData
 	if c.subscription != nil && oldData != nil {
+		var data subscriptionData
+		if err := json.Unmarshal(c.subscription.CurrentCustom(), &data); err != nil {
+			return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
+		}
+		if data.ConnectionID == uuid.Nil {
+			return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.CurrentCustom())
+		}
+		c.subscriptionData = &data
+		if oldData.ConnectionID != data.ConnectionID {
+			(&subscriptionHandler{Client: c}).refreshSessionConnections(data.ConnectionID)
+		}
 		// If the subscription was already made with RTA, return the cached
-		// subscription along with its decoded payload.
-		return c.subscription, oldData, nil
+		// subscription along with its refreshed decoded payload.
+		return c.subscription, &data, nil
 	}
 
 	defer func() {
