@@ -170,7 +170,36 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 }
 
 // HandleReconnect implements [rta.SubscriptionHandler].
-func (h *subscriptionHandler) HandleReconnect(error) {}
+func (h *subscriptionHandler) HandleReconnect(err error) {
+	h.subscriptionMu.Lock()
+	defer h.subscriptionMu.Unlock()
+
+	if err != nil {
+		h.subscription, h.subscriptionData = nil, nil
+		return
+	}
+	if h.subscription == nil {
+		return
+	}
+
+	var data subscriptionData
+	if err := json.Unmarshal(h.subscription.Custom(), &data); err != nil {
+		h.log.Error("error decoding reconnected subscription custom",
+			slog.Any("error", err),
+			slog.String("data", string(h.subscription.Custom())),
+		)
+		h.subscription, h.subscriptionData = nil, nil
+		return
+	}
+	if data.ConnectionID == uuid.Nil {
+		h.log.Error("invalid reconnected subscription custom",
+			slog.String("data", string(h.subscription.Custom())),
+		)
+		h.subscription, h.subscriptionData = nil, nil
+		return
+	}
+	h.subscriptionData = &data
+}
 
 // parseReference parses a SessionReference from a resource identifier included
 // in a shoulder tap received over an RTA subscription.

@@ -61,6 +61,23 @@ func newTestConn() *Conn {
 	return conn
 }
 
+func TestDrainExpectedDoesNotResetSequences(t *testing.T) {
+	conn := newTestConn()
+	conn.expected[operationSubscribe] = map[uint32]chan<- *handshake{1: make(chan *handshake)}
+	conn.expected[operationUnsubscribe] = map[uint32]chan<- *handshake{1: make(chan *handshake)}
+	conn.sequences[operationSubscribe].Store(41)
+	conn.sequences[operationUnsubscribe].Store(42)
+
+	conn.drainExpected()
+
+	if got := conn.sequences[operationSubscribe].Load(); got != 41 {
+		t.Fatalf("subscribe sequence = %d, want 41", got)
+	}
+	if got := conn.sequences[operationUnsubscribe].Load(); got != 42 {
+		t.Fatalf("unsubscribe sequence = %d, want 42", got)
+	}
+}
+
 func TestConnReconnectsAndResubscribesAfterReadFailure(t *testing.T) {
 	originalURL := connectURL
 	defer func() { connectURL = originalURL }()

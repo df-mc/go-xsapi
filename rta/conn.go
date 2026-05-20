@@ -371,9 +371,11 @@ func (c *Conn) Wait(ctx context.Context) error {
 	return c.wait(ctx)
 }
 
-// drainExpected closes all pending response channels in c.expected, clears
-// the map, and resets all sequence counters to zero so the next sequenced
-// call will start from zero again. It is called when the connection is lost.
+// drainExpected closes all pending response channels in c.expected and clears
+// the map when the connection is lost. Sequence counters are intentionally not
+// reset: callers blocked on the old connection may still call release after
+// this returns, and reusing their sequence numbers could let those stale
+// releases delete response channels for new calls on the replacement socket.
 func (c *Conn) drainExpected() {
 	c.expectedMu.Lock()
 	for op := range operationCapacity {
@@ -381,7 +383,6 @@ func (c *Conn) drainExpected() {
 			delete(c.expected[op], seq)
 			close(ch)
 		}
-		c.sequences[op].Store(0)
 	}
 	c.expectedMu.Unlock()
 }

@@ -55,3 +55,22 @@ func TestClientCloseContextPreservesSubscriptionOnUnsubscribeError(t *testing.T)
 		t.Fatalf("unsubscribe attempts = %d, want 2", unsub.attempts)
 	}
 }
+
+func TestSubscriptionHandlerReconnectFailureClearsCachedSubscription(t *testing.T) {
+	subscription := &rta.Subscription{}
+	subscriptionData := &subscriptionData{ConnectionID: uuid.New()}
+	client := &Client{
+		subscription:     subscription,
+		subscriptionData: subscriptionData,
+	}
+	handler := &subscriptionHandler{Client: client}
+
+	handler.HandleReconnect(errors.New("reconnect failed"))
+
+	if client.subscription != nil {
+		t.Fatal("subscription was not cleared")
+	}
+	if client.subscriptionData != nil {
+		t.Fatal("subscription data was not cleared")
+	}
+}
