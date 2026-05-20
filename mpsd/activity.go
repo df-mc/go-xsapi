@@ -6,54 +6,76 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/google/uuid"
 )
 
-// Activities returns activity handles for open multiplayer sessions in the specified
-// Service Configuration ID (SCID) for all users.
+var (
+	errActivitiesRequiresCallerXUID = errors.New("mpsd: activities requires caller XUID")
+	errActivitiesRequiresXUID       = errors.New("mpsd: activities for users requires at least one xuid")
+)
+
+// Activities returns activity handles for open multiplayer sessions in the
+// caller's "people" social group for the specified Service Configuration ID
+// (SCID).
 func (c *Client) Activities(ctx context.Context, scid uuid.UUID, opts ...internal.RequestOption) ([]ActivityHandle, error) {
-	return c.ActivitiesForUsers(ctx, scid, nil, opts...)
+	if c.userInfo.XUID == "" {
+		return nil, errActivitiesRequiresCallerXUID
+	}
+	return c.activities(ctx, scid, searchRequestOwners{
+		People: &searchRequestPeople{
+			SocialGroup:     "people",
+			SocialGroupXUID: c.userInfo.XUID,
+		},
+	}, opts...)
 }
 
 // ActivitiesForUsers returns activity handles for open multiplayer sessions
 // associated with the specified XUIDs.
 // The Service Configuration ID (SCID) identifies the game to query.
-// If xuids is nil, it returns all open multiplayer sessions for the SCID.
 func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids []string, opts ...internal.RequestOption) ([]ActivityHandle, error) {
-	// searchRequestPeople specifies whose perspective is used when searching
-	// for activity handles to multiplayer sessions.
-	type searchRequestPeople struct {
-		// SocialGroup filters the results to users within the specified social group.
-		// It can be "people" or "favorites".
-		SocialGroup string `json:"moniker,omitempty"`
-		// SocialGroupXUID is the XUID of the user to whom the social group applies.
-		// In most cases, this is the caller's own XUID, since most games send search
-		// requests from the player's own perspective.
-		SocialGroupXUID string `json:"monikerXuid,omitempty"`
+	if len(xuids) == 0 {
+		return nil, errActivitiesRequiresXUID
 	}
-	type searchRequestOwners struct {
-		// XUIDs is a list that specifies user IDs to find all activities for.
-		XUIDs  []string            `json:"xuids,omitempty"`
-		People searchRequestPeople `json:"people,omitempty"`
-	}
-	// searchRequest represents the on-wire format used for searching
-	// activity handles to open multiplayer sessions in the directory.
-	type searchRequest struct {
-		// Type indicates the type for the request.
-		// For searchRequest, this is always "activity".
-		Type string `json:"type"`
-		// ServiceConfigID is the service configuration ID for this request.
-		// A Service Configuration ID (SCID) may be shared by various titles
-		// available on many platforms.
-		ServiceConfigID uuid.UUID `json:"scid"`
-		// Owner includes parameters used for querying activity handles
-		// for multiplayer sessions in the directory.
-		Owners searchRequestOwners `json:"owners"`
-	}
+	return c.activities(ctx, scid, searchRequestOwners{XUIDs: xuids}, opts...)
+}
 
+// searchRequestPeople specifies whose perspective is used when searching for
+// activity handles to multiplayer sessions.
+type searchRequestPeople struct {
+	// SocialGroup filters the results to users within the specified social group.
+	// It can be "people" or "favorites".
+	SocialGroup string `json:"moniker,omitempty"`
+	// SocialGroupXUID is the XUID of the user to whom the social group applies.
+	SocialGroupXUID string `json:"monikerXuid,omitempty"`
+}
+
+type searchRequestOwners struct {
+	// XUIDs is a list that specifies user IDs to find all activities for.
+	XUIDs []string `json:"xuids,omitempty"`
+	// People filters results to a social group owned by a specific user.
+	People *searchRequestPeople `json:"people,omitempty"`
+}
+
+// searchRequest represents the on-wire format used for searching activity
+// handles to open multiplayer sessions in the directory.
+type searchRequest struct {
+	// Type indicates the type for the request.
+	// For searchRequest, this is always "activity".
+	Type string `json:"type"`
+	// ServiceConfigID is the service configuration ID for this request.
+	// A Service Configuration ID (SCID) may be shared by various titles
+	// available on many platforms.
+	ServiceConfigID uuid.UUID `json:"scid"`
+	// Owner includes parameters used for querying activity handles
+	// for multiplayer sessions in the directory.
+	Owners searchRequestOwners `json:"owners"`
+}
+
+func (c *Client) activities(ctx context.Context, scid uuid.UUID, owners searchRequestOwners, opts ...internal.RequestOption) ([]ActivityHandle, error) {
 	var (
 		requestURL = endpoint.JoinPath("handles/query")
 		result     struct {
@@ -64,17 +86,10 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 	if err := internal.Do(ctx, c.client, http.MethodPost, requestURL.String(), searchRequest{
 		Type:            "activity",
 		ServiceConfigID: scid,
-		Owners: searchRequestOwners{
-			XUIDs: xuids,
-			People: searchRequestPeople{
-				SocialGroup:     "people",
-				SocialGroupXUID: c.userInfo.XUID,
-			},
-		},
-	}, &result, append(opts,
-		internal.RequestHeader("Content-Type", "application/json"),
+		Owners:          owners,
+	}, &result, slices.Concat(opts, []internal.RequestOption{
 		internal.ContractVersion(contractVersion),
-	)); err != nil {
+	})); err != nil {
 		return nil, err
 	}
 	return result.Activities, nil
@@ -99,10 +114,9 @@ func (s *Session) Invite(ctx context.Context, xuid, titleID string, opts ...inte
 		InviteAttributes: InviteAttributes{
 			TitleID: titleID,
 		},
-	}, &handle, append(opts,
-		internal.RequestHeader("Content-Type", "application/json"),
+	}, &handle, slices.Concat(opts, []internal.RequestOption{
 		internal.ContractVersion(contractVersion),
-	)); err != nil {
+	})); err != nil {
 		return nil, err
 	}
 	if handle == nil {
@@ -203,7 +217,6 @@ func (s *Session) writeActivity(ctx context.Context) error {
 		SessionReference: s.ref,
 		Version:          1,
 	}, nil, []internal.RequestOption{
-		internal.RequestHeader("Content-Type", "application/json"),
 		internal.ContractVersion(contractVersion),
 	})
 }

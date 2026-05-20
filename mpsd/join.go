@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -75,11 +76,11 @@ func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig
 	// Join the multiplayer session by updating the members field to add the caller as participant.
 	// This request call will fail if the multiplayer session does not exist.
 	requestURL := endpoint.JoinPath("handles", handleID.String(), "session").String()
-	req, err := internal.WithJSONBody(ctx, http.MethodPut, requestURL, d, append(opts,
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, requestURL, d, slices.Concat(opts, []internal.RequestOption{
 		internal.RequestHeader("Content-Type", "application/json"),
 		internal.RequestHeader("If-Match", "*"),
 		internal.ContractVersion(contractVersion),
-	))
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("make request: %w", err)
 	}
@@ -100,7 +101,7 @@ func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig
 		if err != nil {
 			return nil, fmt.Errorf("parse session reference from Content-Location header: %w", err)
 		}
-		return c.createSession(ctx, ref, resp)
+		return c.createSessionAndReconcile(ctx, ref, resp, payload.ConnectionID, "join")
 	default:
 		return nil, internal.UnexpectedStatusCode(resp)
 	}
