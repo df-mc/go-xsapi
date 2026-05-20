@@ -142,7 +142,9 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
-	h, err := c.call(ctx, operationUnsubscribe, []any{sub.ID()})
+	h, err := c.callWithPayload(ctx, operationUnsubscribe, func() []any {
+		return []any{sub.ID()}
+	})
 	if err != nil {
 		return err
 	}
@@ -175,13 +177,19 @@ var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 const reconnectSettleDelay = 50 * time.Millisecond
 
 func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {
+	return c.callWithPayload(ctx, op, func() []any {
+		return payload
+	})
+}
+
+func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []any) (*handshake, error) {
 	for {
 		if err := c.wait(ctx); err != nil {
 			return nil, err
 		}
 
 		seq := c.sequences[op].Add(1)
-		ch, err := c.expect(op, seq, payload)
+		ch, err := c.expect(op, seq, payload())
 		if err != nil {
 			continue
 		}

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -15,21 +17,41 @@ import (
 // The [http.Client] is used to authenticate handshake HTTP requests and is typically retrieved from
 // [github.com/df-mc/go-xsapi/v2.Client.HTTPClient].
 func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, error) {
+	return Dialer{ErrorLog: log}.DialContext(ctx, client)
+}
+
+// Dialer represents the options for establishing a Conn with real-time activity services.
+type Dialer struct {
+	Options  *websocket.DialOptions
+	ErrorLog *slog.Logger
+}
+
+// Dial calls DialContext with a 15 second timeout.
+func (d Dialer) Dial(client *http.Client) (*Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	return d.DialContext(ctx, client)
+}
+
+// DialContext establishes a connection with real-time activity service.
+func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, error) {
+	log := d.ErrorLog
 	if log == nil {
 		log = slog.Default()
 	}
 
-	d := &dialer{
-		client: client,
-		log:    log,
+	internalDialer := &dialer{
+		client:  client,
+		log:     log,
+		options: d.Options,
 	}
-	c, err := d.dial(ctx)
+	c, err := internalDialer.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
 	conn := &Conn{
 		conn:          c,
-		dialer:        d,
+		dialer:        internalDialer,
 		log:           log,
 		subscriptions: make(map[uint32]*Subscription),
 		pending:       make(map[*Subscription]struct{}),
@@ -43,16 +65,24 @@ func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, er
 }
 
 type dialer struct {
-	client *http.Client
-	log    *slog.Logger
+	client  *http.Client
+	log     *slog.Logger
+	options *websocket.DialOptions
 }
 
 // dial establishes a new WebSocket connection.
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
-	c, _, err := websocket.Dial(ctx, connectURL.String(), &websocket.DialOptions{
-		Subprotocols: []string{subprotocol},
-		HTTPClient:   d.client,
-	})
+	options := websocket.DialOptions{}
+	if d.options != nil {
+		options = *d.options
+	}
+	options.HTTPClient = d.client
+	options.Subprotocols = slices.Clone(options.Subprotocols)
+	if !slices.Contains(options.Subprotocols, subprotocol) {
+		options.Subprotocols = append(options.Subprotocols, subprotocol)
+	}
+
+	c, _, err := websocket.Dial(ctx, connectURL.String(), &options)
 	if err != nil {
 		return nil, err
 	}

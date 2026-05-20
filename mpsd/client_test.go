@@ -1,9 +1,14 @@
 package mpsd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/google/uuid"
@@ -72,5 +77,80 @@ func TestSubscriptionHandlerReconnectFailureClearsCachedSubscription(t *testing.
 	}
 	if client.subscriptionData != nil {
 		t.Fatal("subscription data was not cleared")
+	}
+}
+
+func TestSubscriptionHandlerReconnectRefreshesSessionConnectionID(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "session",
+	}
+	oldConnectionID := uuid.New()
+	newConnectionID := uuid.New()
+	requests := make(chan SessionDescription, 1)
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var request SessionDescription
+		if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		requests <- request
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body: io.NopCloser(bytes.NewReader([]byte(`{
+				"properties": {},
+				"members": {
+					"me": {
+						"properties": {
+							"system": {
+								"active": true,
+								"connection": "` + newConnectionID.String() + `"
+							}
+						}
+					}
+				}
+			}`))),
+			Header:  make(http.Header),
+			Request: req,
+		}, nil
+	})}
+	client := &Client{
+		client: httpClient,
+		sessions: map[string]*Session{
+			ref.URL().String(): {
+				client: &Client{client: httpClient},
+				ref:    ref,
+				cache: SessionDescription{
+					Members: map[string]*MemberDescription{
+						"me": {
+							Properties: &MemberProperties{
+								System: &MemberPropertiesSystem{
+									Active:     true,
+									Connection: oldConnectionID,
+								},
+							},
+						},
+					},
+				},
+				closed: make(chan struct{}),
+			},
+		},
+	}
+	handler := &subscriptionHandler{Client: client}
+
+	handler.refreshSessionConnections(newConnectionID)
+
+	select {
+	case request := <-requests:
+		got := request.Members["me"].Properties.System
+		if !got.Active {
+			t.Fatal("member was not marked active")
+		}
+		if got.Connection != newConnectionID {
+			t.Fatalf("connection ID = %v, want %v", got.Connection, newConnectionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for session connection update")
 	}
 }

@@ -94,7 +94,11 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 
 	// Connect to RTA services.
-	c.rta, err = rta.Dial(ctx, c.HTTPClient(), c.Log())
+	rtaDialer := config.RTADialer
+	if rtaDialer.ErrorLog == nil {
+		rtaDialer.ErrorLog = c.Log()
+	}
+	c.rta, err = rtaDialer.DialContext(ctx, c.HTTPClient())
 	if err != nil {
 		return nil, fmt.Errorf("dial RTA: %w", err)
 	}
@@ -123,6 +127,10 @@ type ClientConfig struct {
 	// Logger is the logger used by the client set and its underlying API
 	// clients. If nil, [slog.Default] is used.
 	Logger *slog.Logger
+
+	// RTADialer is used to establish a connection to Xbox Live RTA
+	// (Real-Time Activity) services.
+	RTADialer rta.Dialer
 
 	// EnableChat enables the chat functionality.
 	// EnableChat bool

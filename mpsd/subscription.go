@@ -172,33 +172,92 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 // HandleReconnect implements [rta.SubscriptionHandler].
 func (h *subscriptionHandler) HandleReconnect(err error) {
 	h.subscriptionMu.Lock()
-	defer h.subscriptionMu.Unlock()
 
 	if err != nil {
 		h.subscription, h.subscriptionData = nil, nil
+		h.subscriptionMu.Unlock()
 		return
 	}
 	if h.subscription == nil {
+		h.subscriptionMu.Unlock()
 		return
 	}
 
 	var data subscriptionData
 	if err := json.Unmarshal(h.subscription.Custom(), &data); err != nil {
-		h.log.Error("error decoding reconnected subscription custom",
+		h.logger().Error("error decoding reconnected subscription custom",
 			slog.Any("error", err),
 			slog.String("data", string(h.subscription.Custom())),
 		)
 		h.subscription, h.subscriptionData = nil, nil
+		h.subscriptionMu.Unlock()
 		return
 	}
 	if data.ConnectionID == uuid.Nil {
-		h.log.Error("invalid reconnected subscription custom",
+		h.logger().Error("invalid reconnected subscription custom",
 			slog.String("data", string(h.subscription.Custom())),
 		)
 		h.subscription, h.subscriptionData = nil, nil
+		h.subscriptionMu.Unlock()
 		return
 	}
+	oldData := h.subscriptionData
 	h.subscriptionData = &data
+	h.subscriptionMu.Unlock()
+
+	if oldData == nil || oldData.ConnectionID != data.ConnectionID {
+		h.refreshSessionConnections(data.ConnectionID)
+	}
+}
+
+func (h *subscriptionHandler) refreshSessionConnections(connectionID uuid.UUID) {
+	h.sessionsMu.RLock()
+	sessions := make([]*Session, 0, len(h.sessions))
+	for _, session := range h.sessions {
+		sessions = append(sessions, session)
+	}
+	h.sessionsMu.RUnlock()
+
+	for _, session := range sessions {
+		go h.refreshSessionConnection(session, connectionID)
+	}
+}
+
+func (h *subscriptionHandler) refreshSessionConnection(session *Session, connectionID uuid.UUID) {
+	ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
+	defer cancel()
+
+	deleted, err := session.update(ctx, SessionDescription{
+		Members: map[string]*MemberDescription{
+			"me": {
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{
+						Active:     true,
+						Connection: connectionID,
+					},
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		h.logger().Error("error updating multiplayer session connection ID",
+			slog.Any("error", err),
+			slog.Group("session",
+				slog.String("ref", session.Reference().URL().String()),
+			),
+		)
+		return
+	}
+	if deleted {
+		session.markDeleted()
+	}
+}
+
+func (h *subscriptionHandler) logger() *slog.Logger {
+	if h.log != nil {
+		return h.log
+	}
+	return slog.Default()
 }
 
 // parseReference parses a SessionReference from a resource identifier included
