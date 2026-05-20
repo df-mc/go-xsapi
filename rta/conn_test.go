@@ -58,6 +58,11 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 func newTestConn() *Conn {
 	conn := &Conn{}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
+	conn.subscriptions = make(map[uint32]*Subscription)
+	conn.pending = make(map[*Subscription]struct{})
+	for i := range cap(conn.expected) {
+		conn.expected[i] = make(map[uint32]chan<- *handshake)
+	}
 	return conn
 }
 
@@ -75,6 +80,51 @@ func TestDrainExpectedDoesNotResetSequences(t *testing.T) {
 	}
 	if got := conn.sequences[operationUnsubscribe].Load(); got != 42 {
 		t.Fatalf("unsubscribe sequence = %d, want 42", got)
+	}
+}
+
+func TestSubscribeRetriesIfConnectionChangesBeforeRegistration(t *testing.T) {
+	conn := newTestConn()
+	oldReaderDone := make(chan struct{})
+	newReaderDone := make(chan struct{})
+	conn.readerDone = oldReaderDone
+
+	var calls atomic.Int32
+	conn.dialer = &dialer{}
+	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, error) {
+		called := calls.Add(1)
+		ch := make(chan *handshake, 1)
+		if called == 1 {
+			close(oldReaderDone)
+			conn.readerDone = newReaderDone
+			ch <- &handshake{
+				status:  StatusOK,
+				payload: []json.RawMessage{json.RawMessage(`1`), json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`)},
+			}
+			return ch, nil
+		}
+		ch <- &handshake{
+			status:  StatusOK,
+			payload: []json.RawMessage{json.RawMessage(`2`), json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000002"}`)},
+		}
+		return ch, nil
+	}
+
+	subscription, err := conn.Subscribe(context.Background(), "resource")
+	if err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("subscribe attempts = %d, want 2", got)
+	}
+	if got := subscription.id(); got != 2 {
+		t.Fatalf("subscription ID = %d, want 2", got)
+	}
+	if current := conn.subscriptions[2]; current != subscription {
+		t.Fatal("subscription was not registered with the replacement connection ID")
+	}
+	if _, ok := conn.subscriptions[1]; ok {
+		t.Fatal("stale subscription ID was registered")
 	}
 }
 

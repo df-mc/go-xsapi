@@ -47,6 +47,9 @@ func operationToType(op uint8) uint32 {
 }
 
 func (c *Conn) expect(op uint8, sequence uint32, payload []any) (<-chan *handshake, error) {
+	if c.expectHook != nil {
+		return c.expectHook(op, sequence, payload)
+	}
 	hand := make(chan *handshake, 1)
 	c.expectedMu.Lock()
 	c.expected[op][sequence] = hand

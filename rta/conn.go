@@ -36,6 +36,7 @@ type Conn struct {
 	sequences  [operationCapacity]atomic.Uint32
 	expected   [operationCapacity]map[uint32]chan<- *handshake
 	expectedMu sync.RWMutex
+	expectHook func(op uint8, sequence uint32, payload []any) (<-chan *handshake, error)
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
@@ -76,14 +77,21 @@ type Conn struct {
 // to be used during the handshake. A Subscription may be returned, which contains an ID
 // and Custom data as the result of handshake.
 func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
-	sub, err := c.subscribe(ctx, resourceURI)
-	if err != nil {
-		return nil, err
+	for {
+		readerDone := c.currentReaderDone()
+		sub, err := c.subscribe(ctx, resourceURI)
+		if err != nil {
+			return nil, err
+		}
+		c.subscriptionsMu.Lock()
+		if !c.reconnectWaveStable(readerDone) {
+			c.subscriptionsMu.Unlock()
+			continue
+		}
+		c.subscriptions[sub.id()] = sub
+		c.subscriptionsMu.Unlock()
+		return sub, nil
 	}
-	c.subscriptionsMu.Lock()
-	c.subscriptions[sub.id()] = sub
-	c.subscriptionsMu.Unlock()
-	return sub, nil
 }
 
 // subscribe performs a sequenced call to subscribe to the given resource URI using
