@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -45,6 +47,8 @@ type Client struct {
 	rta      *rta.Conn
 	userInfo xsts.UserInfo
 	log      *slog.Logger
+	closeMu  sync.Mutex
+	closing  atomic.Bool
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.
@@ -99,21 +103,38 @@ func (c *Client) Close() error {
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+
+	c.closing.Store(true)
+	defer c.closing.Store(false)
+
 	c.subscriptionMu.Lock()
 	subscription := c.subscription
+	subscriptionData := c.subscriptionData
+	if subscription != nil {
+		c.subscription, c.subscriptionData = nil, nil
+	}
 	c.subscriptionMu.Unlock()
 
 	if subscription != nil {
 		if err := c.unsub.Unsubscribe(ctx, subscription); err != nil {
+			c.subscriptionMu.Lock()
+			if c.subscription == nil {
+				c.subscription = subscription
+				c.subscriptionData = subscriptionData
+			}
+			c.subscriptionMu.Unlock()
 			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
 	}
+	return nil
+}
 
-	c.subscriptionMu.Lock()
-	if c.subscription == subscription {
-		c.subscription, c.subscriptionData = nil, nil
+func (c *Client) closingErr() error {
+	if c.closing.Load() {
+		return net.ErrClosed
 	}
-	c.subscriptionMu.Unlock()
 	return nil
 }
 

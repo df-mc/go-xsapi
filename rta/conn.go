@@ -81,7 +81,7 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 		return nil, err
 	}
 	c.subscriptionsMu.Lock()
-	c.subscriptions[sub.id] = sub
+	c.subscriptions[sub.id()] = sub
 	c.subscriptionsMu.Unlock()
 	return sub, nil
 }
@@ -129,10 +129,10 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 
 			h: NopSubscriptionHandler{}, // fast-path for defaulting handler without locking
 		}
-		if err := json.Unmarshal(h.payload[0], &sub.id); err != nil {
+		if err := json.Unmarshal(h.payload[0], &sub.ID); err != nil {
 			return nil, fmt.Errorf("decode subscription ID: %w", err)
 		}
-		sub.custom = h.payload[1]
+		sub.Custom = h.payload[1]
 		return sub, nil
 	default:
 		return nil, unexpectedStatusCode(h.status, h.payload)
@@ -143,7 +143,7 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	h, err := c.callWithPayload(ctx, operationUnsubscribe, func() []any {
-		return []any{sub.ID()}
+		return []any{sub.id()}
 	})
 	if err != nil {
 		return err
@@ -153,7 +153,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		return unexpectedStatusCode(h.status, h.payload)
 	}
 	c.subscriptionsMu.Lock()
-	delete(c.subscriptions, sub.ID())
+	delete(c.subscriptions, sub.id())
 	c.subscriptionsMu.Unlock()
 	return nil
 }
@@ -242,31 +242,32 @@ func (c *Conn) callDuringReconnect(ctx context.Context, op uint8, payload []any)
 // Subscription represents a subscription contracted with the resource URI available through
 // the real-time activity service. A Subscription may be contracted via Conn.Subscribe.
 type Subscription struct {
-	id          uint32
-	custom      json.RawMessage
+	// ID is the ID assigned to the Subscription within a single RTA connection.
+	ID uint32
+	// Custom is the custom data associated with the Subscription.
+	//
+	// The format and semantics of this data depend on the resource the
+	// subscription is targeting. It is received alongside the successful
+	// subscription response when the Subscription was established. The custom
+	// data may change if the Conn has reconnected to RTA service.
+	Custom json.RawMessage
+
 	resourceURI string
 
 	h  SubscriptionHandler
 	mu sync.RWMutex
 }
 
-// ID returns the ID assigned to the [Subscription] within a single RTA connection.
-func (s *Subscription) ID() uint32 {
+func (s *Subscription) id() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.id
+	return s.ID
 }
 
-// Custom returns the custom data associated with the [Subscription].
-//
-// The format and semantics of this data depend on the resource the
-// subscription is targeting. It is received alongside the successful
-// subscription response when the [Subscription] was established.
-// The custom data may change if the Conn has reconnected to RTA service.
-func (s *Subscription) Custom() json.RawMessage {
+func (s *Subscription) custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.custom
+	return s.Custom
 }
 
 // ResourceURI returns the URI identifying the resource which the [Subscription] is targeting.
@@ -522,8 +523,8 @@ func (c *Conn) reconnect(done chan struct{}) {
 		for i, subscription := range successes {
 			successDone[i] = c.startReconnectSuccess(subscription)
 			c.log.Debug("resubscribed", slog.Group("subscription",
-				slog.Uint64("id", uint64(subscription.ID())),
-				slog.String("custom", string(subscription.Custom())),
+				slog.Uint64("id", uint64(subscription.id())),
+				slog.String("custom", string(subscription.custom())),
 				slog.String("resourceURI", subscription.ResourceURI()),
 			))
 		}
@@ -634,7 +635,7 @@ func (c *Conn) resubscribe() []*Subscription {
 				}(subscription, err)
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
-						slog.Uint64("id", uint64(subscription.ID())),
+						slog.Uint64("id", uint64(subscription.id())),
 						slog.String("resourceURI", subscription.ResourceURI()),
 					),
 					slog.Any("error", err),
@@ -643,12 +644,13 @@ func (c *Conn) resubscribe() []*Subscription {
 			}
 
 			subscription.mu.Lock()
-			subscription.id = sub.id
-			subscription.custom = sub.custom
+			subscription.ID = sub.id()
+			subscription.Custom = sub.custom()
+			subscriptionID := subscription.ID
 			subscription.mu.Unlock()
 
 			c.subscriptionsMu.Lock()
-			c.subscriptions[subscription.id] = subscription
+			c.subscriptions[subscriptionID] = subscription
 			c.subscriptionsMu.Unlock()
 
 			successesMu.Lock()
@@ -761,7 +763,7 @@ func (c *Conn) Active(sub *Subscription) bool {
 	}
 	c.subscriptionsMu.RLock()
 	defer c.subscriptionsMu.RUnlock()
-	current, ok := c.subscriptions[sub.ID()]
+	current, ok := c.subscriptions[sub.id()]
 	return ok && current == sub
 }
 
