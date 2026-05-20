@@ -719,17 +719,18 @@ func (c *Conn) reconnectWaveStable(readerDone chan struct{}) bool {
 	if c.reconnectNext.Load() {
 		return false
 	}
-	if readerDone != nil {
-		if c.currentReaderDone() != readerDone {
-			return false
-		}
-		select {
-		case <-readerDone:
-			return false
-		default:
-		}
+	if readerDone == nil {
+		return true
 	}
-	return !c.reconnectNext.Load()
+	if c.currentReaderDone() != readerDone {
+		return false
+	}
+	select {
+	case <-readerDone:
+		return false
+	default:
+		return true
+	}
 }
 
 func (c *Conn) startReconnectFailureHandler() {
