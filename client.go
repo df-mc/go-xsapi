@@ -222,7 +222,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 		}
-		if err := policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
+		if err := policy.SignWithError(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
 			return nil, fmt.Errorf("sign request: %w", err)
 		}
 	} else {
@@ -361,13 +361,13 @@ func (c *Client) CloseContext(ctx context.Context) error {
 // AcceptLanguage returns a [internal.RequestOption] that appends the given
 // language tags to the 'Accept-Language' header on outgoing requests,
 // preserving any tags already present in the header.
-func AcceptLanguage(tags []language.Tag) internal.RequestOption {
+func AcceptLanguage(tags []language.Tag) RequestOption {
 	return internal.AcceptLanguage(tags)
 }
 
 // RequestHeader returns a [internal.RequestOption] that sets a request header
 // with the given name and value on outgoing requests.
-func RequestHeader(key, value string) internal.RequestOption {
+func RequestHeader(key, value string) RequestOption {
 	return internal.RequestHeader(key, value)
 }
 
@@ -377,7 +377,7 @@ func RequestHeader(key, value string) internal.RequestOption {
 // Options must be applied to the request using [Apply].
 //
 // A RequestOption must be reusable and must not hold any per-request state.
-type RequestOption internal.RequestOption
+type RequestOption = internal.RequestOption
 
 // WithoutAuthHeaders returns a new request with exclusions list set.
 // This is useful when the caller does not require any auth-specific header

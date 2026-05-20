@@ -90,7 +90,7 @@ func Title(ctx context.Context, token interface{ SetAuthHeader(req *http.Request
 	}
 	req.Header.Set("x-xbl-contract-version", "1")
 	token.SetAuthHeader(req)
-	if err := AuthPolicy.Sign(req, nil, proofKey, timestamp.Now()); err != nil {
+	if err := AuthPolicy.SignWithError(req, nil, proofKey, timestamp.Now()); err != nil {
 		return nil, fmt.Errorf("xal/nsal: sign request: %w", err)
 	}
 

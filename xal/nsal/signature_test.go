@@ -20,7 +20,7 @@ func TestGenerateRejectsNonP256Key(t *testing.T) {
 		t.Fatalf("make request: %v", err)
 	}
 
-	_, err = AuthPolicy.Generate(req, nil, key, time.Unix(0, 0))
+	_, err = AuthPolicy.GenerateWithError(req, nil, key, time.Unix(0, 0))
 	if !errors.Is(err, errUnsupportedSignatureKeyCurve) {
 		t.Fatalf("Generate error = %v, want %v", err, errUnsupportedSignatureKeyCurve)
 	}
