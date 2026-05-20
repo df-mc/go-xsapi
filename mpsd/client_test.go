@@ -17,10 +17,21 @@ import (
 type fakeUnsubscriber struct {
 	attempts int
 	failures int
+	called   chan struct{}
+	release  chan struct{}
 }
 
 func (f *fakeUnsubscriber) Unsubscribe(context.Context, *rta.Subscription) error {
 	f.attempts++
+	if f.called != nil {
+		select {
+		case f.called <- struct{}{}:
+		default:
+		}
+	}
+	if f.release != nil {
+		<-f.release
+	}
 	if f.attempts <= f.failures {
 		return errors.New("unsubscribe failed")
 	}
@@ -77,6 +88,46 @@ func TestSubscriptionHandlerReconnectFailureClearsCachedSubscription(t *testing.
 	}
 	if client.subscriptionData != nil {
 		t.Fatal("subscription data was not cleared")
+	}
+}
+
+func TestClientCloseContextDoesNotHoldSubscriptionMuDuringUnsubscribe(t *testing.T) {
+	subscription := &rta.Subscription{}
+	unsub := &fakeUnsubscriber{
+		called:  make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	client := &Client{
+		subscription:     subscription,
+		subscriptionData: &subscriptionData{ConnectionID: uuid.New()},
+		unsub:            unsub,
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- client.CloseContext(context.Background())
+	}()
+
+	select {
+	case <-unsub.called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for unsubscribe")
+	}
+
+	handlerDone := make(chan struct{})
+	go func() {
+		handler := &subscriptionHandler{Client: client}
+		handler.HandleReconnect(errors.New("reconnect failed"))
+		close(handlerDone)
+	}()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("HandleReconnect blocked behind CloseContext unsubscribe")
+	}
+	close(unsub.release)
+	if err := <-done; err != nil {
+		t.Fatalf("CloseContext returned error: %v", err)
 	}
 }
 

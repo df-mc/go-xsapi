@@ -100,14 +100,20 @@ func (c *Client) Close() error {
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
 	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
+	subscription := c.subscription
+	c.subscriptionMu.Unlock()
 
-	if c.subscription != nil {
-		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
+	if subscription != nil {
+		if err := c.unsub.Unsubscribe(ctx, subscription); err != nil {
 			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
+	}
+
+	c.subscriptionMu.Lock()
+	if c.subscription == subscription {
 		c.subscription, c.subscriptionData = nil, nil
 	}
+	c.subscriptionMu.Unlock()
 	return nil
 }
 

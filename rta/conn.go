@@ -302,21 +302,23 @@ type SubscriptionHandler interface {
 	// For example, in Social API, an event is received when a user adds or
 	// removes the caller.
 	HandleEvent(custom json.RawMessage)
+}
 
-	// HandleReconnect is called when the Conn has reconnected to the RTA service
-	// and the subscription has been re-established on the new connection.
-	//
-	// If err is non-nil, the re-subscribe has failed. In this case, the [Subscription]
-	// still holds the ID and custom data from the previous connection. The handler does
-	// not need to call [Conn.Unsubscribe].
-	//
-	// If err is nil, the Subscription was successfully re-established on the
-	// new connection and has been assigned a new ID. This callback is fired as
-	// soon as that re-subscribe handshake succeeds, before the reconnect wave's
-	// optional stabilization delay has elapsed. The custom data may also differ
-	// from the previous connection depending on the targeting resource. In this
-	// case, the handler remains responsible for calling [Conn.Unsubscribe] during
-	// cleanup.
+// ReconnectHandler is an optional extension interface for subscriptions that
+// need to react when the Conn has reconnected to the RTA service and the
+// subscription has been re-established on the new connection.
+//
+// If err is non-nil, the re-subscribe has failed. In this case, the
+// [Subscription] still holds the ID and custom data from the previous
+// connection. The handler does not need to call [Conn.Unsubscribe].
+//
+// If err is nil, the Subscription was successfully re-established on the new
+// connection and has been assigned a new ID. This callback is fired as soon as
+// that re-subscribe handshake succeeds, before the reconnect wave's optional
+// stabilization delay has elapsed. The custom data may also differ from the
+// previous connection depending on the targeting resource. In this case, the
+// handler remains responsible for calling [Conn.Unsubscribe] during cleanup.
+type ReconnectHandler interface {
 	HandleReconnect(err error)
 }
 
@@ -331,7 +333,6 @@ type ReconnectReadyHandler interface {
 type NopSubscriptionHandler struct{}
 
 func (NopSubscriptionHandler) HandleEvent(json.RawMessage) {}
-func (NopSubscriptionHandler) HandleReconnect(error)       {}
 
 // write sends a JSON array composed of the given type and payload over the
 // WebSocket connection. A background context is used intentionally, because
@@ -629,7 +630,7 @@ func (c *Conn) resubscribe() []*Subscription {
 				c.startReconnectFailureHandler()
 				go func(subscription *Subscription, err error) {
 					defer c.finishReconnectFailureHandler()
-					subscription.handler().HandleReconnect(err)
+					c.notifyReconnect(subscription, err)
 				}(subscription, err)
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
@@ -708,7 +709,15 @@ func (c *Conn) finishReconnectFailureHandler() {
 // notifyReconnectSuccess delivers reconnect success as soon as the
 // subscription handshake on the replacement connection has succeeded.
 func (c *Conn) notifyReconnectSuccess(subscription *Subscription) {
-	subscription.handler().HandleReconnect(nil)
+	c.notifyReconnect(subscription, nil)
+}
+
+func (c *Conn) notifyReconnect(subscription *Subscription, err error) {
+	handler, ok := subscription.handler().(ReconnectHandler)
+	if !ok {
+		return
+	}
+	handler.HandleReconnect(err)
 }
 
 // startReconnectSuccess launches notifyReconnectSuccess asynchronously and
