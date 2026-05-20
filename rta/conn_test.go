@@ -128,6 +128,33 @@ func TestSubscribeRetriesIfConnectionChangesBeforeRegistration(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeDeletesAttemptedIDAfterReconnectRace(t *testing.T) {
+	conn := newTestConn()
+	subscription := &Subscription{ID: 1}
+	subscription.setCurrent(1, nil)
+	conn.subscriptions[1] = subscription
+	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, error) {
+		if got := payload[0].(uint32); got != 1 {
+			t.Fatalf("unsubscribe ID = %d, want 1", got)
+		}
+		subscription.setCurrent(2, nil)
+		conn.subscriptions[2] = subscription
+		ch := make(chan *handshake, 1)
+		ch <- &handshake{status: StatusOK}
+		return ch, nil
+	}
+
+	if err := conn.Unsubscribe(context.Background(), subscription); err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	if _, ok := conn.subscriptions[1]; ok {
+		t.Fatal("old subscription ID was not deleted")
+	}
+	if current := conn.subscriptions[2]; current != subscription {
+		t.Fatal("replacement subscription ID was deleted")
+	}
+}
+
 func TestConnReconnectsAndResubscribesAfterReadFailure(t *testing.T) {
 	originalURL := connectURL
 	defer func() { connectURL = originalURL }()

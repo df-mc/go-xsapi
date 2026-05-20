@@ -151,8 +151,10 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
+	var id uint32
 	h, err := c.callWithPayload(ctx, operationUnsubscribe, func() []any {
-		return []any{sub.id()}
+		id = sub.id()
+		return []any{id}
 	})
 	if err != nil {
 		return err
@@ -162,7 +164,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		return unexpectedStatusCode(h.status, h.payload)
 	}
 	c.subscriptionsMu.Lock()
-	delete(c.subscriptions, sub.id())
+	delete(c.subscriptions, id)
 	c.subscriptionsMu.Unlock()
 	return nil
 }
