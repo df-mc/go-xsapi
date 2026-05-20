@@ -56,11 +56,11 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	// The custom data includes a connection ID which can be used for the
 	// Connection field in the member constants for receiving notifications for
 	// the changes to its participating multiplayer session.
-	if err := json.Unmarshal(c.subscription.Custom, &c.subscriptionData); err != nil {
+	if err := json.Unmarshal(c.subscription.CurrentCustom(), &c.subscriptionData); err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
 	}
 	if c.subscriptionData == nil || c.subscriptionData.ConnectionID == uuid.Nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.Custom)
+		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.CurrentCustom())
 	}
 	c.subscription.Handle(&subscriptionHandler{
 		Client: c,
@@ -194,10 +194,10 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 	}
 
 	var data subscriptionData
-	if err := json.Unmarshal(h.subscription.Custom, &data); err != nil {
+	if err := json.Unmarshal(h.subscription.CurrentCustom(), &data); err != nil {
 		h.logger().Error("error decoding reconnected subscription custom",
 			slog.Any("error", err),
-			slog.String("data", string(h.subscription.Custom)),
+			slog.String("data", string(h.subscription.CurrentCustom())),
 		)
 		h.subscription, h.subscriptionData = nil, nil
 		h.subscriptionMu.Unlock()
@@ -205,7 +205,7 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 	}
 	if data.ConnectionID == uuid.Nil {
 		h.logger().Error("invalid reconnected subscription custom",
-			slog.String("data", string(h.subscription.Custom)),
+			slog.String("data", string(h.subscription.CurrentCustom())),
 		)
 		h.subscription, h.subscriptionData = nil, nil
 		h.subscriptionMu.Unlock()

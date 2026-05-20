@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/google/uuid"
@@ -204,4 +206,82 @@ func TestSubscriptionHandlerReconnectRefreshesSessionConnectionID(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for session connection update")
 	}
+}
+
+func TestSubscriptionHandlerReconnectUsesCurrentSubscriptionCustom(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "session",
+	}
+	oldConnectionID := uuid.New()
+	newConnectionID := uuid.New()
+	requests := make(chan SessionDescription, 1)
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var request SessionDescription
+		if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		requests <- request
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body: io.NopCloser(bytes.NewReader([]byte(`{
+				"properties": {},
+				"members": {
+					"me": {
+						"properties": {
+							"system": {
+								"active": true,
+								"connection": "` + newConnectionID.String() + `"
+							}
+						}
+					}
+				}
+			}`))),
+			Header:  make(http.Header),
+			Request: req,
+		}, nil
+	})}
+	session := &Session{
+		client: &Client{client: httpClient},
+		ref:    ref,
+		closed: make(chan struct{}),
+	}
+	subscription := &rta.Subscription{
+		Custom: []byte(`{"ConnectionId":"` + oldConnectionID.String() + `"}`),
+	}
+	setSubscriptionCurrentForTest(subscription, 1, []byte(`{"ConnectionId":"`+newConnectionID.String()+`"}`))
+	client := &Client{
+		client:           httpClient,
+		subscription:     subscription,
+		subscriptionData: &subscriptionData{ConnectionID: oldConnectionID},
+		sessions: map[string]*Session{
+			ref.URL().String(): session,
+		},
+	}
+	handler := &subscriptionHandler{Client: client}
+
+	handler.HandleReconnect(nil)
+
+	select {
+	case request := <-requests:
+		got := request.Members["me"].Properties.System.Connection
+		if got != newConnectionID {
+			t.Fatalf("connection ID = %v, want %v", got, newConnectionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for session connection update")
+	}
+}
+
+func setSubscriptionCurrentForTest(subscription *rta.Subscription, id uint32, custom []byte) {
+	value := reflect.ValueOf(subscription).Elem()
+	setUnexportedFieldForTest(value.FieldByName("currentID"), reflect.ValueOf(id))
+	setUnexportedFieldForTest(value.FieldByName("currentCustom"), reflect.ValueOf(json.RawMessage(custom)))
+	setUnexportedFieldForTest(value.FieldByName("currentSet"), reflect.ValueOf(true))
+}
+
+func setUnexportedFieldForTest(field, value reflect.Value) {
+	reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(value)
 }

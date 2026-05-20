@@ -133,9 +133,7 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 			return nil, fmt.Errorf("decode subscription ID: %w", err)
 		}
 		sub.Custom = h.payload[1]
-		sub.currentID = sub.ID
-		sub.currentCustom = sub.Custom
-		sub.currentSet = true
+		sub.setCurrent(sub.ID, sub.Custom)
 		return sub, nil
 	default:
 		return nil, unexpectedStatusCode(h.status, h.payload)
@@ -273,6 +271,14 @@ func (s *Subscription) id() uint32 {
 	return s.ID
 }
 
+func (s *Subscription) setCurrent(id uint32, custom json.RawMessage) {
+	s.mu.Lock()
+	s.currentID = id
+	s.currentCustom = custom
+	s.currentSet = true
+	s.mu.Unlock()
+}
+
 func (s *Subscription) custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -280,6 +286,13 @@ func (s *Subscription) custom() json.RawMessage {
 		return s.currentCustom
 	}
 	return s.Custom
+}
+
+// CurrentCustom returns the current custom data associated with the
+// Subscription. Unlike the exported Custom field, this value is updated when
+// the subscription is re-established after an RTA reconnect.
+func (s *Subscription) CurrentCustom() json.RawMessage {
+	return s.custom()
 }
 
 // ResourceURI returns the URI identifying the resource which the [Subscription] is targeting.
@@ -658,11 +671,7 @@ func (c *Conn) resubscribe() []*Subscription {
 			}
 
 			subscriptionID := sub.id()
-			subscription.mu.Lock()
-			subscription.currentID = subscriptionID
-			subscription.currentCustom = sub.custom()
-			subscription.currentSet = true
-			subscription.mu.Unlock()
+			subscription.setCurrent(subscriptionID, sub.custom())
 
 			c.subscriptionsMu.Lock()
 			c.subscriptions[subscriptionID] = subscription
