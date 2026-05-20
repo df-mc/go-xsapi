@@ -49,11 +49,11 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	// The custom data includes a connection ID which can be used for the
 	// Connection field in the member constants for receiving notifications for
 	// the changes to its participating multiplayer session.
-	if err := json.Unmarshal(c.subscription.Custom, &c.subscriptionData); err != nil {
+	if err := json.Unmarshal(c.subscription.Custom(), &c.subscriptionData); err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
 	}
 	if c.subscriptionData == nil || c.subscriptionData.ConnectionID == uuid.Nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.Custom)
+		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.Custom())
 	}
 	c.subscription.Handle(&subscriptionHandler{
 		Client: c,
@@ -168,6 +168,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 	}
 	h.sessionsMu.RUnlock()
 }
+
+// HandleReconnect implements [rta.SubscriptionHandler].
+func (h *subscriptionHandler) HandleReconnect(error) {}
 
 // parseReference parses a SessionReference from a resource identifier included
 // in a shoulder tap received over an RTA subscription.

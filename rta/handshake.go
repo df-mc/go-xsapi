@@ -2,8 +2,7 @@ package rta
 
 import (
 	"encoding/json"
-	"strconv"
-	"strings"
+	"fmt"
 )
 
 type handshake struct {
@@ -47,14 +46,15 @@ func operationToType(op uint8) uint32 {
 	}
 }
 
-func (c *Conn) shake(op uint8, sequence uint32, payload []any) (<-chan *handshake, error) {
-	if err := c.write(operationToType(op), append([]any{sequence}, payload...)); err != nil {
-		return nil, err
-	}
-	hand := make(chan *handshake)
+func (c *Conn) expect(op uint8, sequence uint32, payload []any) (<-chan *handshake, error) {
+	hand := make(chan *handshake, 1)
 	c.expectedMu.Lock()
 	c.expected[op][sequence] = hand
 	c.expectedMu.Unlock()
+	if err := c.write(operationToType(op), append([]any{sequence}, payload...)); err != nil {
+		c.release(op, sequence)
+		return nil, err
+	}
 	return hand, nil
 }
 
@@ -70,15 +70,10 @@ type UnexpectedStatusError struct {
 }
 
 func (e *UnexpectedStatusError) Error() string {
-	b := &strings.Builder{}
-	b.WriteString("rta: code ")
-	b.WriteString(strconv.FormatInt(int64(e.Code), 10))
 	if e.Message != "" {
-		b.WriteByte(':')
-		b.WriteByte(' ')
-		b.WriteString(e.Message)
+		return fmt.Sprintf("rta: code: %d: %s", e.Code, e.Message)
 	}
-	return b.String()
+	return fmt.Sprintf("rta: code: %d", e.Code)
 }
 
 const (
