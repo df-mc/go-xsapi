@@ -69,7 +69,7 @@ func (c *Client) presence(ctx context.Context, selector string, opts []internal.
 
 // Batch returns presences for all users matching the filters in the request.
 func (c *Client) Batch(ctx context.Context, request BatchRequest, opts ...internal.RequestOption) (presences []*Presence, err error) {
-	requestURL := endpoint.JoinPath("/users/batch").String()
+	requestURL := endpoint.JoinPath("users", "batch").String()
 	if err = internal.Do(ctx, c.client, http.MethodPost, requestURL, request, &presences, append(opts,
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.RequestHeader("Content-Type", "application/json"),
@@ -145,7 +145,8 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
-		"/devices/current/titles/current",
+		"devices", "current",
+		"titles", "current",
 	).String()
 
 	// This request is a DELETE call but returns 200 OK instead of 204 No Content.
@@ -162,7 +163,8 @@ func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...inter
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
-		"/devices/current/titles/current",
+		"devices", "current",
+		"titles", "current",
 	).String()
 	return internal.Do(ctx, c.client, http.MethodPost, requestURL, request, nil, append(opts,
 		contractVersion,

@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -37,7 +39,12 @@ type SignaturePolicy struct {
 //
 // The key must match the proof key used in the authentication request, and the timestamp
 // should be as close to the server time as possible to avoid rejection.
-func (policy SignaturePolicy) Generate(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) []byte {
+//
+// Generate returns an error if key is nil, key is not P-256, or if [ecdsa.Sign] fails.
+func (policy SignaturePolicy) Generate(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) ([]byte, error) {
+	if err := validateSignatureKey(key); err != nil {
+		return nil, err
+	}
 	currentTime := windowsTimestamp(timestamp)
 	hash := sha256.New()
 
@@ -79,7 +86,10 @@ func (policy SignaturePolicy) Generate(request *http.Request, body []byte, key *
 
 	// Sign the checksum produced, and combine the 'r' and 's' into a single signature.
 	// Encode r and s as 32-byte, zero-padded big-endian values so the P-256 signature is always exactly 64 bytes long.
-	r, s, _ := ecdsa.Sign(rand.Reader, key, hash.Sum(nil))
+	r, s, err := ecdsa.Sign(rand.Reader, key, hash.Sum(nil))
+	if err != nil {
+		return nil, fmt.Errorf("ecdsa sign: %w", err)
+	}
 	signature := make([]byte, 64)
 	r.FillBytes(signature[:32])
 	s.FillBytes(signature[32:])
@@ -90,7 +100,7 @@ func (policy SignaturePolicy) Generate(request *http.Request, body []byte, key *
 	_ = binary.Write(buf, binary.BigEndian, currentTime)
 
 	// Append the signature to the other 12 bytes, and encode the signature with standard base64 encoding.
-	return append(buf.Bytes(), signature...)
+	return append(buf.Bytes(), signature...), nil
 }
 
 // Sign signs the request and sets the 'Signature' header. The provided request
@@ -98,15 +108,36 @@ func (policy SignaturePolicy) Generate(request *http.Request, body []byte, key *
 // be used to sign the request, which must be same from the ProofKey field of
 // authentication requests. The timestamp is included in the signature data
 // and must be close to the server time as possible.
-func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) {
-	signature := policy.Generate(request, body, key, timestamp)
+//
+// Sign returns an error if signature computation fails.
+func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) error {
+	signature, err := policy.Generate(request, body, key, timestamp)
+	if err != nil {
+		return err
+	}
 	request.Header.Set("Signature", base64.StdEncoding.EncodeToString(signature))
+	return nil
 }
 
 // AuthPolicy is the hardcoded signature policy used for authentication/authorization
 // requests for Xbox Live, including XASD, XAST, XASU, and XSTS.
 var AuthPolicy = SignaturePolicy{
 	Version: 1,
+}
+
+var errUnsupportedSignatureKeyCurve = errors.New("xal/nsal: signature key must use P-256")
+
+func validateSignatureKey(key *ecdsa.PrivateKey) error {
+	if key == nil {
+		return errors.New("xal/nsal: signature key must be non-nil")
+	}
+	if key.Curve == nil {
+		return errUnsupportedSignatureKeyCurve
+	}
+	if params := key.Curve.Params(); params == nil || params.Name != "P-256" || params.BitSize != 256 {
+		return errUnsupportedSignatureKeyCurve
+	}
+	return nil
 }
 
 // windowsTimestamp returns a Windows specific timestamp. It has a certain offset from Unix time

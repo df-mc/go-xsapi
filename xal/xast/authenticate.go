@@ -20,6 +20,12 @@ import (
 )
 
 func Authenticate(ctx context.Context, config xal.Config, deviceToken *xasd.Token, proofKey *ecdsa.PrivateKey) (*Token, error) {
+	if deviceToken == nil {
+		return nil, errors.New("xal/xast: authenticate: device token is nil")
+	}
+	if proofKey == nil {
+		return nil, errors.New("xal/xast: authenticate: proof key is nil")
+	}
 	var (
 		r = request{
 			RelyingParty: "http://auth.xboxlive.com",

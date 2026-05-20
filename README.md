@@ -1,6 +1,6 @@
 # go-xsapi
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/df-mc/go-xsapi.svg)](https://pkg.go.dev/github.com/df-mc/go-xsapi)
+[![Go Reference](https://pkg.go.dev/badge/github.com/df-mc/go-xsapi/v2.svg)](https://pkg.go.dev/github.com/df-mc/go-xsapi/v2)
 
 >A Go library for communicating with Xbox Live API.
 

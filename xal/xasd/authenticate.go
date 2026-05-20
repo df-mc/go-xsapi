@@ -19,6 +19,9 @@ import (
 // is returned, that is usable for starting a SISU authorization flow,
 // or to request a final XSTS token along with the user token.
 func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.PrivateKey) (*Token, error) {
+	if proofKey == nil {
+		return nil, errors.New("xal/xasd: authenticate: proof key is nil")
+	}
 	id := uuid.NewString()
 	switch config.Device.Type {
 	case xal.DeviceTypeAndroid:
