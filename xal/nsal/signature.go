@@ -3,6 +3,7 @@ package nsal
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -144,10 +145,7 @@ func validateSignatureKey(key *ecdsa.PrivateKey) error {
 	if key == nil {
 		return errors.New("xal/nsal: signature key must be non-nil")
 	}
-	if key.Curve == nil {
-		return errUnsupportedSignatureKeyCurve
-	}
-	if params := key.Curve.Params(); params == nil || params.Name != "P-256" || params.BitSize != 256 {
+	if key.Curve != elliptic.P256() {
 		return errUnsupportedSignatureKeyCurve
 	}
 	return nil
