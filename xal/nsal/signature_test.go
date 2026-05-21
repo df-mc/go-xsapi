@@ -4,8 +4,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -20,8 +20,8 @@ func TestGenerateRejectsNonP256Key(t *testing.T) {
 		t.Fatalf("make request: %v", err)
 	}
 
-	_, err = AuthPolicy.GenerateWithError(req, nil, key, time.Unix(0, 0))
-	if !errors.Is(err, errUnsupportedSignatureKeyCurve) {
-		t.Fatalf("Generate error = %v, want %v", err, errUnsupportedSignatureKeyCurve)
+	_, err = AuthPolicy.Generate(req, nil, key, time.Unix(0, 0))
+	if err == nil || !strings.Contains(err.Error(), "P-256") {
+		t.Fatalf("Generate error = %v, want P-256 error", err)
 	}
 }

@@ -365,7 +365,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 	if !ok {
 		return nil, fmt.Errorf("xal/sisu: NSAL title endpoint not found for %q", req.URL)
 	}
-	if err := policy.SignWithError(req, buf.Bytes(), proofKey, timestamp.Now()); err != nil {
+	if err := policy.Sign(req, buf.Bytes(), proofKey, timestamp.Now()); err != nil {
 		return nil, fmt.Errorf("xal/sisu: sign request: %w", err)
 	}
 
@@ -451,7 +451,7 @@ func accountCreationRequired(resp *http.Response, device *xasd.Token, proofKey *
 	if err != nil {
 		return nil, fmt.Errorf("make request for computing signature: %w", err)
 	}
-	signature, err := nsal.AuthPolicy.GenerateWithError(signingRequest, nil, proofKey, timestamp.Now())
+	signature, err := nsal.AuthPolicy.Generate(signingRequest, nil, proofKey, timestamp.Now())
 	if err != nil {
 		return nil, fmt.Errorf("generate signature: %w", err)
 	}

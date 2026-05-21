@@ -40,17 +40,9 @@ type SignaturePolicy struct {
 //
 // The key must match the proof key used in the authentication request, and the timestamp
 // should be as close to the server time as possible to avoid rejection.
-func (policy SignaturePolicy) Generate(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) []byte {
-	signature, _ := policy.GenerateWithError(request, body, key, timestamp)
-	return signature
-}
-
-// GenerateWithError computes a signature for the provided HTTP request and
-// returns it as raw bytes.
 //
-// GenerateWithError returns an error if key is nil, key is not P-256, or if
-// [ecdsa.Sign] fails.
-func (policy SignaturePolicy) GenerateWithError(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) ([]byte, error) {
+// Generate returns an error if key is nil, key is not P-256, or if [ecdsa.Sign] fails.
+func (policy SignaturePolicy) Generate(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) ([]byte, error) {
 	if err := validateSignatureKey(key); err != nil {
 		return nil, err
 	}
@@ -117,15 +109,8 @@ func (policy SignaturePolicy) GenerateWithError(request *http.Request, body []by
 // be used to sign the request, which must be same from the ProofKey field of
 // authentication requests. The timestamp is included in the signature data
 // and must be close to the server time as possible.
-func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) {
-	_ = policy.SignWithError(request, body, key, timestamp)
-}
-
-// SignWithError signs the request and sets the 'Signature' header.
-//
-// SignWithError returns an error if signature computation fails.
-func (policy SignaturePolicy) SignWithError(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) error {
-	signature, err := policy.GenerateWithError(request, body, key, timestamp)
+func (policy SignaturePolicy) Sign(request *http.Request, body []byte, key *ecdsa.PrivateKey, timestamp time.Time) error {
+	signature, err := policy.Generate(request, body, key, timestamp)
 	if err != nil {
 		return err
 	}
@@ -139,14 +124,12 @@ var AuthPolicy = SignaturePolicy{
 	Version: 1,
 }
 
-var errUnsupportedSignatureKeyCurve = errors.New("xal/nsal: signature key must use P-256")
-
 func validateSignatureKey(key *ecdsa.PrivateKey) error {
 	if key == nil {
 		return errors.New("xal/nsal: signature key must be non-nil")
 	}
 	if key.Curve != elliptic.P256() {
-		return errUnsupportedSignatureKeyCurve
+		return errors.New("xal/nsal: signature key must use P-256")
 	}
 	return nil
 }

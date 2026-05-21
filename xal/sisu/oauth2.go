@@ -215,7 +215,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 	req.Header.Set("User-Agent", conf.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-xbl-contract-version", "1")
-	if err := nsal.AuthPolicy.SignWithError(req, buf.Bytes(), device.ProofKey(), timestamp.Now()); err != nil {
+	if err := nsal.AuthPolicy.Sign(req, buf.Bytes(), device.ProofKey(), timestamp.Now()); err != nil {
 		return "", fmt.Errorf("sign request: %w", err)
 	}
 
