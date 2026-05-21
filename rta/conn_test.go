@@ -155,6 +155,17 @@ func TestUnsubscribeDeletesAttemptedIDAfterReconnectRace(t *testing.T) {
 	}
 }
 
+func TestSubscriptionCurrentCustomUsesReconnectPayload(t *testing.T) {
+	subscription := &Subscription{
+		Custom: json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`),
+	}
+	subscription.setCurrent(2, json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000002"}`))
+
+	if got := string(subscription.CurrentCustom()); got != `{"ConnectionId":"00000000-0000-0000-0000-000000000002"}` {
+		t.Fatalf("CurrentCustom = %s, want reconnect payload", got)
+	}
+}
+
 func TestConnReconnectsAndResubscribesAfterReadFailure(t *testing.T) {
 	originalURL := connectURL
 	defer func() { connectURL = originalURL }()
@@ -197,7 +208,7 @@ func TestConnReconnectsAndResubscribesAfterReadFailure(t *testing.T) {
 				if !writeSubscribeHandshake(t, conn, "second", sequence, 8, `{"ConnectionId":"00000000-0000-0000-0000-000000000002"}`) {
 					return
 				}
-				time.Sleep(reconnectSettleDelay)
+				time.Sleep(20 * time.Millisecond)
 				if !writeEvent(t, conn, "event after reconnect", 8, `{"event":"reconnected"}`) {
 					return
 				}
@@ -260,7 +271,6 @@ func TestConnReconnectRetriesIfReplacementSocketDropsDuringResubscribe(t *testin
 
 	var connections atomic.Int32
 	var reconnectCalls atomic.Int32
-	var readyCalls atomic.Int32
 	closeFirstConnection := make(chan struct{})
 	keepStableConnection := make(chan struct{})
 	defer close(keepStableConnection)
@@ -299,7 +309,7 @@ func TestConnReconnectRetriesIfReplacementSocketDropsDuringResubscribe(t *testin
 				if !writeSubscribeHandshake(t, conn, "third", sequence, 9, `{"ConnectionId":"00000000-0000-0000-0000-000000000003"}`) {
 					return
 				}
-				time.Sleep(reconnectSettleDelay)
+				time.Sleep(20 * time.Millisecond)
 				if !writeEvent(t, conn, "event after second reconnect", 9, `{"event":"reconnected-twice"}`) {
 					return
 				}
@@ -332,9 +342,6 @@ func TestConnReconnectRetriesIfReplacementSocketDropsDuringResubscribe(t *testin
 			default:
 			}
 		},
-		handleReady: func() {
-			readyCalls.Add(1)
-		},
 		handleEvent: func(custom json.RawMessage) {
 			select {
 			case eventReceived <- custom:
@@ -358,21 +365,12 @@ func TestConnReconnectRetriesIfReplacementSocketDropsDuringResubscribe(t *testin
 	case <-time.After(time.Second * 5):
 		t.Fatal("timed out waiting for event after second reconnect")
 	}
-	deadline := time.After(time.Second)
-	for readyCalls.Load() != 1 {
-		select {
-		case <-deadline:
-			t.Fatalf("callback counts = reconnect:%d ready:%d, want ready:1 and at least one reconnect", reconnectCalls.Load(), readyCalls.Load())
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
 	if reconnectCalls.Load() == 0 {
 		t.Fatal("reconnect callback was not delivered on the surviving reconnect wave")
 	}
 }
 
-func TestConnReconnectRetriesIfReplacementSocketDropsAfterGraceWindow(t *testing.T) {
+func TestConnReconnectRetriesIfReplacementSocketDropsAfterSuccessfulResubscribe(t *testing.T) {
 	originalURL := connectURL
 	defer func() { connectURL = originalURL }()
 
@@ -415,7 +413,7 @@ func TestConnReconnectRetriesIfReplacementSocketDropsAfterGraceWindow(t *testing
 				if !writeSubscribeHandshake(t, conn, "third", sequence, 9, `{"ConnectionId":"00000000-0000-0000-0000-000000000003"}`) {
 					return
 				}
-				time.Sleep(reconnectSettleDelay)
+				time.Sleep(20 * time.Millisecond)
 				if !writeEvent(t, conn, "event after late-drop reconnect", 9, `{"event":"reconnected-late-drop"}`) {
 					return
 				}
@@ -559,98 +557,10 @@ func TestWaitBlocksUntilReconnectErrorHandlersFinish(t *testing.T) {
 	}
 }
 
-func TestNotifyReconnectSuccessCallsReadyAfterReconnect(t *testing.T) {
-	events := make(chan string, 2)
-	sub := &Subscription{}
-	sub.Handle(reconnectSuccessOrderTestHandler{events: events})
-
-	conn := newTestConn()
-	successDone := conn.startReconnectSuccess(sub)
-	conn.notifyReconnectReadyAfterSuccess(sub, successDone, nil)
-
-	first := <-events
-	second := <-events
-	if first != "reconnect" || second != "ready" {
-		t.Fatalf("callback order = [%s %s], want [reconnect ready]", first, second)
-	}
-}
-
-func TestNotifyReconnectReadyAfterSuccessSkipsStaleReaderWave(t *testing.T) {
-	ready := make(chan struct{}, 1)
-	sub := &Subscription{}
-	sub.Handle(reconnectReadyTestHandler{ready: ready})
-
-	conn := newTestConn()
-	readerDone := make(chan struct{})
-	successDone := make(chan struct{})
-	close(readerDone)
-	close(successDone)
-
-	conn.notifyReconnectReadyAfterSuccess(sub, successDone, readerDone)
-
-	select {
-	case <-ready:
-		t.Fatal("reconnect-ready callback fired for stale reader wave")
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
-func TestNotifyReconnectReadyUsesCurrentHandlerAtFireTime(t *testing.T) {
-	oldReady := make(chan struct{}, 1)
-	newReady := make(chan struct{}, 1)
-	sub := &Subscription{}
-	sub.Handle(reconnectReadyTestHandler{ready: oldReady})
-
-	sub.Handle(reconnectReadyTestHandler{ready: newReady})
-	newTestConn().notifyReconnectReady(sub)
-
-	select {
-	case <-newReady:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for reconnect-ready callback on replacement handler")
-	}
-
-	select {
-	case <-oldReady:
-		t.Fatal("stale reconnect-ready handler was called after replacement")
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
 type testSubscriptionHandler struct {
 	handleReconnect      func()
 	handleReconnectError func(error)
-	handleReady          func()
 	handleEvent          func(json.RawMessage)
-}
-
-type reconnectReadyTestHandler struct {
-	ready chan struct{}
-}
-
-type reconnectSuccessOrderTestHandler struct {
-	events chan string
-}
-
-func (h reconnectReadyTestHandler) HandleEvent(json.RawMessage) {}
-
-func (h reconnectReadyTestHandler) HandleReconnect(error) {}
-
-func (h reconnectReadyTestHandler) HandleReconnectReady() {
-	select {
-	case h.ready <- struct{}{}:
-	default:
-	}
-}
-
-func (h reconnectSuccessOrderTestHandler) HandleEvent(json.RawMessage) {}
-
-func (h reconnectSuccessOrderTestHandler) HandleReconnect(error) {
-	h.events <- "reconnect"
-}
-
-func (h reconnectSuccessOrderTestHandler) HandleReconnectReady() {
-	h.events <- "ready"
 }
 
 func (h testSubscriptionHandler) HandleReconnect(err error) {
@@ -662,12 +572,6 @@ func (h testSubscriptionHandler) HandleReconnect(err error) {
 	}
 	if h.handleReconnect != nil {
 		h.handleReconnect()
-	}
-}
-
-func (h testSubscriptionHandler) HandleReconnectReady() {
-	if h.handleReady != nil {
-		h.handleReady()
 	}
 }
 

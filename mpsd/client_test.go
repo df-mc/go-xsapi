@@ -6,11 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
-	"reflect"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/google/uuid"
@@ -249,9 +248,8 @@ func TestSubscriptionHandlerReconnectUsesCurrentSubscriptionCustom(t *testing.T)
 		closed: make(chan struct{}),
 	}
 	subscription := &rta.Subscription{
-		Custom: []byte(`{"ConnectionId":"` + oldConnectionID.String() + `"}`),
+		Custom: []byte(`{"ConnectionId":"` + newConnectionID.String() + `"}`),
 	}
-	setSubscriptionCurrentForTest(subscription, 1, []byte(`{"ConnectionId":"`+newConnectionID.String()+`"}`))
 	client := &Client{
 		client:           httpClient,
 		subscription:     subscription,
@@ -279,9 +277,8 @@ func TestSubscribeRefreshesCachedDataFromCurrentSubscriptionCustom(t *testing.T)
 	oldConnectionID := uuid.New()
 	newConnectionID := uuid.New()
 	subscription := &rta.Subscription{
-		Custom: []byte(`{"ConnectionId":"` + oldConnectionID.String() + `"}`),
+		Custom: []byte(`{"ConnectionId":"` + newConnectionID.String() + `"}`),
 	}
-	setSubscriptionCurrentForTest(subscription, 1, []byte(`{"ConnectionId":"`+newConnectionID.String()+`"}`))
 	client := &Client{
 		subscription:     subscription,
 		subscriptionData: &subscriptionData{ConnectionID: oldConnectionID},
@@ -303,13 +300,32 @@ func TestSubscribeRefreshesCachedDataFromCurrentSubscriptionCustom(t *testing.T)
 	}
 }
 
-func setSubscriptionCurrentForTest(subscription *rta.Subscription, id uint32, custom []byte) {
-	value := reflect.ValueOf(subscription).Elem()
-	setUnexportedFieldForTest(value.FieldByName("currentID"), reflect.ValueOf(id))
-	setUnexportedFieldForTest(value.FieldByName("currentCustom"), reflect.ValueOf(json.RawMessage(custom)))
-	setUnexportedFieldForTest(value.FieldByName("currentSet"), reflect.ValueOf(true))
+func TestSubscribeClearsCachedSubscriptionOnCurrentCustomDecodeError(t *testing.T) {
+	subscription := &rta.Subscription{
+		Custom: []byte(`{`),
+	}
+	client := &Client{
+		subscription:     subscription,
+		subscriptionData: &subscriptionData{ConnectionID: uuid.New()},
+		sessions:         map[string]*Session{},
+	}
+
+	if _, _, err := client.subscribe(context.Background()); err == nil {
+		t.Fatal("subscribe returned nil error")
+	}
+	if client.subscription != nil {
+		t.Fatal("cached subscription was not cleared")
+	}
+	if client.subscriptionData != nil {
+		t.Fatal("cached subscription data was not cleared")
+	}
 }
 
-func setUnexportedFieldForTest(field, value reflect.Value) {
-	reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(value)
+func TestSubscriptionHandlerLoggerFallsBackToClientLogger(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := &subscriptionHandler{Client: &Client{log: logger}}
+
+	if got := handler.logger(); got != logger {
+		t.Fatal("logger did not fall back to client logger")
+	}
 }

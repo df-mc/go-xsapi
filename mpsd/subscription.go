@@ -27,12 +27,15 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	}
 	oldData := c.subscriptionData
 	if c.subscription != nil && oldData != nil {
+		custom := c.subscription.CurrentCustom()
 		var data subscriptionData
-		if err := json.Unmarshal(c.subscription.CurrentCustom(), &data); err != nil {
+		if err := json.Unmarshal(custom, &data); err != nil {
+			c.subscription, c.subscriptionData = nil, nil
 			return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
 		}
 		if data.ConnectionID == uuid.Nil {
-			return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.CurrentCustom())
+			c.subscription, c.subscriptionData = nil, nil
+			return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, custom)
 		}
 		c.subscriptionData = &data
 		if oldData.ConnectionID != data.ConnectionID {
@@ -277,6 +280,9 @@ func (h *subscriptionHandler) refreshSessionConnection(session *Session, connect
 func (h *subscriptionHandler) logger() *slog.Logger {
 	if h.log != nil {
 		return h.log
+	}
+	if h.Client != nil && h.Client.log != nil {
+		return h.Client.log
 	}
 	return slog.Default()
 }

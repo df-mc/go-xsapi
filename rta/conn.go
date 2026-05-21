@@ -181,12 +181,6 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 // replacement socket drops during a re-subscribe attempt.
 var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 
-// reconnectSettleDelay is the time to wait after resubscribing before
-// dispatching reconnect handlers, giving the replacement socket a chance to
-// prove it is stable. A short delay (50ms) prioritizes responsiveness over
-// stability detection; increase if flaky networks cause spurious reconnects.
-const reconnectSettleDelay = 50 * time.Millisecond
-
 func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {
 	return c.callWithPayload(ctx, op, func() []any {
 		return payload
@@ -350,19 +344,11 @@ type SubscriptionHandler interface {
 //
 // If err is nil, the Subscription was successfully re-established on the new
 // connection and has been assigned a new ID. This callback is fired as soon as
-// that re-subscribe handshake succeeds, before the reconnect wave's optional
-// stabilization delay has elapsed. The custom data may also differ from the
-// previous connection depending on the targeting resource. In this case, the
-// handler remains responsible for calling [Conn.Unsubscribe] during cleanup.
+// that re-subscribe handshake succeeds. The custom data may also differ from
+// the previous connection depending on the targeting resource. In this case,
+// the handler remains responsible for calling [Conn.Unsubscribe] during cleanup.
 type ReconnectHandler interface {
 	HandleReconnect(err error)
-}
-
-// ReconnectReadyHandler is an optional extension interface for subscriptions
-// that can safely react once their re-subscribe has succeeded and the overall
-// reconnect wave has survived a short stabilization window.
-type ReconnectReadyHandler interface {
-	HandleReconnectReady()
 }
 
 // NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
@@ -558,27 +544,15 @@ func (c *Conn) reconnect(done chan struct{}) {
 
 		successes := c.resubscribe()
 		readerDone := c.currentReaderDone()
-		successDone := make([]<-chan struct{}, len(successes))
-		for i, subscription := range successes {
-			successDone[i] = c.startReconnectSuccess(subscription)
+		for _, subscription := range successes {
+			c.startReconnectSuccess(subscription)
 			c.log.Debug("resubscribed", slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.id())),
 				slog.String("custom", string(subscription.custom())),
 				slog.String("resourceURI", subscription.ResourceURI()),
 			))
 		}
-		if len(successes) != 0 {
-			select {
-			case <-time.After(reconnectSettleDelay):
-			case <-readerDone:
-			case <-c.ctx.Done():
-				return
-			}
-		}
 		if c.reconnectWaveStable(readerDone) {
-			for i, subscription := range successes {
-				go c.notifyReconnectReadyAfterSuccess(subscription, successDone[i], readerDone)
-			}
 			return
 		}
 	}
@@ -769,38 +743,11 @@ func (c *Conn) notifyReconnect(subscription *Subscription, err error) {
 	handler.HandleReconnect(err)
 }
 
-// startReconnectSuccess launches notifyReconnectSuccess asynchronously and
-// returns a channel that closes once the handler returns.
-func (c *Conn) startReconnectSuccess(subscription *Subscription) <-chan struct{} {
-	done := make(chan struct{})
+// startReconnectSuccess launches notifyReconnectSuccess asynchronously.
+func (c *Conn) startReconnectSuccess(subscription *Subscription) {
 	go func() {
-		defer close(done)
 		c.notifyReconnectSuccess(subscription)
 	}()
-	return done
-}
-
-// notifyReconnectReady fires [ReconnectReadyHandler.HandleReconnectReady] for
-// the currently registered handler once the reconnect wave itself is already
-// known to be stable.
-func (c *Conn) notifyReconnectReady(subscription *Subscription) {
-	handler, ok := subscription.handler().(ReconnectReadyHandler)
-	if !ok {
-		return
-	}
-	handler.HandleReconnectReady()
-}
-
-// notifyReconnectReadyAfterSuccess waits for the reconnect-success callback to
-// return before firing the ready callback for the same subscription.
-func (c *Conn) notifyReconnectReadyAfterSuccess(subscription *Subscription, successDone <-chan struct{}, readerDone chan struct{}) {
-	if successDone != nil {
-		<-successDone
-	}
-	if c.ctx.Err() != nil || !c.reconnectWaveStable(readerDone) {
-		return
-	}
-	c.notifyReconnectReady(subscription)
 }
 
 // Active reports whether sub is currently registered on this connection.
