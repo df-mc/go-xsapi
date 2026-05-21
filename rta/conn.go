@@ -51,16 +51,14 @@ type Conn struct {
 
 	log *slog.Logger
 
-	// reconnecting indicates whether the Conn is currently reconnecting to the RTA service.
-	reconnecting atomic.Bool
 	// reconnectNext indicates the replacement socket dropped before the current
 	// reconnect cycle finished, so a new dial should begin immediately after
 	// the current resubscribe wave ends.
-	reconnectNext atomic.Bool
+	reconnectNext bool
 	// reconnectDone is a channel that is closed when the reconnect dial/
 	// resubscribe wave is complete. It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
-	// reconnectMu guards reconnectDone.
+	// reconnectMu guards reconnectDone and reconnectNext.
 	reconnectMu sync.RWMutex
 
 	// once ensures that the Conn is closed only once.
@@ -227,7 +225,7 @@ func (c *Conn) callDuringReconnect(ctx context.Context, op uint8, payload []any)
 		return payload
 	}, false)
 	if errors.Is(err, errReconnectInterrupted) {
-		c.reconnectNext.Store(true)
+		c.markReconnectNext()
 	}
 	return h, err
 }
@@ -530,11 +528,11 @@ func (c *Conn) triggerReconnect() {
 	}
 	var done chan struct{}
 	c.reconnectMu.Lock()
-	if c.reconnecting.CompareAndSwap(false, true) {
+	if c.reconnectDone == nil {
 		done = make(chan struct{})
 		c.reconnectDone = done
 	} else {
-		c.reconnectNext.Store(true)
+		c.reconnectNext = true
 	}
 	c.reconnectMu.Unlock()
 
@@ -564,7 +562,9 @@ func (c *Conn) reconnect(done chan struct{}) {
 			}
 		}
 
-		c.reconnectNext.Store(false)
+		c.reconnectMu.Lock()
+		c.reconnectNext = false
+		c.reconnectMu.Unlock()
 
 		dialCtx, cancel := context.WithTimeout(c.ctx, reconnectDialTimeout)
 		conn, err := c.dialer.dial(dialCtx)
@@ -610,12 +610,11 @@ func (c *Conn) finishReconnect(done chan struct{}) {
 	if c.reconnectDone == currentDone {
 		c.reconnectDone = nil
 	}
-	restart := c.ctx.Err() == nil && c.reconnectNext.Load()
+	restart := c.ctx.Err() == nil && c.reconnectNext
 	if restart {
+		c.reconnectNext = false
 		nextDone = make(chan struct{})
 		c.reconnectDone = nextDone
-	} else {
-		c.reconnecting.Store(false)
 	}
 	c.reconnectMu.Unlock()
 
@@ -727,7 +726,10 @@ func (c *Conn) resubscribe() []*Subscription {
 // reconnectWaveStable reports whether the reconnect wave still points at the
 // same live reader channel and has not already been marked for another retry.
 func (c *Conn) reconnectWaveStable(readerDone chan struct{}) bool {
-	if c.reconnectNext.Load() {
+	c.reconnectMu.RLock()
+	next := c.reconnectNext
+	c.reconnectMu.RUnlock()
+	if next {
 		return false
 	}
 	if readerDone == nil {
@@ -742,6 +744,13 @@ func (c *Conn) reconnectWaveStable(readerDone chan struct{}) bool {
 	default:
 		return true
 	}
+}
+
+// markReconnectNext asks the active reconnect wave to retry with a fresh dial.
+func (c *Conn) markReconnectNext() {
+	c.reconnectMu.Lock()
+	c.reconnectNext = true
+	c.reconnectMu.Unlock()
 }
 
 func (c *Conn) notifyReconnect(subscription *Subscription, err error) {
