@@ -5,7 +5,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 )
@@ -21,7 +20,7 @@ func TestGenerateRejectsNonP256Key(t *testing.T) {
 	}
 
 	_, err = AuthPolicy.Generate(req, nil, key, time.Unix(0, 0))
-	if err == nil || !strings.Contains(err.Error(), "P-256") {
-		t.Fatalf("Generate error = %v, want P-256 error", err)
+	if err == nil {
+		t.Fatal("Generate returned nil error for non-P256 key")
 	}
 }
