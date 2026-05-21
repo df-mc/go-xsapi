@@ -41,7 +41,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 		}
 		c.subscriptionData = &data
 		if oldData.ConnectionID != data.ConnectionID {
-			(&subscriptionHandler{Client: c}).refreshSessionConnections(data.ConnectionID)
+			c.refreshSessionConnections(data.ConnectionID)
 		}
 		// If the subscription was already made with RTA, return the cached
 		// subscription along with its refreshed decoded payload.
@@ -73,7 +73,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 		log:    c.log.With("src", "subscription handler"),
 	})
 	if oldData == nil {
-		(&subscriptionHandler{Client: c}).refreshSessionConnections(c.subscriptionData.ConnectionID)
+		c.refreshSessionConnections(c.subscriptionData.ConnectionID)
 	}
 	return c.subscription, c.subscriptionData, nil
 }
@@ -99,7 +99,14 @@ func (c *Client) resetBrokenSubscription(subscription *rta.Subscription) {
 // resourceURI is the resource URI used to subscribe with RTA (Real-Time Activity) Services
 // in Xbox Live. The subscription is then used to associate with a multiplayer session to
 // get updates in a WebSocket connection.
-const resourceURI = "https://sessiondirectory.xboxlive.com/connections/"
+const (
+	resourceURI = "https://sessiondirectory.xboxlive.com/connections/"
+
+	// maxShoulderTapBranches bounds duplicate detection memory for long-lived
+	// clients. If the bound is reached, the cache is cleared and future taps are
+	// processed again until new branch/change state is learned.
+	maxShoulderTapBranches = 1024
+)
 
 // Handler receives session events delivered over an RTA (Real-Time Activity)
 // subscription. It is primarily used to react to changes made to a remote
@@ -209,6 +216,9 @@ func (h *subscriptionHandler) shouldProcessTap(tap shoulderTap) bool {
 	if ok && tap.ChangeNumber <= last {
 		return false
 	}
+	if !ok && len(h.shoulderTaps) >= maxShoulderTapBranches {
+		clear(h.shoulderTaps)
+	}
 	h.shoulderTaps[tap.Branch] = tap.ChangeNumber
 	return true
 }
@@ -285,28 +295,28 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 	h.subscriptionMu.Unlock()
 
 	if oldData == nil || oldData.ConnectionID != data.ConnectionID {
-		h.refreshSessionConnections(data.ConnectionID)
+		h.Client.refreshSessionConnections(data.ConnectionID)
 	}
 }
 
 // refreshSessionConnections rewrites every tracked session with a new RTA
 // connection ID after the MPSD subscription is re-established.
-func (h *subscriptionHandler) refreshSessionConnections(connectionID uuid.UUID) {
-	h.sessionsMu.RLock()
-	sessions := make([]*Session, 0, len(h.sessions))
-	for _, session := range h.sessions {
+func (c *Client) refreshSessionConnections(connectionID uuid.UUID) {
+	c.sessionsMu.RLock()
+	sessions := make([]*Session, 0, len(c.sessions))
+	for _, session := range c.sessions {
 		sessions = append(sessions, session)
 	}
-	h.sessionsMu.RUnlock()
+	c.sessionsMu.RUnlock()
 
 	for _, session := range sessions {
-		go h.refreshSessionConnection(session, connectionID)
+		go c.refreshSessionConnection(session, connectionID)
 	}
 }
 
 // refreshSessionConnection marks the local player active in session using the
 // current MPSD RTA connection ID.
-func (h *subscriptionHandler) refreshSessionConnection(session *Session, connectionID uuid.UUID) {
+func (c *Client) refreshSessionConnection(session *Session, connectionID uuid.UUID) {
 	ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 	defer cancel()
 
@@ -323,7 +333,11 @@ func (h *subscriptionHandler) refreshSessionConnection(session *Session, connect
 		},
 	}, nil)
 	if err != nil {
-		h.logger().Error("error updating multiplayer session connection ID",
+		log := c.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Error("error updating multiplayer session connection ID",
 			slog.Any("error", err),
 			slog.Group("session",
 				slog.String("ref", session.Reference().URL().String()),

@@ -158,12 +158,9 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 }
 
 // HandleResync implements [rta.ResyncHandler] by refreshing the caller's
-// current friend list through PeopleHub and notifying handlers that can consume
-// a full resync. For compatibility, handlers that only implement the base
-// notification interface receive a best-effort Changed snapshot for the
-// currently visible XUIDs when the refreshed list is non-empty. That fallback is
-// not a true delta and cannot report users that disappeared from the refreshed
-// list; implement [ResyncHandler] when exact resync semantics are needed.
+// current friend list through PeopleHub and notifying handlers that implement
+// [ResyncHandler]. Base [SubscriptionHandler] callbacks are not used for resync
+// because a refreshed snapshot is not a lossless added/removed/changed delta.
 func (h *subscriptionHandler) HandleResync() {
 	if h.Client == nil || h.Client.client == nil {
 		h.logger().Debug("skipping social resync without HTTP client")
@@ -183,19 +180,9 @@ func (h *subscriptionHandler) HandleResync() {
 	handlers := slices.Clone(h.subscriptionHandlers)
 	h.subscriptionMu.RUnlock()
 
-	xuids := make([]string, 0, len(friends))
-	for _, friend := range friends {
-		if friend.XUID != "" {
-			xuids = append(xuids, friend.XUID)
-		}
-	}
 	for _, handler := range handlers {
 		if resyncHandler, ok := handler.(ResyncHandler); ok {
 			go resyncHandler.HandleSocialResync(slices.Clone(friends))
-			continue
-		}
-		if len(xuids) != 0 {
-			go handler.HandleSocialNotification(NotificationTypeChanged, slices.Clone(xuids))
 		}
 	}
 }
@@ -348,9 +335,6 @@ type SubscriptionHandler interface {
 // ResyncHandler is an optional extension for [SubscriptionHandler]
 // implementations that want the complete refreshed friend list after RTA asks
 // the client to resync or after the social RTA subscription is re-established.
-// This is the lossless path for resync notifications; the base
-// SubscriptionHandler fallback can only report a best-effort Changed snapshot of
-// currently visible XUIDs.
 type ResyncHandler interface {
 	HandleSocialResync(friends []User)
 }

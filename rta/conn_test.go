@@ -61,7 +61,7 @@ func newTestConn() *Conn {
 	conn := &Conn{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	conn.subscriptions = make(map[uint32]*Subscription)
-	for i := range cap(conn.expected) {
+	for i := range conn.expected {
 		conn.expected[i] = make(map[uint32]expectedHandshake)
 	}
 	return conn
@@ -100,6 +100,44 @@ func TestDrainExpectedDoesNotResetSequences(t *testing.T) {
 	}
 	if got := conn.sequences[operationUnsubscribe].Load(); got != 42 {
 		t.Fatalf("unsubscribe sequence = %d, want 42", got)
+	}
+}
+
+func TestResubscribeRetriesTransientStatuses(t *testing.T) {
+	conn := newTestConn()
+	subscription := &Subscription{ID: 1, resourceURI: "resource://session"}
+	subscription.setCurrent(1, nil)
+	conn.subscriptions[1] = subscription
+
+	var attempts atomic.Int32
+	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
+		ch := make(chan *handshake, 1)
+		if attempts.Add(1) == 1 {
+			ch <- &handshake{status: StatusThrottled}
+			return ch, conn.currentReaderDone(), nil
+		}
+		ch <- &handshake{
+			status:  StatusOK,
+			payload: []json.RawMessage{json.RawMessage(`2`), json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000002"}`)},
+		}
+		return ch, conn.currentReaderDone(), nil
+	}
+
+	successes := conn.resubscribe()
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("resubscribe attempts = %d, want 2", got)
+	}
+	if len(successes) != 1 || successes[0] != subscription {
+		t.Fatalf("successes = %#v, want original subscription", successes)
+	}
+	if got := subscription.id(); got != 2 {
+		t.Fatalf("subscription ID = %d, want 2", got)
+	}
+	if _, ok := conn.subscriptions[1]; ok {
+		t.Fatal("old subscription ID was not removed")
+	}
+	if conn.subscriptions[2] != subscription {
+		t.Fatal("subscription was not registered with retried ID")
 	}
 }
 
@@ -305,6 +343,32 @@ func TestSubscribeRegistersBeforeDeliveringHandshake(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event after subscribe ack")
+	}
+}
+
+func TestHandleMessageDispatchesSubscriptionEventsInOrder(t *testing.T) {
+	conn := newTestConn()
+	got := make(chan string, 2)
+	subscription := &Subscription{ID: 7}
+	subscription.Handle(testSubscriptionHandler{
+		handleEvent: func(custom json.RawMessage) {
+			got <- string(custom)
+		},
+	})
+	conn.subscriptions[7] = subscription
+
+	conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"n":1}`)})
+	conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"n":2}`)})
+
+	for _, want := range []string{`{"n":1}`, `{"n":2}`} {
+		select {
+		case event := <-got:
+			if event != want {
+				t.Fatalf("event = %s, want %s", event, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for event %s", want)
+		}
 	}
 }
 

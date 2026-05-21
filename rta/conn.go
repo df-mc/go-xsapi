@@ -22,6 +22,7 @@ const (
 	proactiveReconnectInterval    = 90 * time.Minute
 	resyncSuppressionDuration     = 5 * time.Minute
 	maxPendingEventsBeforeHandler = 8
+	maxResubscribeBackoff         = 60 * time.Second
 )
 
 // Conn represents a connection between the real-time activity services. It can
@@ -110,6 +111,10 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 // duplicating the subscribe logic.
 func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, chan struct{}, error) {
 	sub := &Subscription{resourceURI: resourceURI}
+	// The hook applies and registers the successful handshake before the
+	// response is released to the waiting caller, so an event sent immediately
+	// after the subscribe ACK can be routed. The apply below is intentionally
+	// idempotent and exists to return decode/status errors to Subscribe.
 	h, readerDone, err := c.callWithHook(ctx, operationSubscribe, func() []any {
 		return []any{resourceURI}
 	}, true, func(h *handshake) {
@@ -741,14 +746,47 @@ func (c *Conn) resubscribe() []*Subscription {
 	for _, s := range subscriptions {
 		go func(subscription *Subscription) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
-			defer cancel()
 
-			sub, err := c.subscribeDuringReconnect(ctx, subscription.resourceURI)
-			if err != nil {
+			attempt := 0
+			for {
+				ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
+				sub, err := c.subscribeDuringReconnect(ctx, subscription.resourceURI)
+				cancel()
+				if err == nil {
+					subscriptionID := sub.id()
+					subscription.setCurrent(subscriptionID, sub.custom())
+					c.updateSubscriptionID(subscription, subscriptionID)
+
+					successesMu.Lock()
+					successes = append(successes, subscription)
+					successesMu.Unlock()
+					return
+				}
 				if errors.Is(err, errReconnectInterrupted) {
 					return
 				}
+				if retryableSubscribeError(err) {
+					delay := resubscribeBackoff(attempt)
+					attempt++
+					c.log.Warn("retrying RTA resubscribe after transient status",
+						slog.Group("subscription",
+							slog.Uint64("id", uint64(subscription.id())),
+							slog.String("resourceURI", subscription.resourceURI),
+						),
+						slog.Any("error", err),
+						slog.Duration("retry_after", delay),
+					)
+					if delay <= 0 {
+						continue
+					}
+					select {
+					case <-time.After(delay):
+						continue
+					case <-c.ctx.Done():
+						return
+					}
+				}
+
 				c.removeSubscription(subscription)
 				go func(subscription *Subscription, err error) {
 					c.notifyReconnect(subscription, err)
@@ -762,14 +800,6 @@ func (c *Conn) resubscribe() []*Subscription {
 				)
 				return
 			}
-
-			subscriptionID := sub.id()
-			subscription.setCurrent(subscriptionID, sub.custom())
-			c.updateSubscriptionID(subscription, subscriptionID)
-
-			successesMu.Lock()
-			successes = append(successes, subscription)
-			successesMu.Unlock()
 		}(s)
 	}
 
@@ -779,6 +809,33 @@ func (c *Conn) resubscribe() []*Subscription {
 		slog.Int("successful", len(successes)),
 	)
 	return successes
+}
+
+// retryableSubscribeError reports whether err is an RTA subscribe status that
+// XSAPI treats as transient during resubscribe.
+func retryableSubscribeError(err error) bool {
+	var status *UnexpectedStatusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	switch status.Code {
+	case StatusThrottled, StatusServiceUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// resubscribeBackoff returns XSAPI-style quadratic backoff capped at 60s.
+func resubscribeBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	delay := time.Duration(attempt*attempt) * time.Second
+	if delay > maxResubscribeBackoff {
+		return maxResubscribeBackoff
+	}
+	return delay
 }
 
 // reconnectWaveStable reports whether the reconnect wave still points at the
@@ -870,7 +927,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		sub, ok := c.subscriptions[subscriptionID]
 		c.subscriptionsMu.RUnlock()
 		if ok {
-			go sub.dispatchEvent(payload[1])
+			sub.dispatchEvent(payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
 	case typeResync:
@@ -884,7 +941,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 // but before the caller installed a handler.
 func (s *Subscription) dispatchPending(events []json.RawMessage) {
 	for _, event := range events {
-		go s.dispatchEvent(event)
+		s.dispatchEvent(event)
 	}
 }
 

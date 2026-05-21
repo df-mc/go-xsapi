@@ -47,7 +47,7 @@ func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, er
 		subscriptions: make(map[uint32]*Subscription),
 	}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
-	for i := range cap(conn.expected) {
+	for i := range conn.expected {
 		conn.expected[i] = make(map[uint32]expectedHandshake)
 	}
 	conn.startReader(c)
