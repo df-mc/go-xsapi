@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,8 @@ const (
 	reconnectBackoffInitial    = time.Second
 	reconnectBackoffMax        = 30 * time.Second
 	proactiveReconnectInterval = 90 * time.Minute
+	maxPendingEventIDs         = 32
+	maxPendingEventsPerID      = 8
 )
 
 // Conn represents a connection between the real-time activity services. It can
@@ -47,6 +50,7 @@ type Conn struct {
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
+	pendingEvents   map[uint32][]json.RawMessage
 
 	log *slog.Logger
 
@@ -84,8 +88,9 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 			c.subscriptionsMu.Unlock()
 			continue
 		}
-		c.subscriptions[sub.id()] = sub
+		pendingEvents := c.registerSubscriptionLocked(sub, sub.id())
 		c.subscriptionsMu.Unlock()
+		sub.dispatchPending(pendingEvents)
 		return sub, nil
 	}
 }
@@ -133,8 +138,6 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 		}
 		sub := &Subscription{
 			resourceURI: resourceURI,
-
-			h: NopSubscriptionHandler{}, // fast-path for defaulting handler without locking
 		}
 		if err := json.Unmarshal(h.payload[0], &sub.ID); err != nil {
 			return nil, fmt.Errorf("decode subscription ID: %w", err)
@@ -164,6 +167,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	}
 	c.subscriptionsMu.Lock()
 	delete(c.subscriptions, id)
+	delete(c.pendingEvents, id)
 	c.subscriptionsMu.Unlock()
 	return nil
 }
@@ -252,8 +256,12 @@ type Subscription struct {
 	currentSet    bool
 	resourceURI   string
 
-	h  SubscriptionHandler
-	mu sync.RWMutex
+	h    SubscriptionHandler
+	hSet bool
+	mu   sync.RWMutex
+	// pending holds events delivered before the caller installs a handler on a
+	// newly-created subscription.
+	pending []json.RawMessage
 }
 
 func (s *Subscription) id() uint32 {
@@ -298,14 +306,35 @@ func (s *Subscription) Handle(h SubscriptionHandler) {
 	}
 	s.mu.Lock()
 	s.h = h
+	s.hSet = true
+	pending := s.pending
+	s.pending = nil
 	s.mu.Unlock()
+	s.dispatchPending(pending)
 }
 
 // handler returns the [SubscriptionHandler] currently registered on the [Subscription].
 func (s *Subscription) handler() SubscriptionHandler {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if !s.hSet || s.h == nil {
+		return NopSubscriptionHandler{}
+	}
 	return s.h
+}
+
+func (s *Subscription) dispatchEvent(custom json.RawMessage) {
+	s.mu.Lock()
+	if !s.hSet {
+		if len(s.pending) < maxPendingEventsPerID {
+			s.pending = append(s.pending, slices.Clone(custom))
+		}
+		s.mu.Unlock()
+		return
+	}
+	h := s.h
+	s.mu.Unlock()
+	h.HandleEvent(custom)
 }
 
 // SubscriptionHandler is the interface for handling events that may occur in a single
@@ -412,7 +441,7 @@ func (c *Conn) startReader(conn *websocket.Conn) {
 	c.readerDone = done
 	c.connMu.Unlock()
 	go c.read(conn, done)
-	go c.refreshConnAfter(done, proactiveReconnectInterval)
+	go c.refreshConnAfter(conn, done, proactiveReconnectInterval)
 }
 
 // currentConn returns the active WebSocket connection.
@@ -437,14 +466,14 @@ func (c *Conn) isCurrentConn(conn *websocket.Conn) bool {
 	return c.conn == conn
 }
 
-func (c *Conn) refreshConnAfter(readerDone chan struct{}, after time.Duration) {
+func (c *Conn) refreshConnAfter(conn *websocket.Conn, readerDone chan struct{}, after time.Duration) {
 	timer := time.NewTimer(after)
 	defer timer.Stop()
 
 	select {
 	case <-timer.C:
 		if c.currentReaderDone() == readerDone && c.ctx.Err() == nil {
-			_ = c.currentConn().Close(websocket.StatusNormalClosure, "refresh RTA token")
+			_ = conn.Close(websocket.StatusNormalClosure, "refresh RTA token")
 		}
 	case <-readerDone:
 	case <-c.ctx.Done():
@@ -610,13 +639,25 @@ func (c *Conn) subscriptionsForReconnect() []*Subscription {
 
 func (c *Conn) updateSubscriptionID(subscription *Subscription, id uint32) {
 	c.subscriptionsMu.Lock()
-	defer c.subscriptionsMu.Unlock()
 	for existingID, existingSubscription := range c.subscriptions {
 		if existingSubscription == subscription {
 			delete(c.subscriptions, existingID)
+			delete(c.pendingEvents, existingID)
 		}
 	}
+	pendingEvents := c.registerSubscriptionLocked(subscription, id)
+	c.subscriptionsMu.Unlock()
+	subscription.dispatchPending(pendingEvents)
+}
+
+// registerSubscriptionLocked installs subscription under id and returns any
+// events that arrived after the subscribe response but before the subscription
+// was visible in the routing table. The caller must hold subscriptionsMu.
+func (c *Conn) registerSubscriptionLocked(subscription *Subscription, id uint32) []json.RawMessage {
 	c.subscriptions[id] = subscription
+	pendingEvents := c.pendingEvents[id]
+	delete(c.pendingEvents, id)
+	return pendingEvents
 }
 
 func (c *Conn) removeSubscription(subscription *Subscription) {
@@ -625,6 +666,7 @@ func (c *Conn) removeSubscription(subscription *Subscription) {
 	for id, existingSubscription := range c.subscriptions {
 		if existingSubscription == subscription {
 			delete(c.subscriptions, id)
+			delete(c.pendingEvents, id)
 		}
 	}
 }
@@ -761,13 +803,40 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		sub, ok := c.subscriptions[subscriptionID]
 		c.subscriptionsMu.RUnlock()
 		if ok {
-			go sub.handler().HandleEvent(payload[1])
+			go sub.dispatchEvent(payload[1])
+		} else {
+			c.storePendingEvent(subscriptionID, payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
 	case typeResync:
 		c.notifyResync()
 	default:
 		c.log.Debug("received an unexpected message", slog.Group("message", "type", typ))
+	}
+}
+
+func (c *Conn) storePendingEvent(subscriptionID uint32, custom json.RawMessage) {
+	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
+	if _, ok := c.subscriptions[subscriptionID]; ok {
+		return
+	}
+	if c.pendingEvents == nil {
+		c.pendingEvents = make(map[uint32][]json.RawMessage)
+	}
+	events := c.pendingEvents[subscriptionID]
+	if len(events) >= maxPendingEventsPerID {
+		return
+	}
+	if len(events) == 0 && len(c.pendingEvents) >= maxPendingEventIDs {
+		return
+	}
+	c.pendingEvents[subscriptionID] = append(events, slices.Clone(custom))
+}
+
+func (s *Subscription) dispatchPending(events []json.RawMessage) {
+	for _, event := range events {
+		go s.dispatchEvent(event)
 	}
 }
 

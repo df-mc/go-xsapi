@@ -303,10 +303,12 @@ func TestSubscribeClearsCachedSubscriptionOnCurrentCustomDecodeError(t *testing.
 	subscription := &rta.Subscription{
 		Custom: []byte(`{`),
 	}
+	unsub := &fakeUnsubscriber{called: make(chan struct{}, 1)}
 	client := &Client{
 		subscription:     subscription,
 		subscriptionData: &subscriptionData{ConnectionID: uuid.New()},
 		sessions:         map[string]*Session{},
+		unsub:            unsub,
 	}
 
 	if _, _, err := client.subscribe(context.Background()); err == nil {
@@ -317,5 +319,10 @@ func TestSubscribeClearsCachedSubscriptionOnCurrentCustomDecodeError(t *testing.
 	}
 	if client.subscriptionData != nil {
 		t.Fatal("cached subscription data was not cleared")
+	}
+	select {
+	case <-unsub.called:
+	case <-time.After(time.Second):
+		t.Fatal("broken subscription was not cleaned up")
 	}
 }

@@ -70,6 +70,9 @@ type Client struct {
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
+
+	shoulderTapsMu sync.Mutex
+	shoulderTaps   map[string]shoulderTapVersion
 }
 
 // SessionByReference looks up for a multiplayer session identified by the reference.

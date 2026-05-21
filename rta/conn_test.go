@@ -3,6 +3,8 @@ package rta
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -56,7 +58,7 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 }
 
 func newTestConn() *Conn {
-	conn := &Conn{}
+	conn := &Conn{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	conn.subscriptions = make(map[uint32]*Subscription)
 	for i := range cap(conn.expected) {
@@ -124,6 +126,45 @@ func TestSubscribeRetriesIfConnectionChangesBeforeRegistration(t *testing.T) {
 	}
 	if _, ok := conn.subscriptions[1]; ok {
 		t.Fatal("stale subscription ID was registered")
+	}
+}
+
+func TestSubscribeDispatchesEventArrivingBeforeRegistration(t *testing.T) {
+	conn := newTestConn()
+	readerDone := make(chan struct{})
+	conn.readerDone = readerDone
+	eventReceived := make(chan json.RawMessage, 1)
+
+	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
+		ch := make(chan *handshake, 1)
+		ch <- &handshake{
+			status: StatusOK,
+			payload: []json.RawMessage{
+				json.RawMessage(`7`),
+				json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`),
+			},
+		}
+		conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"event":"early"}`)})
+		return ch, readerDone, nil
+	}
+
+	subscription, err := conn.Subscribe(context.Background(), "resource")
+	if err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	subscription.Handle(testSubscriptionHandler{
+		handleEvent: func(custom json.RawMessage) {
+			eventReceived <- custom
+		},
+	})
+
+	select {
+	case payload := <-eventReceived:
+		if got := string(payload); got != `{"event":"early"}` {
+			t.Fatalf("event payload = %s, want early event", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for early event")
 	}
 }
 

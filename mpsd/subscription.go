@@ -79,7 +79,8 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 }
 
 func (c *Client) resetBrokenSubscription(subscription *rta.Subscription) {
-	if subscription == nil || c.rta == nil {
+	unsub := c.unsub
+	if subscription == nil || unsub == nil {
 		return
 	}
 	// If the subscription was unsuccessful, reset the RTA state in the
@@ -87,7 +88,7 @@ func (c *Client) resetBrokenSubscription(subscription *rta.Subscription) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 		defer cancel()
-		if err := c.rta.Unsubscribe(ctx, subscription); err != nil {
+		if err := unsub.Unsubscribe(ctx, subscription); err != nil {
 			c.log.Error("error resetting broken subscription", slog.Any("error", err))
 		}
 	}()
@@ -163,6 +164,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 
 	refs := make([]SessionReference, 0, len(event.ShoulderTaps))
 	for _, tap := range event.ShoulderTaps {
+		if !h.shouldProcessTap(tap) {
+			continue
+		}
 		ref, err := h.parseReference(tap.Resource)
 		if err != nil {
 			h.log.Error("error parsing resource identifier in subscription event as session reference",
@@ -185,6 +189,26 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		}
 	}
 	h.sessionsMu.RUnlock()
+}
+
+func (h *subscriptionHandler) shouldProcessTap(tap shoulderTap) bool {
+	if tap.Branch == uuid.Nil || tap.ChangeNumber == 0 {
+		return true
+	}
+	h.shoulderTapsMu.Lock()
+	defer h.shoulderTapsMu.Unlock()
+	if h.shoulderTaps == nil {
+		h.shoulderTaps = make(map[string]shoulderTapVersion)
+	}
+	last, ok := h.shoulderTaps[tap.Resource]
+	if ok && last.Branch == tap.Branch && tap.ChangeNumber <= last.ChangeNumber {
+		return false
+	}
+	h.shoulderTaps[tap.Resource] = shoulderTapVersion{
+		Branch:       tap.Branch,
+		ChangeNumber: tap.ChangeNumber,
+	}
+	return true
 }
 
 // HandleResync implements [rta.ResyncHandler].
@@ -238,6 +262,7 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 			slog.Any("error", err),
 			slog.String("data", string(h.subscription.CurrentCustom())),
 		)
+		h.resetBrokenSubscription(h.subscription)
 		h.subscription, h.subscriptionData = nil, nil
 		h.subscriptionMu.Unlock()
 		return
@@ -246,6 +271,7 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 		h.logger().Error("invalid reconnected subscription custom",
 			slog.String("data", string(h.subscription.CurrentCustom())),
 		)
+		h.resetBrokenSubscription(h.subscription)
 		h.subscription, h.subscriptionData = nil, nil
 		h.subscriptionMu.Unlock()
 		return
@@ -366,4 +392,9 @@ type shoulderTap struct {
 
 	// Branch is a unique identifier for the current branch of the resource.
 	Branch uuid.UUID `json:"branch"`
+}
+
+type shoulderTapVersion struct {
+	Branch       uuid.UUID
+	ChangeNumber uint64
 }
