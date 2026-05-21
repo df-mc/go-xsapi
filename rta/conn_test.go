@@ -75,7 +75,7 @@ func TestSubscriptionCurrentCustomReturnsDetachedCopy(t *testing.T) {
 		t.Fatalf("CurrentCustom after mutation = %s, want original", got)
 	}
 
-	subscription.setCurrent(2, json.RawMessage(`{"value":"current"}`))
+	setSubscriptionCurrent(subscription, 2, json.RawMessage(`{"value":"current"}`))
 	custom = subscription.CurrentCustom()
 	custom[10] = 'X'
 	if got := string(subscription.CurrentCustom()); got != `{"value":"current"}` {
@@ -122,7 +122,7 @@ func TestDrainExpectedDoesNotResetSequences(t *testing.T) {
 func TestResubscribeRetriesTransientStatuses(t *testing.T) {
 	conn := newTestConn()
 	subscription := &Subscription{ID: 1, resourceURI: "resource://session"}
-	subscription.setCurrent(1, nil)
+	setSubscriptionCurrent(subscription, 1, nil)
 	conn.subscriptions[1] = subscription
 
 	var attempts atomic.Int32
@@ -299,13 +299,13 @@ func TestSubscribeReceivesEventSentImmediatelyAfterAck(t *testing.T) {
 func TestUnsubscribeRemovesAllIDsForSubscription(t *testing.T) {
 	conn := newTestConn()
 	subscription := &Subscription{ID: 1}
-	subscription.setCurrent(1, nil)
+	setSubscriptionCurrent(subscription, 1, nil)
 	conn.subscriptions[1] = subscription
 	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
 		if got := payload[0].(uint32); got != 1 {
 			t.Fatalf("unsubscribe ID = %d, want 1", got)
 		}
-		subscription.setCurrent(2, nil)
+		setSubscriptionCurrent(subscription, 2, nil)
 		conn.subscriptions[2] = subscription
 		ch := make(chan *handshake, 1)
 		ch <- &handshake{status: StatusOK}
@@ -852,6 +852,14 @@ func (h testSubscriptionHandler) HandleResync() {
 	if h.handleResync != nil {
 		h.handleResync()
 	}
+}
+
+func setSubscriptionCurrent(subscription *Subscription, id uint32, custom json.RawMessage) {
+	subscription.mu.Lock()
+	subscription.currentID = id
+	subscription.currentCustom = append(json.RawMessage(nil), custom...)
+	subscription.currentSet = true
+	subscription.mu.Unlock()
 }
 
 func useTestConnectURL(t *testing.T, rawURL string) {

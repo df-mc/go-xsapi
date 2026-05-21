@@ -17,8 +17,8 @@ import (
 
 const (
 	reconnectDialTimeout          = 15 * time.Second
-	reconnectBackoffInitial       = time.Second
-	reconnectBackoffMax           = 30 * time.Second
+	reconnectBackoffMax           = 60 * time.Second
+	reconnectBackoffJitterMax     = 5 * time.Second
 	proactiveReconnectInterval    = 90 * time.Minute
 	resyncSuppressionDuration     = 5 * time.Minute
 	maxPendingEventsBeforeHandler = 8
@@ -193,10 +193,10 @@ func (c *Conn) applySubscribeHandshake(sub *Subscription, h *handshake) error {
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	var id uint32
-	h, _, err := c.callWithPayload(ctx, operationUnsubscribe, func() []any {
+	h, _, err := c.callWithHook(ctx, operationUnsubscribe, func() []any {
 		id = sub.id()
 		return []any{id}
-	})
+	}, true, nil)
 	if err != nil {
 		return err
 	}
@@ -209,21 +209,6 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 }
 
 var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
-
-// callWithPayload sends a sequenced message to the server and blocks using the
-// given [context.Context] until the server responds with a matching sequence
-// number. If the Conn is reconnecting, callWithPayload blocks until reconnect
-// completes before sending.
-func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []any) (*handshake, chan struct{}, error) {
-	return c.call(ctx, op, payload, true)
-}
-
-// call sends one RTA request and waits for its sequenced response. When wait
-// is true, it first waits for any reconnect wave to finish; reconnect-internal
-// resubscribe calls pass wait=false so they do not wait on themselves.
-func (c *Conn) call(ctx context.Context, op uint8, payload func() []any, wait bool) (*handshake, chan struct{}, error) {
-	return c.callWithHook(ctx, op, payload, wait, nil)
-}
 
 func (c *Conn) callWithHook(ctx context.Context, op uint8, payload func() []any, wait bool, beforeDeliver func(*handshake)) (*handshake, chan struct{}, error) {
 	for {
@@ -304,6 +289,11 @@ type Subscription struct {
 	// pending holds events delivered after the subscription is registered but
 	// before the caller installs a handler on it.
 	pending []json.RawMessage
+
+	// eventQueue serializes handler callbacks off the WebSocket reader goroutine.
+	eventMu      sync.Mutex
+	eventQueue   []json.RawMessage
+	eventRunning bool
 }
 
 // id returns the active service-side subscription ID. It may differ from the
@@ -315,15 +305,6 @@ func (s *Subscription) id() uint32 {
 		return s.currentID
 	}
 	return s.ID
-}
-
-// setCurrent records the active service-side ID and custom payload.
-func (s *Subscription) setCurrent(id uint32, custom json.RawMessage) {
-	s.mu.Lock()
-	s.currentID = id
-	s.currentCustom = custom
-	s.currentSet = true
-	s.mu.Unlock()
 }
 
 // custom returns the active custom payload. It may differ from the exported
@@ -356,8 +337,8 @@ func (s *Subscription) Handle(h SubscriptionHandler) {
 	s.hSet = true
 	pending := s.pending
 	s.pending = nil
+	s.enqueueEventsLocked(pending)
 	s.mu.Unlock()
-	s.dispatchPending(pending)
 }
 
 // handler returns the [SubscriptionHandler] currently registered on the [Subscription].
@@ -373,17 +354,54 @@ func (s *Subscription) handler() SubscriptionHandler {
 // dispatchEvent delivers an event to the installed handler, or briefly buffers
 // it if the caller has not yet called Handle on a newly returned subscription.
 func (s *Subscription) dispatchEvent(custom json.RawMessage) {
+	custom = append(json.RawMessage(nil), custom...)
 	s.mu.Lock()
 	if !s.hSet {
 		if len(s.pending) < maxPendingEventsBeforeHandler {
-			s.pending = append(s.pending, append(json.RawMessage(nil), custom...))
+			s.pending = append(s.pending, custom)
 		}
 		s.mu.Unlock()
 		return
 	}
-	h := s.h
+	s.enqueueEventsLocked([]json.RawMessage{custom})
 	s.mu.Unlock()
-	h.HandleEvent(custom)
+}
+
+// enqueueEventsLocked appends events to the per-subscription callback queue.
+// The caller must hold s.mu so pending events are queued before live events that
+// arrive immediately after Handle installs the handler.
+func (s *Subscription) enqueueEventsLocked(events []json.RawMessage) {
+	if len(events) == 0 {
+		return
+	}
+	s.eventMu.Lock()
+	for _, event := range events {
+		s.eventQueue = append(s.eventQueue, append(json.RawMessage(nil), event...))
+	}
+	if !s.eventRunning {
+		s.eventRunning = true
+		go s.drainEvents()
+	}
+	s.eventMu.Unlock()
+}
+
+// drainEvents serializes user callbacks without blocking the WebSocket reader.
+func (s *Subscription) drainEvents() {
+	for {
+		s.eventMu.Lock()
+		if len(s.eventQueue) == 0 {
+			s.eventRunning = false
+			s.eventMu.Unlock()
+			return
+		}
+		event := s.eventQueue[0]
+		copy(s.eventQueue, s.eventQueue[1:])
+		s.eventQueue[len(s.eventQueue)-1] = nil
+		s.eventQueue = s.eventQueue[:len(s.eventQueue)-1]
+		s.eventMu.Unlock()
+
+		s.handler().HandleEvent(event)
+	}
 }
 
 // SubscriptionHandler is the interface for handling events that may occur in a single
@@ -603,7 +621,7 @@ func (c *Conn) reconnect(done chan struct{}) {
 	defer c.finishReconnect(done)
 
 	c.log.Info("re-establishing WebSocket connection...")
-	backoff := reconnectBackoffInitial
+	attempt := 0
 
 	for {
 		if readerDone := c.currentReaderDone(); readerDone != nil {
@@ -622,19 +640,23 @@ func (c *Conn) reconnect(done chan struct{}) {
 		conn, err := c.dialer.dial(dialCtx)
 		cancel()
 		if err != nil {
+			backoff := reconnectDialBackoff(attempt)
+			attempt++
 			c.log.Error("error re-establishing WebSocket connection",
 				slog.Any("error", err),
 				slog.Duration("retry_after", backoff),
 			)
+			if backoff <= 0 {
+				continue
+			}
 			select {
 			case <-time.After(backoff):
-				backoff = minDuration(backoff*2, reconnectBackoffMax)
 				continue
 			case <-c.ctx.Done():
 				return
 			}
 		}
-		backoff = reconnectBackoffInitial
+		attempt = 0
 		c.startReader(conn)
 
 		successes := c.resubscribe()
@@ -765,9 +787,13 @@ func (c *Conn) resubscribe() []*Subscription {
 					if delay <= 0 {
 						continue
 					}
+					readerDone := c.currentReaderDone()
 					select {
 					case <-time.After(delay):
 						continue
+					case <-readerDone:
+						c.markReconnectNext()
+						return
 					case <-c.ctx.Done():
 						return
 					}
@@ -923,14 +949,6 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 	}
 }
 
-// dispatchPending delivers events that arrived after subscription registration
-// but before the caller installed a handler.
-func (s *Subscription) dispatchPending(events []json.RawMessage) {
-	for _, event := range events {
-		s.dispatchEvent(event)
-	}
-}
-
 // notifyResync delivers an RTA resync signal to subscriptions that know how to
 // refresh their backing resource.
 func (c *Conn) notifyResync() {
@@ -962,12 +980,20 @@ func (c *Conn) resyncReady() bool {
 	return readyAt.IsZero() || time.Now().After(readyAt)
 }
 
-// minDuration returns the smaller of a and b.
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
+// reconnectDialBackoff returns XSAPI-style quadratic reconnect backoff capped
+// at 60s, with a small jitter to avoid clients reconnecting in lockstep.
+func reconnectDialBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
 	}
-	return b
+	delay := time.Duration(attempt*attempt) * time.Second
+	if delay > reconnectBackoffMax {
+		delay = reconnectBackoffMax
+	}
+	if reconnectBackoffJitterMax > 0 {
+		delay += time.Duration(time.Now().UnixNano() % int64(reconnectBackoffJitterMax))
+	}
+	return delay
 }
 
 // An OutOfRangeError occurs when reading values from payload received from the service.

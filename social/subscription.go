@@ -170,7 +170,6 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 		h.logger().Error("error reconnecting social subscription", slog.Any("error", err))
 		return
 	}
-	h.HandleResync()
 }
 
 // HandleResync implements [rta.ResyncHandler] by refreshing the caller's

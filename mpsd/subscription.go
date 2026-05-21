@@ -280,6 +280,7 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 		h.resetBrokenSubscription(h.subscription)
 		h.subscription, h.subscriptionData = nil, nil
 		h.subscriptionMu.Unlock()
+		h.Client.closeTrackedSessions()
 		return
 	}
 	if data.ConnectionID == uuid.Nil {
@@ -289,6 +290,7 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 		h.resetBrokenSubscription(h.subscription)
 		h.subscription, h.subscriptionData = nil, nil
 		h.subscriptionMu.Unlock()
+		h.Client.closeTrackedSessions()
 		return
 	}
 	oldData := h.subscriptionData
