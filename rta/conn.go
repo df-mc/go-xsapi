@@ -302,12 +302,6 @@ func (s *Subscription) CurrentCustom() json.RawMessage {
 	return s.custom()
 }
 
-// ResourceURI returns the URI identifying the resource which the [Subscription] is targeting.
-// The returned value is identical to the one passed to [Conn.Subscribe].
-func (s *Subscription) ResourceURI() string {
-	return s.resourceURI
-}
-
 // Handle registers a [SubscriptionHandler] on the [Subscription] to handle
 // future events that may occur in the subscription. If h is nil, a no-op
 // handler is registered.
@@ -551,7 +545,7 @@ func (c *Conn) reconnect(done chan struct{}) {
 			c.log.Debug("resubscribed", slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.id())),
 				slog.String("custom", string(subscription.custom())),
-				slog.String("resourceURI", subscription.ResourceURI()),
+				slog.String("resourceURI", subscription.resourceURI),
 			))
 		}
 		if c.reconnectWaveStable(readerDone) {
@@ -642,7 +636,7 @@ func (c *Conn) resubscribe() []*Subscription {
 			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 			defer cancel()
 
-			sub, err := c.subscribeDuringReconnect(ctx, subscription.ResourceURI())
+			sub, err := c.subscribeDuringReconnect(ctx, subscription.resourceURI)
 			if err != nil {
 				if errors.Is(err, errReconnectInterrupted) {
 					c.subscriptionsMu.Lock()
@@ -661,7 +655,7 @@ func (c *Conn) resubscribe() []*Subscription {
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
 						slog.Uint64("id", uint64(subscription.id())),
-						slog.String("resourceURI", subscription.ResourceURI()),
+						slog.String("resourceURI", subscription.resourceURI),
 					),
 					slog.Any("error", err),
 				)

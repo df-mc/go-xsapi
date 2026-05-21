@@ -2,7 +2,8 @@ package rta
 
 import (
 	"encoding/json"
-	"fmt"
+	"strconv"
+	"strings"
 )
 
 type handshake struct {
@@ -74,10 +75,15 @@ type UnexpectedStatusError struct {
 }
 
 func (e *UnexpectedStatusError) Error() string {
+	b := &strings.Builder{}
+	b.WriteString("rta: code ")
+	b.WriteString(strconv.FormatInt(int64(e.Code), 10))
 	if e.Message != "" {
-		return fmt.Sprintf("rta: code: %d: %s", e.Code, e.Message)
+		b.WriteByte(':')
+		b.WriteByte(' ')
+		b.WriteString(e.Message)
 	}
-	return fmt.Sprintf("rta: code: %d", e.Code)
+	return b.String()
 }
 
 const (
