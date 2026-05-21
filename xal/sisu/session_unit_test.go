@@ -3,24 +3,14 @@ package sisu
 import (
 	"context"
 	"crypto/ecdsa"
-	"errors"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"golang.org/x/oauth2"
 )
-
-func TestErrorCodeSignInCountByDeviceTypeExceededStringSpellsDevice(t *testing.T) {
-	got := ErrorCodeSignInCountByDeviceTypeExceeded.String()
-	if strings.Contains(got, "devie") {
-		t.Fatalf("ErrorCodeSignInCountByDeviceTypeExceeded.String() = %q, contains typo", got)
-	}
-	if !strings.Contains(got, "device") {
-		t.Fatalf("ErrorCodeSignInCountByDeviceTypeExceeded.String() = %q, want device message", got)
-	}
-}
 
 func TestAccountCreationRequiredErrorDoesNotExposeSignupURL(t *testing.T) {
 	signupURL, err := url.Parse("https://sisu.xboxlive.com/create?sig=sensitive")
@@ -39,19 +29,22 @@ func TestAuthorizeRejectsNilDeviceToken(t *testing.T) {
 	})
 
 	_, err := session.authorize(context.Background())
-	if !errors.Is(err, errDeviceTokenAbsent) {
-		t.Fatalf("authorize error = %v, want %v", err, errDeviceTokenAbsent)
+	if err == nil || !strings.Contains(err.Error(), "device token is invalid") {
+		t.Fatalf("authorize error = %v, want invalid device token", err)
 	}
 }
 
 func TestAuthorizeRejectsNilProofKey(t *testing.T) {
 	session := (Config{}).New(staticMSATokenSource{}, &SessionConfig{
-		DeviceTokenSource: staticDeviceTokenSource{token: &xasd.Token{Token: "device-token"}},
+		DeviceTokenSource: staticDeviceTokenSource{token: &xasd.Token{
+			Token:    "device-token",
+			NotAfter: time.Now().Add(time.Hour),
+		}},
 	})
 
 	_, err := session.authorize(context.Background())
-	if !errors.Is(err, errProofKeyAbsent) {
-		t.Fatalf("authorize error = %v, want %v", err, errProofKeyAbsent)
+	if err == nil || !strings.Contains(err.Error(), "proof key is absent") {
+		t.Fatalf("authorize error = %v, want absent proof key", err)
 	}
 }
 

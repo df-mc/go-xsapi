@@ -25,11 +25,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-var (
-	errDeviceTokenAbsent = errors.New("xal/sisu: device token is absent")
-	errProofKeyAbsent    = errors.New("xal/sisu: proof key is absent")
-)
-
 // New creates a new Session using src as the [oauth2.TokenSource] that provides Microsoft
 // Account (MSA) access tokens. If sc is non nil, it will be used to customize session behavior,
 // including resuming from a previous Session using a Snapshot.
@@ -329,7 +324,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		return nil, fmt.Errorf("xal/sisu: request device token for authorization: %w", err)
 	}
 	if device == nil || !device.Valid() {
-		return nil, errDeviceTokenAbsent
+		return nil, errors.New("xal/sisu: device token is invalid")
 	}
 	token, err := s.msa.Token()
 	if err != nil {
@@ -337,7 +332,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 	}
 	proofKey := s.ProofKey()
 	if proofKey == nil {
-		return nil, errProofKeyAbsent
+		return nil, errors.New("xal/sisu: proof key is absent")
 	}
 
 	td, err := nsal.Default(ctx)
