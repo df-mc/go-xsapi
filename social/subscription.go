@@ -160,8 +160,10 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 // HandleResync implements [rta.ResyncHandler] by refreshing the caller's
 // current friend list through PeopleHub and notifying handlers that can consume
 // a full resync. For compatibility, handlers that only implement the base
-// notification interface receive a Changed notification for the currently
-// visible XUIDs when the refreshed list is non-empty.
+// notification interface receive a best-effort Changed snapshot for the
+// currently visible XUIDs when the refreshed list is non-empty. That fallback is
+// not a true delta and cannot report users that disappeared from the refreshed
+// list; implement [ResyncHandler] when exact resync semantics are needed.
 func (h *subscriptionHandler) HandleResync() {
 	if h.Client == nil || h.Client.client == nil {
 		h.logger().Debug("skipping social resync without HTTP client")
@@ -346,6 +348,9 @@ type SubscriptionHandler interface {
 // ResyncHandler is an optional extension for [SubscriptionHandler]
 // implementations that want the complete refreshed friend list after RTA asks
 // the client to resync or after the social RTA subscription is re-established.
+// This is the lossless path for resync notifications; the base
+// SubscriptionHandler fallback can only report a best-effort Changed snapshot of
+// currently visible XUIDs.
 type ResyncHandler interface {
 	HandleSocialResync(friends []User)
 }

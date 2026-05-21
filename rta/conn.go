@@ -242,9 +242,25 @@ func (c *Conn) callWithHook(ctx context.Context, op uint8, payload func() []any,
 			c.release(op, seq)
 			return result, readerDone, nil
 		case <-ctx.Done():
+			select {
+			case result, ok := <-ch:
+				if ok {
+					c.release(op, seq)
+					return result, readerDone, nil
+				}
+			default:
+			}
 			c.release(op, seq)
 			return nil, nil, ctx.Err()
 		case <-c.ctx.Done():
+			select {
+			case result, ok := <-ch:
+				if ok {
+					c.release(op, seq)
+					return result, readerDone, nil
+				}
+			default:
+			}
 			c.release(op, seq)
 			return nil, nil, context.Cause(c.ctx)
 		}

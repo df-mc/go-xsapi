@@ -67,6 +67,25 @@ func newTestConn() *Conn {
 	return conn
 }
 
+func TestCallReturnsReadyHandshakeWhenContextCancels(t *testing.T) {
+	conn := newTestConn()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
+		ch := make(chan *handshake, 1)
+		ch <- &handshake{status: StatusOK}
+		return ch, conn.currentReaderDone(), nil
+	}
+
+	h, _, err := conn.callWithHook(ctx, operationSubscribe, func() []any { return []any{"resource"} }, true, nil)
+	if err != nil {
+		t.Fatalf("callWithHook returned error: %v", err)
+	}
+	if h == nil || h.status != StatusOK {
+		t.Fatalf("handshake = %#v, want StatusOK", h)
+	}
+}
+
 func TestDrainExpectedDoesNotResetSequences(t *testing.T) {
 	conn := newTestConn()
 	conn.expected[operationSubscribe] = map[uint32]expectedHandshake{1: {response: make(chan *handshake)}}
