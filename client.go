@@ -184,11 +184,6 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, net.ErrClosed
 	}
 
-	if skipAuth, _ := req.Context().Value(skipAuthKey).(bool); skipAuth {
-		reqBodyClosed = true
-		return c.baseTransport().RoundTrip(req)
-	}
-
 	// Propagate the request's context so that XSTS token retrieval
 	// respects any deadlines or cancellations set by the caller.
 	ctx := req.Context()
@@ -366,14 +361,3 @@ func RequestHeader(key, value string) RequestOption {
 //
 // A RequestOption must be reusable and must not hold any per-request state.
 type RequestOption = internal.RequestOption
-
-// WithoutAuth returns a new request that bypasses the Authorization and
-// Signature headers normally set by [Client.RoundTrip].
-func WithoutAuth(req *http.Request) *http.Request {
-	return req.WithContext(context.WithValue(req.Context(), skipAuthKey, true))
-}
-
-// skipAuthKey is the context key used to bypass request authentication.
-var skipAuthKey skipAuthContextKey
-
-type skipAuthContextKey struct{}
