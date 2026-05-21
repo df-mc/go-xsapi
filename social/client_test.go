@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/df-mc/go-xsapi/v2/internal/testutil"
 	"github.com/df-mc/go-xsapi/v2/rta"
 )
 
@@ -324,6 +327,40 @@ func TestClientSubscribeDuplicatesComparableHandlerWithLiveSubscription(t *testi
 	}
 }
 
+func TestSubscriptionHandlerHandleResyncRefreshesFriends(t *testing.T) {
+	called := make(chan []User, 1)
+	handler := resyncHandler{called: called}
+	client := &Client{
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodGet {
+				t.Fatalf("method = %s, want GET", req.Method)
+			}
+			if !strings.Contains(req.URL.Path, "/users/me/people/friends/") {
+				t.Fatalf("path = %s, want friends path", req.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"people":[{"xuid":"1"},{"xuid":"2"}]}`)),
+				Request:    req,
+			}, nil
+		})},
+		log:                  slogDiscard(),
+		subscriptionHandlers: []SubscriptionHandler{handler},
+	}
+
+	(&subscriptionHandler{Client: client}).HandleResync()
+
+	select {
+	case friends := <-called:
+		if len(friends) != 2 || friends[0].XUID != "1" || friends[1].XUID != "2" {
+			t.Fatalf("friends = %#v, want XUIDs 1 and 2", friends)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resync handler")
+	}
+}
+
 func TestClientSubscribeAfterReconnectLossRemainsAppendOnly(t *testing.T) {
 	handler := &pointerHandler{id: "A"}
 	client := &Client{
@@ -507,7 +544,15 @@ func TestClientSubscribeReturnsBeforeDiscardCleanupCompletes(t *testing.T) {
 	close(unsub.release)
 }
 
-var slogDiscard = testutil.SlogDiscard
+func slogDiscard() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 type namedHandler string
 
@@ -529,3 +574,13 @@ type pointerHandler struct{ id string }
 
 func (*pointerHandler) HandleSocialNotification(string, []string)  {}
 func (*pointerHandler) HandleIncomingFriendRequestCountChange(int) {}
+
+type resyncHandler struct {
+	called chan<- []User
+}
+
+func (h resyncHandler) HandleSocialNotification(string, []string)  {}
+func (h resyncHandler) HandleIncomingFriendRequestCountChange(int) {}
+func (h resyncHandler) HandleSocialResync(friends []User) {
+	h.called <- friends
+}

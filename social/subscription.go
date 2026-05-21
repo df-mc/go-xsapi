@@ -113,7 +113,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		handlers := slices.Clone(h.subscriptionHandlers)
 		h.subscriptionMu.RUnlock()
 		for _, handler := range handlers {
-			handler.HandleIncomingFriendRequestCountChange(*data.Count)
+			go handler.HandleIncomingFriendRequestCountChange(*data.Count)
 		}
 		return
 	case NotificationTypeAdded, NotificationTypeRemoved, NotificationTypeChanged:
@@ -128,7 +128,8 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		handlers := slices.Clone(h.subscriptionHandlers)
 		h.subscriptionMu.RUnlock()
 		for _, handler := range handlers {
-			handler.HandleSocialNotification(data.Type, slices.Clone(data.XUIDs))
+			xuids := slices.Clone(data.XUIDs)
+			go handler.HandleSocialNotification(data.Type, xuids)
 		}
 	default:
 		h.log.Warn("unexpected subscription notification type",
@@ -150,9 +151,60 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 		}
 		h.Client.subscription = nil
 		h.subscriptionMu.Unlock()
-		h.log.Error("error reconnecting social subscription", slog.Any("error", err))
+		h.logger().Error("error reconnecting social subscription", slog.Any("error", err))
 		return
 	}
+	h.HandleResync()
+}
+
+// HandleResync implements [rta.ResyncHandler] by refreshing the caller's
+// current friend list through PeopleHub and notifying handlers that can consume
+// a full resync. For compatibility, handlers that only implement the base
+// notification interface receive a Changed notification for the currently
+// visible XUIDs when the refreshed list is non-empty.
+func (h *subscriptionHandler) HandleResync() {
+	if h.Client == nil || h.Client.client == nil {
+		h.logger().Debug("skipping social resync without HTTP client")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+
+	friends, err := h.Friends(ctx)
+	if err != nil {
+		h.logger().Error("error refreshing social subscription after RTA resync", slog.Any("error", err))
+		return
+	}
+
+	h.subscriptionMu.RLock()
+	handlers := slices.Clone(h.subscriptionHandlers)
+	h.subscriptionMu.RUnlock()
+
+	xuids := make([]string, 0, len(friends))
+	for _, friend := range friends {
+		if friend.XUID != "" {
+			xuids = append(xuids, friend.XUID)
+		}
+	}
+	for _, handler := range handlers {
+		if resyncHandler, ok := handler.(ResyncHandler); ok {
+			go resyncHandler.HandleSocialResync(slices.Clone(friends))
+			continue
+		}
+		if len(xuids) != 0 {
+			go handler.HandleSocialNotification(NotificationTypeChanged, slices.Clone(xuids))
+		}
+	}
+}
+
+// logger returns the handler logger, falling back to the default logger when a
+// test constructs a Client without one.
+func (h *subscriptionHandler) logger() *slog.Logger {
+	if h.Client != nil && h.Client.log != nil {
+		return h.Client.log
+	}
+	return slog.Default()
 }
 
 // ensureSubscriptionLocked ensures that a live RTA subscription exists on the
@@ -291,11 +343,19 @@ type SubscriptionHandler interface {
 	HandleIncomingFriendRequestCountChange(count int)
 }
 
+// ResyncHandler is an optional extension for [SubscriptionHandler]
+// implementations that want the complete refreshed friend list after RTA asks
+// the client to resync or after the social RTA subscription is re-established.
+type ResyncHandler interface {
+	HandleSocialResync(friends []User)
+}
+
 // NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
 type NopSubscriptionHandler struct{}
 
 func (NopSubscriptionHandler) HandleSocialNotification(string, []string)  {}
 func (NopSubscriptionHandler) HandleIncomingFriendRequestCountChange(int) {}
+func (NopSubscriptionHandler) HandleSocialResync([]User)                  {}
 
 const (
 	// NotificationTypeAdded is the notification type for when one or more users

@@ -12,6 +12,11 @@ type handshake struct {
 	payload  []json.RawMessage
 }
 
+type expectedHandshake struct {
+	response      chan<- *handshake
+	beforeDeliver func(*handshake)
+}
+
 const (
 	typeSubscribe uint32 = iota + 1
 	typeUnsubscribe
@@ -47,13 +52,16 @@ func operationToType(op uint8) uint32 {
 	}
 }
 
-func (c *Conn) expect(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
+func (c *Conn) expectWithHook(op uint8, sequence uint32, payload []any, beforeDeliver func(*handshake)) (<-chan *handshake, chan struct{}, error) {
 	if c.expectHook != nil {
 		return c.expectHook(op, sequence, payload)
 	}
 	hand := make(chan *handshake, 1)
 	c.expectedMu.Lock()
-	c.expected[op][sequence] = hand
+	c.expected[op][sequence] = expectedHandshake{
+		response:      hand,
+		beforeDeliver: beforeDeliver,
+	}
 	c.expectedMu.Unlock()
 	readerDone, err := c.write(operationToType(op), append([]any{sequence}, payload...))
 	if err != nil {

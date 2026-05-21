@@ -62,15 +62,15 @@ func newTestConn() *Conn {
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	conn.subscriptions = make(map[uint32]*Subscription)
 	for i := range cap(conn.expected) {
-		conn.expected[i] = make(map[uint32]chan<- *handshake)
+		conn.expected[i] = make(map[uint32]expectedHandshake)
 	}
 	return conn
 }
 
 func TestDrainExpectedDoesNotResetSequences(t *testing.T) {
 	conn := newTestConn()
-	conn.expected[operationSubscribe] = map[uint32]chan<- *handshake{1: make(chan *handshake)}
-	conn.expected[operationUnsubscribe] = map[uint32]chan<- *handshake{1: make(chan *handshake)}
+	conn.expected[operationSubscribe] = map[uint32]expectedHandshake{1: {response: make(chan *handshake)}}
+	conn.expected[operationUnsubscribe] = map[uint32]expectedHandshake{1: {response: make(chan *handshake)}}
 	conn.sequences[operationSubscribe].Store(41)
 	conn.sequences[operationUnsubscribe].Store(42)
 
@@ -168,7 +168,62 @@ func TestSubscribeDispatchesEventArrivingBeforeHandler(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeDeletesAttemptedIDAfterReconnectRace(t *testing.T) {
+func TestSubscribeReceivesEventSentImmediatelyAfterAck(t *testing.T) {
+	originalURL := connectURL
+	defer func() { connectURL = originalURL }()
+
+	eventReceived := make(chan json.RawMessage, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		go func() {
+			defer conn.Close(websocket.StatusNormalClosure, "")
+			sequence, _, ok := readSubscribeRequest(t, conn, 1)
+			if !ok {
+				return
+			}
+			if !writeSubscribeHandshake(t, conn, "initial", sequence, 7, `{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`) {
+				return
+			}
+			if !writeEvent(t, conn, "immediate", 7, `{"event":"immediate"}`) {
+				return
+			}
+			drainServerReads(conn)
+		}()
+	}))
+	defer server.Close()
+	useTestConnectURL(t, server.URL)
+
+	conn, err := Dialer{}.DialContext(t.Context(), http.DefaultClient)
+	if err != nil {
+		t.Fatalf("dial RTA connection: %v", err)
+	}
+	defer conn.Close()
+
+	subscription, err := conn.Subscribe(t.Context(), "resource://session")
+	if err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	subscription.Handle(testSubscriptionHandler{
+		handleEvent: func(custom json.RawMessage) {
+			eventReceived <- custom
+		},
+	})
+
+	select {
+	case payload := <-eventReceived:
+		if got := string(payload); got != `{"event":"immediate"}` {
+			t.Fatalf("event payload = %s, want immediate event", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for immediate event")
+	}
+}
+
+func TestUnsubscribeRemovesAllIDsForSubscription(t *testing.T) {
 	conn := newTestConn()
 	subscription := &Subscription{ID: 1}
 	subscription.setCurrent(1, nil)
@@ -190,8 +245,47 @@ func TestUnsubscribeDeletesAttemptedIDAfterReconnectRace(t *testing.T) {
 	if _, ok := conn.subscriptions[1]; ok {
 		t.Fatal("old subscription ID was not deleted")
 	}
-	if current := conn.subscriptions[2]; current != subscription {
-		t.Fatal("replacement subscription ID was deleted")
+	if _, ok := conn.subscriptions[2]; ok {
+		t.Fatal("replacement subscription ID was not deleted")
+	}
+}
+
+func TestSubscribeRegistersBeforeDeliveringHandshake(t *testing.T) {
+	conn := newTestConn()
+	called := make(chan json.RawMessage, 1)
+	subscription := &Subscription{resourceURI: "resource"}
+	response := make(chan *handshake, 1)
+	conn.expected[operationSubscribe][1] = expectedHandshake{
+		response: response,
+		beforeDeliver: func(h *handshake) {
+			if err := conn.applySubscribeHandshake(subscription, h); err != nil {
+				t.Errorf("apply subscribe handshake: %v", err)
+				return
+			}
+			conn.updateSubscriptionID(subscription, subscription.id())
+		},
+	}
+
+	conn.handleMessage(typeSubscribe, []json.RawMessage{
+		json.RawMessage(`1`),
+		json.RawMessage(`0`),
+		json.RawMessage(`7`),
+		json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`),
+	})
+	conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"event":"after-ack"}`)})
+	subscription.Handle(testSubscriptionHandler{
+		handleEvent: func(custom json.RawMessage) {
+			called <- custom
+		},
+	})
+
+	select {
+	case payload := <-called:
+		if got := string(payload); got != `{"event":"after-ack"}` {
+			t.Fatalf("event payload = %s, want after-ack event", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event after subscribe ack")
 	}
 }
 
@@ -212,6 +306,38 @@ func TestHandleMessageResyncNotifiesHandlers(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for resync handler")
+	}
+}
+
+func TestHandleMessageResyncIgnoredDuringSuppressionWindow(t *testing.T) {
+	conn := newTestConn()
+	called := make(chan struct{}, 1)
+	subscription := &Subscription{ID: 1}
+	subscription.Handle(testSubscriptionHandler{
+		handleResync: func() {
+			called <- struct{}{}
+		},
+	})
+	conn.subscriptions[1] = subscription
+	conn.suppressResyncFor(time.Minute)
+
+	conn.handleMessage(typeResync, nil)
+
+	select {
+	case <-called:
+		t.Fatal("resync handler was called during suppression window")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	conn.resyncMu.Lock()
+	conn.resyncReadyAt = time.Now().Add(-time.Second)
+	conn.resyncMu.Unlock()
+	conn.handleMessage(typeResync, nil)
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resync handler after suppression window")
 	}
 }
 

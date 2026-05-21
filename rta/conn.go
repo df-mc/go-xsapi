@@ -20,6 +20,7 @@ const (
 	reconnectBackoffInitial       = time.Second
 	reconnectBackoffMax           = 30 * time.Second
 	proactiveReconnectInterval    = 90 * time.Minute
+	resyncSuppressionDuration     = 5 * time.Minute
 	maxPendingEventsBeforeHandler = 8
 )
 
@@ -42,7 +43,7 @@ type Conn struct {
 	dialer *dialer
 
 	sequences  [operationCapacity]atomic.Uint32
-	expected   [operationCapacity]map[uint32]chan<- *handshake
+	expected   [operationCapacity]map[uint32]expectedHandshake
 	expectedMu sync.RWMutex
 	expectHook func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error)
 
@@ -60,6 +61,12 @@ type Conn struct {
 	reconnectDone chan struct{}
 	// reconnectMu guards reconnectDone and reconnectNext.
 	reconnectMu sync.RWMutex
+
+	// resyncReadyAt is the time after which RTA resync messages should be
+	// delivered. XSAPI suppresses resync immediately after connect/reconnect to
+	// avoid a thundering herd of REST refreshes.
+	resyncReadyAt time.Time
+	resyncMu      sync.RWMutex
 
 	// once ensures that the Conn is closed only once.
 	once sync.Once
@@ -80,6 +87,11 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 		}
 		c.subscriptionsMu.Lock()
 		if !c.reconnectWaveStable(readerDone) {
+			for id, existing := range c.subscriptions {
+				if existing == sub {
+					delete(c.subscriptions, id)
+				}
+			}
 			c.subscriptionsMu.Unlock()
 			continue
 		}
@@ -97,14 +109,22 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
 func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, chan struct{}, error) {
-	h, readerDone, err := c.callWithPayload(ctx, operationSubscribe, func() []any {
+	sub := &Subscription{resourceURI: resourceURI}
+	h, readerDone, err := c.callWithHook(ctx, operationSubscribe, func() []any {
 		return []any{resourceURI}
+	}, true, func(h *handshake) {
+		if err := c.applySubscribeHandshake(sub, h); err == nil {
+			c.updateSubscriptionID(sub, sub.id())
+		}
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	sub, err := c.readSubscribeHandshake(resourceURI, h)
-	return sub, readerDone, err
+	if err := c.applySubscribeHandshake(sub, h); err != nil {
+		c.removeSubscription(sub)
+		return nil, nil, err
+	}
+	return sub, readerDone, nil
 }
 
 // subscribeDuringReconnect re-establishes a subscription while a reconnect
@@ -122,25 +142,39 @@ func (c *Conn) subscribeDuringReconnect(ctx context.Context, resourceURI string)
 // readSubscribeHandshake decodes a successful subscribe handshake into a
 // [Subscription].
 func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscription, error) {
+	sub := &Subscription{resourceURI: resourceURI}
+	if err := c.applySubscribeHandshake(sub, h); err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+// applySubscribeHandshake applies a successful subscribe handshake to sub.
+func (c *Conn) applySubscribeHandshake(sub *Subscription, h *handshake) error {
 	switch h.status {
 	case StatusOK:
 		if len(h.payload) < 2 {
-			return nil, &OutOfRangeError{
+			return &OutOfRangeError{
 				Payload: h.payload,
 				Index:   1,
 			}
 		}
-		sub := &Subscription{
-			resourceURI: resourceURI,
+		var id uint32
+		if err := json.Unmarshal(h.payload[0], &id); err != nil {
+			return fmt.Errorf("decode subscription ID: %w", err)
 		}
-		if err := json.Unmarshal(h.payload[0], &sub.ID); err != nil {
-			return nil, fmt.Errorf("decode subscription ID: %w", err)
+		sub.mu.Lock()
+		if sub.ID == 0 {
+			sub.ID = id
+			sub.Custom = append(json.RawMessage(nil), h.payload[1]...)
 		}
-		sub.Custom = h.payload[1]
-		sub.setCurrent(sub.ID, sub.Custom)
-		return sub, nil
+		sub.currentID = id
+		sub.currentCustom = append(json.RawMessage(nil), h.payload[1]...)
+		sub.currentSet = true
+		sub.mu.Unlock()
+		return nil
 	default:
-		return nil, unexpectedStatusCode(h.status, h.payload)
+		return unexpectedStatusCode(h.status, h.payload)
 	}
 }
 
@@ -159,9 +193,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	if h.status != StatusOK {
 		return unexpectedStatusCode(h.status, h.payload)
 	}
-	c.subscriptionsMu.Lock()
-	delete(c.subscriptions, id)
-	c.subscriptionsMu.Unlock()
+	c.removeSubscription(sub)
 	return nil
 }
 
@@ -179,6 +211,10 @@ func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []a
 // is true, it first waits for any reconnect wave to finish; reconnect-internal
 // resubscribe calls pass wait=false so they do not wait on themselves.
 func (c *Conn) call(ctx context.Context, op uint8, payload func() []any, wait bool) (*handshake, chan struct{}, error) {
+	return c.callWithHook(ctx, op, payload, wait, nil)
+}
+
+func (c *Conn) callWithHook(ctx context.Context, op uint8, payload func() []any, wait bool, beforeDeliver func(*handshake)) (*handshake, chan struct{}, error) {
 	for {
 		if wait {
 			if err := c.wait(ctx); err != nil {
@@ -187,7 +223,7 @@ func (c *Conn) call(ctx context.Context, op uint8, payload func() []any, wait bo
 		}
 
 		seq := c.sequences[op].Add(1)
-		ch, readerDone, err := c.expect(op, seq, payload())
+		ch, readerDone, err := c.expectWithHook(op, seq, payload(), beforeDeliver)
 		if err != nil {
 			if !wait {
 				return nil, nil, errReconnectInterrupted
@@ -429,7 +465,7 @@ func (c *Conn) drainExpected() {
 	for op := range operationCapacity {
 		for seq, ch := range c.expected[op] {
 			delete(c.expected[op], seq)
-			close(ch)
+			close(ch.response)
 		}
 	}
 	c.expectedMu.Unlock()
@@ -443,6 +479,7 @@ func (c *Conn) startReader(conn *websocket.Conn) {
 	c.conn = conn
 	c.readerDone = done
 	c.connMu.Unlock()
+	c.suppressResyncFor(resyncSuppressionDuration)
 	go c.read(conn, done)
 	go c.refreshConnAfter(conn, done, proactiveReconnectInterval)
 }
@@ -507,7 +544,12 @@ func (c *Conn) read(conn *websocket.Conn, done chan struct{}) {
 			if !c.isCurrentConn(conn) {
 				return
 			}
-			c.log.Error("error reading from WebSocket connection", slog.Any("error", err))
+			var closeErr websocket.CloseError
+			if errors.As(err, &closeErr) && closeErr.Code == websocket.StatusNormalClosure {
+				c.log.Debug("WebSocket connection closed normally", slog.Any("error", err))
+			} else {
+				c.log.Error("error reading from WebSocket connection", slog.Any("error", err))
+			}
 			c.triggerReconnect()
 			return
 		}
@@ -516,7 +558,7 @@ func (c *Conn) read(conn *websocket.Conn, done chan struct{}) {
 			c.log.Error("error reading header", slog.Any("error", err))
 			continue
 		}
-		go c.handleMessage(typ, payload[1:])
+		c.handleMessage(typ, payload[1:])
 	}
 }
 
@@ -794,7 +836,10 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 			c.log.Debug("unexpected handshake response", slog.Group("message", "type", typ, "sequence", h.sequence))
 			return
 		}
-		hand <- h
+		if hand.beforeDeliver != nil {
+			hand.beforeDeliver(h)
+		}
+		hand.response <- h
 	case typeEvent:
 		if len(payload) < 2 {
 			c.log.Debug("event message has no custom")
@@ -830,24 +875,32 @@ func (s *Subscription) dispatchPending(events []json.RawMessage) {
 // notifyResync delivers an RTA resync signal to subscriptions that know how to
 // refresh their backing resource.
 func (c *Conn) notifyResync() {
-	c.subscriptionsMu.RLock()
-	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
-	seen := make(map[*Subscription]struct{}, len(c.subscriptions))
-	for _, subscription := range c.subscriptions {
-		if _, ok := seen[subscription]; ok {
-			continue
-		}
-		seen[subscription] = struct{}{}
-		subscriptions = append(subscriptions, subscription)
+	if !c.resyncReady() {
+		c.log.Debug("ignored RTA resync during post-connect suppression window")
+		return
 	}
-	c.subscriptionsMu.RUnlock()
 
-	for _, subscription := range subscriptions {
+	for _, subscription := range c.subscriptionsForReconnect() {
 		handler, ok := subscription.handler().(ResyncHandler)
 		if ok {
 			go handler.HandleResync()
 		}
 	}
+}
+
+// suppressResyncFor suppresses RTA resync delivery until d has elapsed.
+func (c *Conn) suppressResyncFor(d time.Duration) {
+	c.resyncMu.Lock()
+	c.resyncReadyAt = time.Now().Add(d)
+	c.resyncMu.Unlock()
+}
+
+// resyncReady reports whether post-connect resync suppression has elapsed.
+func (c *Conn) resyncReady() bool {
+	c.resyncMu.RLock()
+	readyAt := c.resyncReadyAt
+	c.resyncMu.RUnlock()
+	return readyAt.IsZero() || time.Now().After(readyAt)
 }
 
 // minDuration returns the smaller of a and b.
