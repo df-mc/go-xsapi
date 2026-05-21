@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"reflect"
 	"slices"
 	"time"
 
@@ -24,15 +25,13 @@ var errSubscriptionUnavailable = errors.New("xsapi/social: subscription unavaila
 //
 // The RTA subscription is created on the first call and cached internally
 // to avoid exceeding RTA's maximum subscription limit. Subsequent calls
-// reuse the existing subscription and append h to the list of active handlers.
+// reuse the existing subscription and register h if it is not already active.
 //
 // Subscribe returns an error if h is nil.
 //
 // A reconnect failure is terminal for the current live social subscription.
 // The registered handler set is preserved so a later Subscribe call can
-// re-establish the transport. Subscribe remains append-only even after
-// reconnect loss, so the provided handler is registered again like any other
-// call.
+// re-establish the transport without duplicating an already registered handler.
 func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err error) {
 	if h == nil {
 		return errors.New("xsapi/social: cannot subscribe with a nil SubscriptionHandler")
@@ -55,10 +54,27 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 			}
 			continue
 		}
-		c.subscriptionHandlers = append(c.subscriptionHandlers, h)
+		c.addSubscriptionHandlerLocked(h)
 		c.subscriptionMu.Unlock()
 		return nil
 	}
+}
+
+// addSubscriptionHandlerLocked registers h unless the same comparable handler
+// is already registered. Non-comparable handler implementations cannot be
+// compared safely and are therefore appended. The caller must hold
+// subscriptionMu.
+func (c *Client) addSubscriptionHandlerLocked(h SubscriptionHandler) {
+	v := reflect.ValueOf(h)
+	if v.IsValid() && v.Type().Comparable() {
+		for _, existing := range c.subscriptionHandlers {
+			existingValue := reflect.ValueOf(existing)
+			if existingValue.IsValid() && existingValue.Type().Comparable() && existing == h {
+				return
+			}
+		}
+	}
+	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
 }
 
 // subscriptionHandler is an internal implementation of [rta.SubscriptionHandler]

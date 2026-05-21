@@ -311,7 +311,7 @@ func TestSubscriptionHandlerDoesNotHoldLockWhileCallingHandlers(t *testing.T) {
 	}
 }
 
-func TestClientSubscribeDuplicatesComparableHandlerWithLiveSubscription(t *testing.T) {
+func TestClientSubscribeDeduplicatesComparableHandlerWithLiveSubscription(t *testing.T) {
 	handler := NopSubscriptionHandler{}
 	client := &Client{
 		sub:                  &fakeSubscriber{},
@@ -322,8 +322,8 @@ func TestClientSubscribeDuplicatesComparableHandlerWithLiveSubscription(t *testi
 	if err := client.Subscribe(context.Background(), handler); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
-	if len(client.subscriptionHandlers) != 2 {
-		t.Fatalf("handlers length = %d, want 2", len(client.subscriptionHandlers))
+	if len(client.subscriptionHandlers) != 1 {
+		t.Fatalf("handlers length = %d, want 1", len(client.subscriptionHandlers))
 	}
 }
 
@@ -361,7 +361,7 @@ func TestSubscriptionHandlerHandleResyncRefreshesFriends(t *testing.T) {
 	}
 }
 
-func TestClientSubscribeAfterReconnectLossRemainsAppendOnly(t *testing.T) {
+func TestClientSubscribeAfterReconnectLossDeduplicatesHandler(t *testing.T) {
 	handler := &pointerHandler{id: "A"}
 	client := &Client{
 		sub: &fakeSubscriber{},
@@ -376,8 +376,8 @@ func TestClientSubscribeAfterReconnectLossRemainsAppendOnly(t *testing.T) {
 	if err := client.Subscribe(context.Background(), handler); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
-	if len(client.subscriptionHandlers) != 2 {
-		t.Fatalf("handlers length = %d, want 2 after recovery subscribe", len(client.subscriptionHandlers))
+	if len(client.subscriptionHandlers) != 1 {
+		t.Fatalf("handlers length = %d, want 1 after recovery subscribe", len(client.subscriptionHandlers))
 	}
 	if client.subscription == nil {
 		t.Fatal("subscription was not re-established after reconnect loss")
@@ -385,12 +385,12 @@ func TestClientSubscribeAfterReconnectLossRemainsAppendOnly(t *testing.T) {
 	if err := client.Subscribe(context.Background(), handler); err != nil {
 		t.Fatalf("second Subscribe returned error: %v", err)
 	}
-	if len(client.subscriptionHandlers) != 3 {
-		t.Fatalf("handlers length = %d, want 3 after second append-only subscribe", len(client.subscriptionHandlers))
+	if len(client.subscriptionHandlers) != 1 {
+		t.Fatalf("handlers length = %d, want 1 after second subscribe", len(client.subscriptionHandlers))
 	}
 }
 
-func TestClientSubscribeAfterReconnectLossDoesNotCollapseConcurrentNewComparableHandlers(t *testing.T) {
+func TestClientSubscribeAfterReconnectLossDeduplicatesConcurrentComparableHandlers(t *testing.T) {
 	sub := &blockingSubscriber{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}),
@@ -430,8 +430,8 @@ func TestClientSubscribeAfterReconnectLossDoesNotCollapseConcurrentNewComparable
 		}
 	}
 
-	if len(client.subscriptionHandlers) != 3 {
-		t.Fatalf("handlers length = %d, want 3 after concurrent recovery subscribes", len(client.subscriptionHandlers))
+	if len(client.subscriptionHandlers) != 2 {
+		t.Fatalf("handlers length = %d, want 2 after concurrent recovery subscribes", len(client.subscriptionHandlers))
 	}
 	if client.subscription == nil {
 		t.Fatal("subscription was not re-established after reconnect loss")

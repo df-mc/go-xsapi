@@ -96,6 +96,9 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 			c.subscriptionsMu.Unlock()
 			continue
 		}
+		// The subscribe ACK hook already registers the subscription on the normal
+		// path before events can arrive. Keep this assignment for test hooks and as
+		// a harmless final consistency write after the reconnect-stability gate.
 		c.subscriptions[sub.id()] = sub
 		c.subscriptionsMu.Unlock()
 		return sub, nil
@@ -648,6 +651,9 @@ func (c *Conn) reconnect(done chan struct{}) {
 
 		successes := c.resubscribe()
 		readerDone := c.currentReaderDone()
+		if !c.reconnectWaveStable(readerDone) {
+			continue
+		}
 		for _, subscription := range successes {
 			go c.notifyReconnect(subscription, nil)
 			c.log.Debug("resubscribed", slog.Group("subscription",
@@ -656,9 +662,7 @@ func (c *Conn) reconnect(done chan struct{}) {
 				slog.String("resourceURI", subscription.resourceURI),
 			))
 		}
-		if c.reconnectWaveStable(readerDone) {
-			return
-		}
+		return
 	}
 }
 
