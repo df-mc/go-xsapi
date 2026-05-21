@@ -13,6 +13,7 @@ import (
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
+	"github.com/google/uuid"
 )
 
 // unsubscriber captures just the part of the RTA connection needed during
@@ -72,7 +73,7 @@ type Client struct {
 	sessionsMu sync.RWMutex
 
 	shoulderTapsMu sync.Mutex
-	shoulderTaps   map[string]shoulderTapVersion
+	shoulderTaps   map[uuid.UUID]uint64
 }
 
 // SessionByReference looks up for a multiplayer session identified by the reference.

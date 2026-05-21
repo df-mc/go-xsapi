@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +20,6 @@ const (
 	reconnectBackoffInitial    = time.Second
 	reconnectBackoffMax        = 30 * time.Second
 	proactiveReconnectInterval = 90 * time.Minute
-	maxPendingEventIDs         = 32
 	maxPendingEventsPerID      = 8
 )
 
@@ -50,7 +48,6 @@ type Conn struct {
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
-	pendingEvents   map[uint32][]json.RawMessage
 
 	log *slog.Logger
 
@@ -88,9 +85,8 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 			c.subscriptionsMu.Unlock()
 			continue
 		}
-		pendingEvents := c.registerSubscriptionLocked(sub, sub.id())
+		c.subscriptions[sub.id()] = sub
 		c.subscriptionsMu.Unlock()
-		sub.dispatchPending(pendingEvents)
 		return sub, nil
 	}
 }
@@ -167,7 +163,6 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	}
 	c.subscriptionsMu.Lock()
 	delete(c.subscriptions, id)
-	delete(c.pendingEvents, id)
 	c.subscriptionsMu.Unlock()
 	return nil
 }
@@ -182,6 +177,9 @@ func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []a
 	return c.call(ctx, op, payload, true)
 }
 
+// call sends one RTA request and waits for its sequenced response. When wait
+// is true, it first waits for any reconnect wave to finish; reconnect-internal
+// resubscribe calls pass wait=false so they do not wait on themselves.
 func (c *Conn) call(ctx context.Context, op uint8, payload func() []any, wait bool) (*handshake, chan struct{}, error) {
 	for {
 		if wait {
@@ -259,11 +257,13 @@ type Subscription struct {
 	h    SubscriptionHandler
 	hSet bool
 	mu   sync.RWMutex
-	// pending holds events delivered before the caller installs a handler on a
-	// newly-created subscription.
+	// pending holds events delivered after the subscription is registered but
+	// before the caller installs a handler on it.
 	pending []json.RawMessage
 }
 
+// id returns the active service-side subscription ID. It may differ from the
+// exported ID field after RTA reconnects and resubscribes.
 func (s *Subscription) id() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -273,6 +273,7 @@ func (s *Subscription) id() uint32 {
 	return s.ID
 }
 
+// setCurrent records the active service-side ID and custom payload.
 func (s *Subscription) setCurrent(id uint32, custom json.RawMessage) {
 	s.mu.Lock()
 	s.currentID = id
@@ -281,6 +282,8 @@ func (s *Subscription) setCurrent(id uint32, custom json.RawMessage) {
 	s.mu.Unlock()
 }
 
+// custom returns the active custom payload. It may differ from the exported
+// Custom field after RTA reconnects and resubscribes.
 func (s *Subscription) custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -323,11 +326,13 @@ func (s *Subscription) handler() SubscriptionHandler {
 	return s.h
 }
 
+// dispatchEvent delivers an event to the installed handler, or briefly buffers
+// it if the caller has not yet called Handle on a newly returned subscription.
 func (s *Subscription) dispatchEvent(custom json.RawMessage) {
 	s.mu.Lock()
 	if !s.hSet {
 		if len(s.pending) < maxPendingEventsPerID {
-			s.pending = append(s.pending, slices.Clone(custom))
+			s.pending = append(s.pending, append(json.RawMessage(nil), custom...))
 		}
 		s.mu.Unlock()
 		return
@@ -466,6 +471,8 @@ func (c *Conn) isCurrentConn(conn *websocket.Conn) bool {
 	return c.conn == conn
 }
 
+// refreshConnAfter proactively closes conn after the configured RTA lifetime
+// window, causing the reader to drive the normal reconnect/resubscribe path.
 func (c *Conn) refreshConnAfter(conn *websocket.Conn, readerDone chan struct{}, after time.Duration) {
 	timer := time.NewTimer(after)
 	defer timer.Stop()
@@ -637,36 +644,26 @@ func (c *Conn) subscriptionsForReconnect() []*Subscription {
 	return subscriptions
 }
 
+// updateSubscriptionID replaces any stale routing entry for subscription with
+// id from the latest successful subscribe handshake.
 func (c *Conn) updateSubscriptionID(subscription *Subscription, id uint32) {
 	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
 	for existingID, existingSubscription := range c.subscriptions {
 		if existingSubscription == subscription {
 			delete(c.subscriptions, existingID)
-			delete(c.pendingEvents, existingID)
 		}
 	}
-	pendingEvents := c.registerSubscriptionLocked(subscription, id)
-	c.subscriptionsMu.Unlock()
-	subscription.dispatchPending(pendingEvents)
-}
-
-// registerSubscriptionLocked installs subscription under id and returns any
-// events that arrived after the subscribe response but before the subscription
-// was visible in the routing table. The caller must hold subscriptionsMu.
-func (c *Conn) registerSubscriptionLocked(subscription *Subscription, id uint32) []json.RawMessage {
 	c.subscriptions[id] = subscription
-	pendingEvents := c.pendingEvents[id]
-	delete(c.pendingEvents, id)
-	return pendingEvents
 }
 
+// removeSubscription removes every routing entry pointing to subscription.
 func (c *Conn) removeSubscription(subscription *Subscription) {
 	c.subscriptionsMu.Lock()
 	defer c.subscriptionsMu.Unlock()
 	for id, existingSubscription := range c.subscriptions {
 		if existingSubscription == subscription {
 			delete(c.subscriptions, id)
-			delete(c.pendingEvents, id)
 		}
 	}
 }
@@ -804,8 +801,6 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		c.subscriptionsMu.RUnlock()
 		if ok {
 			go sub.dispatchEvent(payload[1])
-		} else {
-			c.storePendingEvent(subscriptionID, payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
 	case typeResync:
@@ -815,31 +810,16 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 	}
 }
 
-func (c *Conn) storePendingEvent(subscriptionID uint32, custom json.RawMessage) {
-	c.subscriptionsMu.Lock()
-	defer c.subscriptionsMu.Unlock()
-	if _, ok := c.subscriptions[subscriptionID]; ok {
-		return
-	}
-	if c.pendingEvents == nil {
-		c.pendingEvents = make(map[uint32][]json.RawMessage)
-	}
-	events := c.pendingEvents[subscriptionID]
-	if len(events) >= maxPendingEventsPerID {
-		return
-	}
-	if len(events) == 0 && len(c.pendingEvents) >= maxPendingEventIDs {
-		return
-	}
-	c.pendingEvents[subscriptionID] = append(events, slices.Clone(custom))
-}
-
+// dispatchPending delivers events that arrived after subscription registration
+// but before the caller installed a handler.
 func (s *Subscription) dispatchPending(events []json.RawMessage) {
 	for _, event := range events {
 		go s.dispatchEvent(event)
 	}
 }
 
+// notifyResync delivers an RTA resync signal to subscriptions that know how to
+// refresh their backing resource.
 func (c *Conn) notifyResync() {
 	c.subscriptionsMu.RLock()
 	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
@@ -861,6 +841,7 @@ func (c *Conn) notifyResync() {
 	}
 }
 
+// minDuration returns the smaller of a and b.
 func minDuration(a, b time.Duration) time.Duration {
 	if a < b {
 		return a

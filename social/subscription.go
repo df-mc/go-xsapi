@@ -155,40 +155,6 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 	}
 }
 
-// HandleResync implements [rta.ResyncHandler]. A resync means RTA may have
-// dropped one or more social deltas, so refresh the caller's friend list via
-// REST and notify handlers with the current set as changed.
-func (h *subscriptionHandler) HandleResync() {
-	if h.client == nil {
-		h.log.Error("cannot resync social subscription without HTTP client")
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-	defer cancel()
-
-	friends, err := h.Friends(ctx)
-	if err != nil {
-		h.log.Error("error resyncing social subscription", slog.Any("error", err))
-		return
-	}
-	xuids := make([]string, 0, len(friends))
-	for _, friend := range friends {
-		if friend.XUID != "" {
-			xuids = append(xuids, friend.XUID)
-		}
-	}
-	if len(xuids) == 0 {
-		return
-	}
-
-	h.subscriptionMu.RLock()
-	handlers := slices.Clone(h.subscriptionHandlers)
-	h.subscriptionMu.RUnlock()
-	for _, handler := range handlers {
-		handler.HandleSocialNotification(NotificationTypeChanged, slices.Clone(xuids))
-	}
-}
-
 // ensureSubscriptionLocked ensures that a live RTA subscription exists on the
 // Client. If one already exists it returns immediately. Otherwise it fetches a
 // new subscription, coalescing concurrent callers behind a single in-flight

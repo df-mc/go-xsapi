@@ -129,7 +129,7 @@ func TestSubscribeRetriesIfConnectionChangesBeforeRegistration(t *testing.T) {
 	}
 }
 
-func TestSubscribeDispatchesEventArrivingBeforeRegistration(t *testing.T) {
+func TestSubscribeDispatchesEventArrivingBeforeHandler(t *testing.T) {
 	conn := newTestConn()
 	readerDone := make(chan struct{})
 	conn.readerDone = readerDone
@@ -144,7 +144,6 @@ func TestSubscribeDispatchesEventArrivingBeforeRegistration(t *testing.T) {
 				json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`),
 			},
 		}
-		conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"event":"early"}`)})
 		return ch, readerDone, nil
 	}
 
@@ -152,6 +151,7 @@ func TestSubscribeDispatchesEventArrivingBeforeRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
+	conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"event":"early"}`)})
 	subscription.Handle(testSubscriptionHandler{
 		handleEvent: func(custom json.RawMessage) {
 			eventReceived <- custom

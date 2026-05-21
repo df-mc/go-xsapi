@@ -78,6 +78,8 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	return c.subscription, c.subscriptionData, nil
 }
 
+// resetBrokenSubscription unsubscribes a subscription whose custom payload
+// cannot be trusted, then lets the client retry from a clean state later.
 func (c *Client) resetBrokenSubscription(subscription *rta.Subscription) {
 	unsub := c.unsub
 	if subscription == nil || unsub == nil {
@@ -191,6 +193,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 	h.sessionsMu.RUnlock()
 }
 
+// shouldProcessTap reports whether tap is newer than the last processed
+// shoulder tap for its branch. Taps without branch/change metadata are treated
+// as processable because they cannot be deduplicated safely.
 func (h *subscriptionHandler) shouldProcessTap(tap shoulderTap) bool {
 	if tap.Branch == uuid.Nil || tap.ChangeNumber == 0 {
 		return true
@@ -198,16 +203,13 @@ func (h *subscriptionHandler) shouldProcessTap(tap shoulderTap) bool {
 	h.shoulderTapsMu.Lock()
 	defer h.shoulderTapsMu.Unlock()
 	if h.shoulderTaps == nil {
-		h.shoulderTaps = make(map[string]shoulderTapVersion)
+		h.shoulderTaps = make(map[uuid.UUID]uint64)
 	}
-	last, ok := h.shoulderTaps[tap.Resource]
-	if ok && last.Branch == tap.Branch && tap.ChangeNumber <= last.ChangeNumber {
+	last, ok := h.shoulderTaps[tap.Branch]
+	if ok && tap.ChangeNumber <= last {
 		return false
 	}
-	h.shoulderTaps[tap.Resource] = shoulderTapVersion{
-		Branch:       tap.Branch,
-		ChangeNumber: tap.ChangeNumber,
-	}
+	h.shoulderTaps[tap.Branch] = tap.ChangeNumber
 	return true
 }
 
@@ -225,6 +227,8 @@ func (h *subscriptionHandler) HandleResync() {
 	}
 }
 
+// syncSession refreshes one tracked session from MPSD and notifies its handler
+// if the refresh succeeds.
 func (h *subscriptionHandler) syncSession(session *Session) {
 	ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 	defer cancel()
@@ -285,6 +289,8 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 	}
 }
 
+// refreshSessionConnections rewrites every tracked session with a new RTA
+// connection ID after the MPSD subscription is re-established.
 func (h *subscriptionHandler) refreshSessionConnections(connectionID uuid.UUID) {
 	h.sessionsMu.RLock()
 	sessions := make([]*Session, 0, len(h.sessions))
@@ -298,6 +304,8 @@ func (h *subscriptionHandler) refreshSessionConnections(connectionID uuid.UUID) 
 	}
 }
 
+// refreshSessionConnection marks the local player active in session using the
+// current MPSD RTA connection ID.
 func (h *subscriptionHandler) refreshSessionConnection(session *Session, connectionID uuid.UUID) {
 	ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 	defer cancel()
@@ -328,6 +336,8 @@ func (h *subscriptionHandler) refreshSessionConnection(session *Session, connect
 	}
 }
 
+// logger returns the handler logger, falling back to the owning client logger
+// when the handler was constructed without one.
 func (h *subscriptionHandler) logger() *slog.Logger {
 	if h.log != nil {
 		return h.log
@@ -392,9 +402,4 @@ type shoulderTap struct {
 
 	// Branch is a unique identifier for the current branch of the resource.
 	Branch uuid.UUID `json:"branch"`
-}
-
-type shoulderTapVersion struct {
-	Branch       uuid.UUID
-	ChangeNumber uint64
 }
