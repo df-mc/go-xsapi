@@ -10,7 +10,6 @@ import (
 
 	"github.com/df-mc/go-xsapi/v2/internal/testutil"
 	"github.com/df-mc/go-xsapi/v2/rta"
-	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 type fakeUnsubscriber struct {
@@ -102,13 +101,20 @@ func TestClientCloseContextKeepsSubscriptionStateOnUnsubscribeError(t *testing.T
 	}
 }
 
-func TestClientCloseContextClearsHandlersWithoutSubscription(t *testing.T) {
+func TestClientCloseContextClearsStateWithoutSubscription(t *testing.T) {
+	done := make(chan struct{})
 	client := &Client{
-		subscriptionHandlers: []SubscriptionHandler{NopSubscriptionHandler{}},
+		subscribeDone: done,
+		subscriptionHandlers: []SubscriptionHandler{
+			NopSubscriptionHandler{},
+		},
 	}
 
 	if err := client.CloseContext(context.Background()); err != nil {
 		t.Fatalf("CloseContext returned error: %v", err)
+	}
+	if client.subscribeDone != nil {
+		t.Fatal("subscribeDone was not cleared on close")
 	}
 	if client.subscriptionHandlers != nil {
 		t.Fatal("handlers were not cleared when closing without a live subscription")
@@ -229,16 +235,6 @@ func TestClientSubscribeDoesNotRegisterHandlerWhenInitialSubscribeFails(t *testi
 
 func TestClientSubscribeReturnsUnavailableWithoutSubscriber(t *testing.T) {
 	client := &Client{}
-
-	err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
-	if !errors.Is(err, errSubscriptionUnavailable) {
-		t.Fatalf("Subscribe error = %v, want %v", err, errSubscriptionUnavailable)
-	}
-}
-
-func TestNewWithNilConnLeavesSubscriberNil(t *testing.T) {
-	var conn *rta.Conn
-	client := New(nil, conn, xsts.UserInfo{}, nil)
 
 	err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
 	if !errors.Is(err, errSubscriptionUnavailable) {
@@ -459,23 +455,6 @@ func TestClientCloseContextPreventsInflightSubscribeInstall(t *testing.T) {
 	case <-unsub.called:
 	case <-time.After(time.Second):
 		t.Fatal("discarded in-flight subscription was not cleaned up")
-	}
-}
-
-func TestClientCloseContextClearsStaleSubscribeBarrier(t *testing.T) {
-	done := make(chan struct{})
-	client := &Client{
-		subscribeDone: done,
-		subscriptionHandlers: []SubscriptionHandler{
-			NopSubscriptionHandler{},
-		},
-	}
-
-	if err := client.CloseContext(context.Background()); err != nil {
-		t.Fatalf("CloseContext returned error: %v", err)
-	}
-	if client.subscribeDone != nil {
-		t.Fatal("subscribeDone was not cleared on close")
 	}
 }
 

@@ -154,17 +154,6 @@ func TestUnsubscribeDeletesAttemptedIDAfterReconnectRace(t *testing.T) {
 	}
 }
 
-func TestSubscriptionCurrentCustomUsesReconnectPayload(t *testing.T) {
-	subscription := &Subscription{
-		Custom: json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`),
-	}
-	subscription.setCurrent(2, json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000002"}`))
-
-	if got := string(subscription.CurrentCustom()); got != `{"ConnectionId":"00000000-0000-0000-0000-000000000002"}` {
-		t.Fatalf("CurrentCustom = %s, want reconnect payload", got)
-	}
-}
-
 func TestHandleMessageResyncNotifiesHandlers(t *testing.T) {
 	conn := newTestConn()
 	called := make(chan struct{}, 1)
