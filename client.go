@@ -168,17 +168,12 @@ func (c *Client) HTTPClient() *http.Client {
 // the [http.RoundTripper] contract. The request is cloned before any headers
 // are set to avoid mutating the original.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
-	var reqBodyClosed bool
 	if req.Body != nil {
 		// The [http.RoundTripper] contract requires the body to be closed
 		// by the caller of RoundTrip, even on error. We handle it here
 		// rather than delegating to the base transport because the body
 		// is buffered for signing before being forwarded.
-		defer func() {
-			if !reqBodyClosed {
-				req.Body.Close()
-			}
-		}()
+		defer req.Body.Close()
 	}
 	if c.closed.Load() {
 		return nil, net.ErrClosed
