@@ -52,18 +52,8 @@ func (t *Token) UserInfo() UserInfo {
 // services and certain title-specific endpoints. Some third-party services,
 // such as PlayFab, also accept this value as a JSON field for linking an Xbox
 // account to another identity provider.
-//
-// An empty string is returned if the token cannot produce a complete
-// authorization header value.
 func (t *Token) String() string {
-	if t == nil {
-		return ""
-	}
-	info := t.UserInfo()
-	if t.Token == "" || info.UserHash == "" {
-		return ""
-	}
-	return "XBL3.0 x=" + info.UserHash + ";" + t.Token
+	return "XBL3.0 x=" + t.UserInfo().UserHash + ";" + t.Token
 }
 
 // SetAuthHeader sets the HTTP Authorization header on req using the value
