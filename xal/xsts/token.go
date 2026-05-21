@@ -34,11 +34,8 @@ func (t *Token) Valid() bool {
 //
 // XSTS tokens may contain claims for multiple users, but in practice the
 // first entry represents the authenticated user associated with the token.
-// A zero UserInfo is returned if the token is nil or carries no user claims.
+// Callers should ensure the token is valid before calling this method.
 func (t *Token) UserInfo() UserInfo {
-	if t == nil || len(t.DisplayClaims.UserInfo) == 0 {
-		return UserInfo{}
-	}
 	return t.DisplayClaims.UserInfo[0]
 }
 
@@ -177,9 +174,9 @@ type Privileges []uint32
 // encodes to:
 //
 //	"185 188 254"
-func (p Privileges) MarshalJSON() ([]byte, error) {
-	s := make([]string, len(p))
-	for i, value := range p {
+func (p *Privileges) MarshalJSON() ([]byte, error) {
+	s := make([]string, len(*p))
+	for i, value := range *p {
 		s[i] = strconv.FormatUint(uint64(value), 10)
 	}
 	return json.Marshal(strings.Join(s, " "))
