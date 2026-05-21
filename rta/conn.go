@@ -171,25 +171,12 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	return nil
 }
 
-// call sends a sequenced message to the server and blocks using the given
-// [context.Context] until the server responds with a matching sequence number.
-// The response is then decoded into a [handshake] and returned. The caller is
-// responsible for checking its status code.
-//
-// If the Conn is currently reconnecting, [call] blocks until the reconnect
-// completes before sending a message to the server
-//
-// errReconnectInterrupted is returned by [Conn.callDuringReconnect] when the
-// replacement socket drops during a re-subscribe attempt.
 var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 
-func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {
-	h, _, err := c.callWithPayload(ctx, op, func() []any {
-		return payload
-	})
-	return h, err
-}
-
+// callWithPayload sends a sequenced message to the server and blocks using the
+// given [context.Context] until the server responds with a matching sequence
+// number. If the Conn is reconnecting, callWithPayload blocks until reconnect
+// completes before sending.
 func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []any) (*handshake, chan struct{}, error) {
 	for {
 		if err := c.wait(ctx); err != nil {
