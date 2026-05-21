@@ -273,6 +273,23 @@ func TestClientSubscribeReturnsUnavailableWithoutSubscriber(t *testing.T) {
 	}
 }
 
+func TestClientSubscribeDoesNotFetchWhenInstallGateClosed(t *testing.T) {
+	sub := &fakeSubscriber{}
+	client := &Client{
+		sub: sub,
+	}
+
+	_, _, err := client.subscribeWithInstall(context.Background(), func() bool {
+		return false
+	})
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("subscribeWithInstall error = %v, want %v", err, net.ErrClosed)
+	}
+	if sub.attempts != 0 {
+		t.Fatalf("subscribe attempts = %d, want 0", sub.attempts)
+	}
+}
+
 func TestNewWithNilConnLeavesSubscriberNil(t *testing.T) {
 	var conn *rta.Conn
 	client := New(nil, conn, xsts.UserInfo{}, nil)

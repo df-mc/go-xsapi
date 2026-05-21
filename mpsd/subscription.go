@@ -85,6 +85,11 @@ func (c *Client) subscribeWithInstall(ctx context.Context, canInstall func() boo
 			}
 		}
 
+		if !canInstall() {
+			c.subscriptionMu.Unlock()
+			return nil, nil, net.ErrClosed
+		}
+
 		done := make(chan struct{})
 		c.subscribeDone = done
 		c.subscriptionMu.Unlock()
