@@ -328,7 +328,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 	if err != nil {
 		return nil, fmt.Errorf("xal/sisu: request device token for authorization: %w", err)
 	}
-	if device == nil || device.Token == "" {
+	if device == nil || !device.Valid() {
 		return nil, errDeviceTokenAbsent
 	}
 	token, err := s.msa.Token()
