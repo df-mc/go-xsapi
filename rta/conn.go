@@ -135,26 +135,29 @@ func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription
 	return sub, readerDone, nil
 }
 
-// subscribeDuringReconnect re-establishes a subscription while a reconnect
-// wave is already in progress. If the replacement socket drops before the
-// handshake completes, the call returns [errReconnectInterrupted] so the
-// caller can carry the subscription into the next reconnect cycle.
-func (c *Conn) subscribeDuringReconnect(ctx context.Context, resourceURI string) (*Subscription, error) {
-	h, err := c.callDuringReconnect(ctx, operationSubscribe, []any{resourceURI})
+// resubscribeDuringReconnect re-establishes an existing subscription during a
+// reconnect wave. The successful ACK is applied and routed before it is
+// delivered to this caller so events sent immediately after the ACK use the new
+// service-side subscription ID.
+func (c *Conn) resubscribeDuringReconnect(ctx context.Context, subscription *Subscription) error {
+	h, _, err := c.callWithHook(ctx, operationSubscribe, func() []any {
+		return []any{subscription.resourceURI}
+	}, false, func(h *handshake) {
+		if err := c.applySubscribeHandshake(subscription, h); err == nil {
+			c.updateSubscriptionID(subscription, subscription.id())
+		}
+	})
+	if errors.Is(err, errReconnectInterrupted) {
+		c.markReconnectNext()
+	}
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return c.readSubscribeHandshake(resourceURI, h)
-}
-
-// readSubscribeHandshake decodes a successful subscribe handshake into a
-// [Subscription].
-func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscription, error) {
-	sub := &Subscription{resourceURI: resourceURI}
-	if err := c.applySubscribeHandshake(sub, h); err != nil {
-		return nil, err
+	if err := c.applySubscribeHandshake(subscription, h); err != nil {
+		return err
 	}
-	return sub, nil
+	c.updateSubscriptionID(subscription, subscription.id())
+	return nil
 }
 
 // applySubscribeHandshake applies a successful subscribe handshake to sub.
@@ -273,21 +276,6 @@ func (c *Conn) callWithHook(ctx context.Context, op uint8, payload func() []any,
 	}
 }
 
-// callDuringReconnect is [Conn.call] for re-subscribe work that is already
-// running inside an active reconnect wave. It must not wait on reconnect
-// completion, because the current reconnect wave is blocked on the caller.
-// If the replacement socket drops mid-handshake, the caller is told to defer
-// the subscription to the next reconnect cycle.
-func (c *Conn) callDuringReconnect(ctx context.Context, op uint8, payload []any) (*handshake, error) {
-	h, _, err := c.call(ctx, op, func() []any {
-		return payload
-	}, false)
-	if errors.Is(err, errReconnectInterrupted) {
-		c.markReconnectNext()
-	}
-	return h, err
-}
-
 // Subscription represents a subscription contracted with the resource URI available through
 // the real-time activity service. A Subscription may be contracted via Conn.Subscribe.
 type Subscription struct {
@@ -344,9 +332,9 @@ func (s *Subscription) custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.currentSet {
-		return s.currentCustom
+		return append(json.RawMessage(nil), s.currentCustom...)
 	}
-	return s.Custom
+	return append(json.RawMessage(nil), s.Custom...)
 }
 
 // CurrentCustom returns the current custom data associated with the
@@ -752,13 +740,9 @@ func (c *Conn) resubscribe() []*Subscription {
 			attempt := 0
 			for {
 				ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
-				sub, err := c.subscribeDuringReconnect(ctx, subscription.resourceURI)
+				err := c.resubscribeDuringReconnect(ctx, subscription)
 				cancel()
 				if err == nil {
-					subscriptionID := sub.id()
-					subscription.setCurrent(subscriptionID, sub.custom())
-					c.updateSubscriptionID(subscription, subscriptionID)
-
 					successesMu.Lock()
 					successes = append(successes, subscription)
 					successesMu.Unlock()

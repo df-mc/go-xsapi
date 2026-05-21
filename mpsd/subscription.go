@@ -263,6 +263,7 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 	if err != nil {
 		h.subscription, h.subscriptionData = nil, nil
 		h.subscriptionMu.Unlock()
+		h.Client.closeTrackedSessions()
 		return
 	}
 	if h.subscription == nil {
@@ -296,6 +297,25 @@ func (h *subscriptionHandler) HandleReconnect(err error) {
 
 	if oldData == nil || oldData.ConnectionID != data.ConnectionID {
 		h.Client.refreshSessionConnections(data.ConnectionID)
+	}
+}
+
+// closeTrackedSessions closes all tracked local session handles after MPSD RTA
+// subscription loss. Microsoft documents subscription loss as terminal for the
+// title's multiplayer participation, so the cached handles should no longer be
+// used for session operations.
+func (c *Client) closeTrackedSessions() {
+	c.sessionsMu.RLock()
+	sessions := make([]*Session, 0, len(c.sessions))
+	for _, session := range c.sessions {
+		sessions = append(sessions, session)
+	}
+	c.sessionsMu.RUnlock()
+
+	for _, session := range sessions {
+		session.closeMu.Lock()
+		session.closeLocked()
+		session.closeMu.Unlock()
 	}
 }
 

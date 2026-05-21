@@ -75,9 +75,17 @@ func TestClientCloseContextPreservesSubscriptionOnUnsubscribeError(t *testing.T)
 func TestSubscriptionHandlerReconnectFailureClearsCachedSubscription(t *testing.T) {
 	subscription := &rta.Subscription{}
 	subscriptionData := &subscriptionData{ConnectionID: uuid.New()}
+	closed := make(chan struct{})
 	client := &Client{
 		subscription:     subscription,
 		subscriptionData: subscriptionData,
+		sessions:         make(map[string]*Session),
+	}
+	ref := SessionReference{ServiceConfigID: uuid.New(), TemplateName: "template", Name: "session"}
+	client.sessions[ref.URL().String()] = &Session{
+		client: client,
+		ref:    ref,
+		closed: closed,
 	}
 	handler := &subscriptionHandler{Client: client}
 
@@ -88,6 +96,14 @@ func TestSubscriptionHandlerReconnectFailureClearsCachedSubscription(t *testing.
 	}
 	if client.subscriptionData != nil {
 		t.Fatal("subscription data was not cleared")
+	}
+	select {
+	case <-closed:
+	default:
+		t.Fatal("tracked session was not closed after subscription loss")
+	}
+	if len(client.sessions) != 0 {
+		t.Fatal("tracked session was not unregistered after subscription loss")
 	}
 }
 
@@ -188,9 +204,7 @@ func TestSubscriptionHandlerReconnectRefreshesSessionConnectionID(t *testing.T) 
 			},
 		},
 	}
-	handler := &subscriptionHandler{Client: client}
-
-	handler.refreshSessionConnections(newConnectionID)
+	client.refreshSessionConnections(newConnectionID)
 
 	select {
 	case request := <-requests:

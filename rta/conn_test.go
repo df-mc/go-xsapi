@@ -67,6 +67,22 @@ func newTestConn() *Conn {
 	return conn
 }
 
+func TestSubscriptionCurrentCustomReturnsDetachedCopy(t *testing.T) {
+	subscription := &Subscription{ID: 1, Custom: json.RawMessage(`{"value":"original"}`)}
+	custom := subscription.CurrentCustom()
+	custom[10] = 'X'
+	if got := string(subscription.CurrentCustom()); got != `{"value":"original"}` {
+		t.Fatalf("CurrentCustom after mutation = %s, want original", got)
+	}
+
+	subscription.setCurrent(2, json.RawMessage(`{"value":"current"}`))
+	custom = subscription.CurrentCustom()
+	custom[10] = 'X'
+	if got := string(subscription.CurrentCustom()); got != `{"value":"current"}` {
+		t.Fatalf("CurrentCustom current after mutation = %s, want current", got)
+	}
+}
+
 func TestCallReturnsReadyHandshakeWhenContextCancels(t *testing.T) {
 	conn := newTestConn()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -466,7 +482,6 @@ func TestConnReconnectsAndResubscribesAfterReadFailure(t *testing.T) {
 				if !writeSubscribeHandshake(t, conn, "second", sequence, 8, `{"ConnectionId":"00000000-0000-0000-0000-000000000002"}`) {
 					return
 				}
-				time.Sleep(20 * time.Millisecond)
 				if !writeEvent(t, conn, "event after reconnect", 8, `{"event":"reconnected"}`) {
 					return
 				}
