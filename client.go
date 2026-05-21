@@ -195,7 +195,6 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		data []byte
 	)
 	token.SetAuthHeader(req2)
-
 	// If a body is present, it is buffered in full so that it can be included
 	// in the 'Signature' header. It is then restored on the cloned request.
 	if req.Body != nil {
@@ -206,7 +205,9 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 	}
-	policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime())
+	if err := policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
+		return nil, fmt.Errorf("sign request: %w", err)
+	}
 
 	return c.baseTransport().RoundTrip(req2)
 }

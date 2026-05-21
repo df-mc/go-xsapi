@@ -37,8 +37,11 @@ var HTTPClient contextKey
 
 // ContextClient returns an [http.Client] from the [context.Context] if possible,
 // otherwise it returns [http.DefaultClient].
+//
+// A typed-nil *http.Client stored under HTTPClient is treated as absent so that
+// callers never receive a nil client.
 func ContextClient(ctx context.Context) *http.Client {
-	if value, ok := ctx.Value(HTTPClient).(*http.Client); ok {
+	if value, ok := ctx.Value(HTTPClient).(*http.Client); ok && value != nil {
 		return value
 	}
 	return http.DefaultClient
