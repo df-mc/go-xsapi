@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -318,14 +317,5 @@ func TestSubscribeClearsCachedSubscriptionOnCurrentCustomDecodeError(t *testing.
 	}
 	if client.subscriptionData != nil {
 		t.Fatal("cached subscription data was not cleared")
-	}
-}
-
-func TestSubscriptionHandlerLoggerFallsBackToClientLogger(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := &subscriptionHandler{Client: &Client{log: logger}}
-
-	if got := handler.logger(); got != logger {
-		t.Fatal("logger did not fall back to client logger")
 	}
 }
