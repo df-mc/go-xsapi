@@ -11,15 +11,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Dial establishes a connection with real-time activity service.
-//
-// The [context.Context] is used to control the deadline of the establishment of the WebSocket connection.
-// The [http.Client] is used to authenticate handshake HTTP requests and is typically retrieved from
-// [github.com/df-mc/go-xsapi/v2.Client.HTTPClient].
-func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, error) {
-	return Dialer{ErrorLog: log}.DialContext(ctx, client)
-}
-
 // Dialer represents the options for establishing a Conn with real-time activity services.
 type Dialer struct {
 	Options  *websocket.DialOptions

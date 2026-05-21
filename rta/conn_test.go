@@ -25,7 +25,7 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 
 	waitDone := make(chan error, 1)
 	go func() {
-		waitDone <- conn.Wait(context.Background())
+		waitDone <- conn.wait(context.Background())
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -91,7 +91,7 @@ func TestSubscribeRetriesIfConnectionChangesBeforeRegistration(t *testing.T) {
 
 	var calls atomic.Int32
 	conn.dialer = &dialer{}
-	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, error) {
+	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
 		called := calls.Add(1)
 		ch := make(chan *handshake, 1)
 		if called == 1 {
@@ -101,13 +101,13 @@ func TestSubscribeRetriesIfConnectionChangesBeforeRegistration(t *testing.T) {
 				status:  StatusOK,
 				payload: []json.RawMessage{json.RawMessage(`1`), json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000001"}`)},
 			}
-			return ch, nil
+			return ch, oldReaderDone, nil
 		}
 		ch <- &handshake{
 			status:  StatusOK,
 			payload: []json.RawMessage{json.RawMessage(`2`), json.RawMessage(`{"ConnectionId":"00000000-0000-0000-0000-000000000002"}`)},
 		}
-		return ch, nil
+		return ch, newReaderDone, nil
 	}
 
 	subscription, err := conn.Subscribe(context.Background(), "resource")
@@ -133,7 +133,7 @@ func TestUnsubscribeDeletesAttemptedIDAfterReconnectRace(t *testing.T) {
 	subscription := &Subscription{ID: 1}
 	subscription.setCurrent(1, nil)
 	conn.subscriptions[1] = subscription
-	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, error) {
+	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
 		if got := payload[0].(uint32); got != 1 {
 			t.Fatalf("unsubscribe ID = %d, want 1", got)
 		}
@@ -141,7 +141,7 @@ func TestUnsubscribeDeletesAttemptedIDAfterReconnectRace(t *testing.T) {
 		conn.subscriptions[2] = subscription
 		ch := make(chan *handshake, 1)
 		ch <- &handshake{status: StatusOK}
-		return ch, nil
+		return ch, conn.currentReaderDone(), nil
 	}
 
 	if err := conn.Unsubscribe(context.Background(), subscription); err != nil {
@@ -223,7 +223,7 @@ func TestConnReconnectsAndResubscribesAfterReadFailure(t *testing.T) {
 
 	useTestConnectURL(t, server.URL)
 
-	conn, err := Dial(t.Context(), http.DefaultClient, nil)
+	conn, err := Dialer{}.DialContext(t.Context(), http.DefaultClient)
 	if err != nil {
 		t.Fatalf("dial RTA connection: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestConnReconnectRetriesIfReplacementSocketDropsDuringResubscribe(t *testin
 
 	useTestConnectURL(t, server.URL)
 
-	conn, err := Dial(t.Context(), http.DefaultClient, nil)
+	conn, err := Dialer{}.DialContext(t.Context(), http.DefaultClient)
 	if err != nil {
 		t.Fatalf("dial RTA connection: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestConnReconnectRetriesIfReplacementSocketDropsAfterSuccessfulResubscribe(
 
 	useTestConnectURL(t, server.URL)
 
-	conn, err := Dial(t.Context(), http.DefaultClient, nil)
+	conn, err := Dialer{}.DialContext(t.Context(), http.DefaultClient)
 	if err != nil {
 		t.Fatalf("dial RTA connection: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestWaitBlocksUntilReconnectErrorHandlersFinish(t *testing.T) {
 
 	useTestConnectURL(t, server.URL)
 
-	conn, err := Dial(t.Context(), http.DefaultClient, nil)
+	conn, err := Dialer{}.DialContext(t.Context(), http.DefaultClient)
 	if err != nil {
 		t.Fatalf("dial RTA connection: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestWaitBlocksUntilReconnectErrorHandlersFinish(t *testing.T) {
 
 	waitDone := make(chan error, 1)
 	go func() {
-		waitDone <- conn.Wait(context.Background())
+		waitDone <- conn.wait(context.Background())
 	}()
 
 	select {

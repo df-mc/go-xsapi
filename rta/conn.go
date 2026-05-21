@@ -36,7 +36,7 @@ type Conn struct {
 	sequences  [operationCapacity]atomic.Uint32
 	expected   [operationCapacity]map[uint32]chan<- *handshake
 	expectedMu sync.RWMutex
-	expectHook func(op uint8, sequence uint32, payload []any) (<-chan *handshake, error)
+	expectHook func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error)
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
@@ -78,8 +78,7 @@ type Conn struct {
 // and Custom data as the result of handshake.
 func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
 	for {
-		readerDone := c.currentReaderDone()
-		sub, err := c.subscribe(ctx, resourceURI)
+		sub, readerDone, err := c.subscribe(ctx, resourceURI)
 		if err != nil {
 			return nil, err
 		}
@@ -101,12 +100,15 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
-func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
-	h, err := c.call(ctx, operationSubscribe, []any{resourceURI})
+func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, chan struct{}, error) {
+	h, readerDone, err := c.callWithPayload(ctx, operationSubscribe, func() []any {
+		return []any{resourceURI}
+	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c.readSubscribeHandshake(resourceURI, h)
+	sub, err := c.readSubscribeHandshake(resourceURI, h)
+	return sub, readerDone, err
 }
 
 // subscribeDuringReconnect re-establishes a subscription while a reconnect
@@ -152,7 +154,7 @@ func (c *Conn) readSubscribeHandshake(resourceURI string, h *handshake) (*Subscr
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	var id uint32
-	h, err := c.callWithPayload(ctx, operationUnsubscribe, func() []any {
+	h, _, err := c.callWithPayload(ctx, operationUnsubscribe, func() []any {
 		id = sub.id()
 		return []any{id}
 	})
@@ -182,19 +184,20 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 
 func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*handshake, error) {
-	return c.callWithPayload(ctx, op, func() []any {
+	h, _, err := c.callWithPayload(ctx, op, func() []any {
 		return payload
 	})
+	return h, err
 }
 
-func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []any) (*handshake, error) {
+func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []any) (*handshake, chan struct{}, error) {
 	for {
 		if err := c.wait(ctx); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		seq := c.sequences[op].Add(1)
-		ch, err := c.expect(op, seq, payload())
+		ch, readerDone, err := c.expect(op, seq, payload())
 		if err != nil {
 			continue
 		}
@@ -204,13 +207,13 @@ func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []a
 				continue
 			}
 			c.release(op, seq)
-			return result, nil
+			return result, readerDone, nil
 		case <-ctx.Done():
 			c.release(op, seq)
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		case <-c.ctx.Done():
 			c.release(op, seq)
-			return nil, context.Cause(c.ctx)
+			return nil, nil, context.Cause(c.ctx)
 		}
 	}
 }
@@ -222,7 +225,7 @@ func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []a
 // the subscription to the next reconnect cycle.
 func (c *Conn) callDuringReconnect(ctx context.Context, op uint8, payload []any) (*handshake, error) {
 	seq := c.sequences[op].Add(1)
-	ch, err := c.expect(op, seq, payload)
+	ch, _, err := c.expect(op, seq, payload)
 	if err != nil {
 		c.reconnectNext.Store(true)
 		return nil, errReconnectInterrupted
@@ -357,11 +360,16 @@ type NopSubscriptionHandler struct{}
 func (NopSubscriptionHandler) HandleEvent(json.RawMessage) {}
 
 // write sends a JSON array composed of the given type and payload over the
-// WebSocket connection. A background context is used intentionally, because
-// the caller's context must not be passed to WebSocket write methods, as
-// cancellation or deadline would close the underlying connection.
-func (c *Conn) write(typ uint32, payload []any) error {
-	return wsjson.Write(context.Background(), c.currentConn(), append([]any{typ}, payload...))
+// current WebSocket connection and returns the reader lifecycle channel for
+// the connection used by the write. A background context is used intentionally,
+// because the caller's context must not be passed to WebSocket write methods,
+// as cancellation or deadline would close the underlying connection.
+func (c *Conn) write(typ uint32, payload []any) (chan struct{}, error) {
+	c.connMu.RLock()
+	conn := c.conn
+	readerDone := c.readerDone
+	c.connMu.RUnlock()
+	return readerDone, wsjson.Write(context.Background(), conn, append([]any{typ}, payload...))
 }
 
 // wait blocks until any in-progress reconnect attempt and its tracked failure
@@ -394,12 +402,6 @@ func (c *Conn) wait(ctx context.Context) error {
 			return context.Cause(c.ctx)
 		}
 	}
-}
-
-// Wait blocks until any in-progress reconnect attempt and its tracked failure
-// handlers have finished.
-func (c *Conn) Wait(ctx context.Context) error {
-	return c.wait(ctx)
 }
 
 // drainExpected closes all pending response channels in c.expected and clears
@@ -748,17 +750,6 @@ func (c *Conn) startReconnectSuccess(subscription *Subscription) {
 	go func() {
 		c.notifyReconnectSuccess(subscription)
 	}()
-}
-
-// Active reports whether sub is currently registered on this connection.
-func (c *Conn) Active(sub *Subscription) bool {
-	if sub == nil {
-		return false
-	}
-	c.subscriptionsMu.RLock()
-	defer c.subscriptionsMu.RUnlock()
-	current, ok := c.subscriptions[sub.id()]
-	return ok && current == sub
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.
