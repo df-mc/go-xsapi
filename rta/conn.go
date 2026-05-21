@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	reconnectDialTimeout       = 15 * time.Second
-	reconnectBackoffInitial    = time.Second
-	reconnectBackoffMax        = 30 * time.Second
-	proactiveReconnectInterval = 90 * time.Minute
-	maxPendingEventsPerID      = 8
+	reconnectDialTimeout          = 15 * time.Second
+	reconnectBackoffInitial       = time.Second
+	reconnectBackoffMax           = 30 * time.Second
+	proactiveReconnectInterval    = 90 * time.Minute
+	maxPendingEventsBeforeHandler = 8
 )
 
 // Conn represents a connection between the real-time activity services. It can
@@ -331,7 +331,7 @@ func (s *Subscription) handler() SubscriptionHandler {
 func (s *Subscription) dispatchEvent(custom json.RawMessage) {
 	s.mu.Lock()
 	if !s.hSet {
-		if len(s.pending) < maxPendingEventsPerID {
+		if len(s.pending) < maxPendingEventsBeforeHandler {
 			s.pending = append(s.pending, append(json.RawMessage(nil), custom...))
 		}
 		s.mu.Unlock()
