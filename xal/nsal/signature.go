@@ -124,6 +124,7 @@ var AuthPolicy = SignaturePolicy{
 	Version: 1,
 }
 
+// validateSignatureKey ensures the proof key can produce Xbox Live request signatures.
 func validateSignatureKey(key *ecdsa.PrivateKey) error {
 	if key == nil {
 		return errors.New("xal/nsal: signature key must be non-nil")
