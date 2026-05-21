@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,8 +184,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, net.ErrClosed
 	}
 
-	exclusions, ok := req.Context().Value(headerExclusionKey).(headerExclusionSet)
-	if ok && exclusions.authorization() && exclusions.signature() {
+	if skipAuth, _ := req.Context().Value(skipAuthKey).(bool); skipAuth {
 		reqBodyClosed = true
 		return c.baseTransport().RoundTrip(req)
 	}
@@ -206,29 +204,19 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Body bytes buffered for inclusion in the request signature.
 		data []byte
 	)
-	if !exclusions.authorization() {
-		// Some endpoints rarely accept 'Signature' without the
-		// 'Authorization' header to authenticate the request.
-		token.SetAuthHeader(req2)
+	token.SetAuthHeader(req2)
+	// If a body is present, it is buffered in full so that it can be included
+	// in the 'Signature' header. It is then restored on the cloned request.
+	if req.Body != nil {
+		signingBuffer := &bytes.Buffer{}
+		if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
+			signingBuffer.Reset()
+			return nil, fmt.Errorf("clone request body: %w", err)
+		}
+		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 	}
-	if !exclusions.signature() {
-		// If a body is present, it is buffered in full so that it can be included
-		// in the 'Signature' header. It is then restored on the cloned request.
-		if req.Body != nil {
-			signingBuffer := &bytes.Buffer{}
-			if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
-				signingBuffer.Reset()
-				return nil, fmt.Errorf("clone request body: %w", err)
-			}
-			data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
-		}
-		if err := policy.SignWithError(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
-			return nil, fmt.Errorf("sign request: %w", err)
-		}
-	} else {
-		// Request body is assumed to be closed by the base transport
-		// when signing is disabled.
-		reqBodyClosed = true
+	if err := policy.SignWithError(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
+		return nil, fmt.Errorf("sign request: %w", err)
 	}
 
 	return c.baseTransport().RoundTrip(req2)
@@ -379,40 +367,13 @@ func RequestHeader(key, value string) RequestOption {
 // A RequestOption must be reusable and must not hold any per-request state.
 type RequestOption = internal.RequestOption
 
-// WithoutAuthHeaders returns a new request with exclusions list set.
-// This is useful when the caller does not require any auth-specific header
-// set by [Client.RoundTrip].
-func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
-	if len(headers) == 0 {
-		headers = []string{"Authorization", "Signature"}
-	}
-	if v, ok := req.Context().Value(headerExclusionKey).(headerExclusionSet); ok {
-		headers = append(headers, v...)
-	}
-	v := headerExclusionSet(headers)
-	return req.WithContext(context.WithValue(req.Context(), headerExclusionKey, v))
+// WithoutAuth returns a new request that bypasses the Authorization and
+// Signature headers normally set by [Client.RoundTrip].
+func WithoutAuth(req *http.Request) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), skipAuthKey, true))
 }
 
-// headerExclusionsKey is the context key used to define headerExclusionSet.
-var headerExclusionKey headerExclusionContextKey
+// skipAuthKey is the context key used to bypass request authentication.
+var skipAuthKey skipAuthContextKey
 
-type headerExclusionContextKey struct{}
-
-type headerExclusionSet []string
-
-func (h headerExclusionSet) authorization() bool {
-	return h.contains("Authorization")
-}
-
-func (h headerExclusionSet) signature() bool {
-	return h.contains("Signature")
-}
-
-func (h headerExclusionSet) contains(key string) bool {
-	for _, s := range h {
-		if strings.EqualFold(s, key) {
-			return true
-		}
-	}
-	return false
-}
+type skipAuthContextKey struct{}
