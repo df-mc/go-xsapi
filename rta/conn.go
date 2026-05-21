@@ -15,6 +15,13 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
+const (
+	reconnectDialTimeout       = 15 * time.Second
+	reconnectBackoffInitial    = time.Second
+	reconnectBackoffMax        = 30 * time.Second
+	proactiveReconnectInterval = 90 * time.Minute
+)
+
 // Conn represents a connection between the real-time activity services. It can
 // be established from Dialer with an authorization token that relies on the
 // party 'https://xboxlive.com/'.
@@ -40,12 +47,6 @@ type Conn struct {
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
-	// pending holds subscriptions taken out of the live map for a reconnect
-	// wave whose individual re-subscribe was interrupted by a replacement
-	// socket drop. Because reconnect clears the live subscription map before
-	// resubscribing, interrupted subscriptions must be carried into the next
-	// reconnect cycle explicitly instead of being retried in-place.
-	pending map[*Subscription]struct{}
 
 	log *slog.Logger
 
@@ -58,11 +59,7 @@ type Conn struct {
 	// reconnectDone is a channel that is closed when the reconnect dial/
 	// resubscribe wave is complete. It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
-	// reconnectHandlersDone is closed when all asynchronous reconnect failure
-	// handlers have finished. It is nil when no such handlers are running.
-	reconnectHandlersDone chan struct{}
-	reconnectHandlers     int
-	// reconnectMu guards reconnectDone and reconnect failure-handler tracking.
+	// reconnectMu guards reconnectDone.
 	reconnectMu sync.RWMutex
 
 	// once ensures that the Conn is closed only once.
@@ -178,19 +175,32 @@ var errReconnectInterrupted = errors.New("rta: reconnect interrupted")
 // number. If the Conn is reconnecting, callWithPayload blocks until reconnect
 // completes before sending.
 func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []any) (*handshake, chan struct{}, error) {
+	return c.call(ctx, op, payload, true)
+}
+
+func (c *Conn) call(ctx context.Context, op uint8, payload func() []any, wait bool) (*handshake, chan struct{}, error) {
 	for {
-		if err := c.wait(ctx); err != nil {
-			return nil, nil, err
+		if wait {
+			if err := c.wait(ctx); err != nil {
+				return nil, nil, err
+			}
 		}
 
 		seq := c.sequences[op].Add(1)
 		ch, readerDone, err := c.expect(op, seq, payload())
 		if err != nil {
+			if !wait {
+				return nil, nil, errReconnectInterrupted
+			}
 			continue
 		}
 		select {
 		case result, ok := <-ch:
 			if !ok {
+				if !wait {
+					c.release(op, seq)
+					return nil, nil, errReconnectInterrupted
+				}
 				continue
 			}
 			c.release(op, seq)
@@ -211,40 +221,30 @@ func (c *Conn) callWithPayload(ctx context.Context, op uint8, payload func() []a
 // If the replacement socket drops mid-handshake, the caller is told to defer
 // the subscription to the next reconnect cycle.
 func (c *Conn) callDuringReconnect(ctx context.Context, op uint8, payload []any) (*handshake, error) {
-	seq := c.sequences[op].Add(1)
-	ch, _, err := c.expect(op, seq, payload)
-	if err != nil {
+	h, _, err := c.call(ctx, op, func() []any {
+		return payload
+	}, false)
+	if errors.Is(err, errReconnectInterrupted) {
 		c.reconnectNext.Store(true)
-		return nil, errReconnectInterrupted
 	}
-	select {
-	case result, ok := <-ch:
-		if !ok {
-			c.reconnectNext.Store(true)
-			return nil, errReconnectInterrupted
-		}
-		c.release(op, seq)
-		return result, nil
-	case <-ctx.Done():
-		c.release(op, seq)
-		return nil, ctx.Err()
-	case <-c.ctx.Done():
-		c.release(op, seq)
-		return nil, context.Cause(c.ctx)
-	}
+	return h, err
 }
 
 // Subscription represents a subscription contracted with the resource URI available through
 // the real-time activity service. A Subscription may be contracted via Conn.Subscribe.
 type Subscription struct {
-	// ID is the ID assigned to the Subscription within a single RTA connection.
+	// ID is the ID assigned when the Subscription is first established.
+	// It is retained for compatibility and diagnostics. If the Conn reconnects,
+	// the active service ID may change; Conn methods route through the current
+	// internal ID instead of this field.
 	ID uint32
-	// Custom is the custom data associated with the Subscription.
+	// Custom is the custom data received when the Subscription is first established.
 	//
 	// The format and semantics of this data depend on the resource the
 	// subscription is targeting. It is received alongside the successful
 	// subscription response when the Subscription was established. The custom
-	// data may change if the Conn has reconnected to RTA service.
+	// data may change if the Conn has reconnected to RTA service; use
+	// [Subscription.CurrentCustom] to read the latest value.
 	Custom json.RawMessage
 
 	currentID     uint32
@@ -335,6 +335,14 @@ type ReconnectHandler interface {
 	HandleReconnect(err error)
 }
 
+// ResyncHandler is an optional extension interface for subscriptions that need
+// to react to an RTA resync message. A resync message indicates that data may
+// have been lost and the subscription's backing resource should be refreshed
+// through its corresponding REST API.
+type ResyncHandler interface {
+	HandleResync()
+}
+
 // NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
 type NopSubscriptionHandler struct{}
 
@@ -353,16 +361,14 @@ func (c *Conn) write(typ uint32, payload []any) (chan struct{}, error) {
 	return readerDone, wsjson.Write(context.Background(), conn, append([]any{typ}, payload...))
 }
 
-// wait blocks until any in-progress reconnect attempt and its tracked failure
-// handlers have finished.
+// wait blocks until any in-progress reconnect attempt has finished.
 func (c *Conn) wait(ctx context.Context) error {
 	for {
 		c.reconnectMu.RLock()
 		done := c.reconnectDone
-		handlersDone := c.reconnectHandlersDone
 		c.reconnectMu.RUnlock()
 
-		if done == nil && handlersDone == nil {
+		if done == nil {
 			if err := context.Cause(c.ctx); err != nil {
 				return err
 			}
@@ -370,10 +376,6 @@ func (c *Conn) wait(ctx context.Context) error {
 		}
 		select {
 		case <-done:
-			if err := context.Cause(c.ctx); err != nil {
-				return err
-			}
-		case <-handlersDone:
 			if err := context.Cause(c.ctx); err != nil {
 				return err
 			}
@@ -410,6 +412,7 @@ func (c *Conn) startReader(conn *websocket.Conn) {
 	c.readerDone = done
 	c.connMu.Unlock()
 	go c.read(conn, done)
+	go c.refreshConnAfter(done, proactiveReconnectInterval)
 }
 
 // currentConn returns the active WebSocket connection.
@@ -432,6 +435,20 @@ func (c *Conn) isCurrentConn(conn *websocket.Conn) bool {
 	c.connMu.RLock()
 	defer c.connMu.RUnlock()
 	return c.conn == conn
+}
+
+func (c *Conn) refreshConnAfter(readerDone chan struct{}, after time.Duration) {
+	timer := time.NewTimer(after)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		if c.currentReaderDone() == readerDone && c.ctx.Err() == nil {
+			_ = c.currentConn().Close(websocket.StatusNormalClosure, "refresh RTA token")
+		}
+	case <-readerDone:
+	case <-c.ctx.Done():
+	}
 }
 
 // read continuously reads JSON messages from the WebSocket connection and
@@ -491,8 +508,7 @@ func (c *Conn) triggerReconnect() {
 }
 
 // reconnect re-establishes the WebSocket connection. Only one reconnect may
-// run at a time. Concurrent calls after the first are no-ops. If establishment fails,
-// the Conn is closed with the error as the cause.
+// run at a time.
 func (c *Conn) reconnect(done chan struct{}) {
 	if c.ctx.Err() != nil {
 		c.finishReconnect(done)
@@ -501,6 +517,7 @@ func (c *Conn) reconnect(done chan struct{}) {
 	defer c.finishReconnect(done)
 
 	c.log.Info("re-establishing WebSocket connection...")
+	backoff := reconnectBackoffInitial
 
 	for {
 		if readerDone := c.currentReaderDone(); readerDone != nil {
@@ -513,22 +530,29 @@ func (c *Conn) reconnect(done chan struct{}) {
 
 		c.reconnectNext.Store(false)
 
-		dialCtx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+		dialCtx, cancel := context.WithTimeout(c.ctx, reconnectDialTimeout)
 		conn, err := c.dialer.dial(dialCtx)
 		cancel()
 		if err != nil {
-			cause := fmt.Errorf("rta: reconnect: %w", err)
-			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
-			c.notifyReconnectFailure(cause)
-			_ = c.close(cause)
-			return
+			c.log.Error("error re-establishing WebSocket connection",
+				slog.Any("error", err),
+				slog.Duration("retry_after", backoff),
+			)
+			select {
+			case <-time.After(backoff):
+				backoff = minDuration(backoff*2, reconnectBackoffMax)
+				continue
+			case <-c.ctx.Done():
+				return
+			}
 		}
+		backoff = reconnectBackoffInitial
 		c.startReader(conn)
 
 		successes := c.resubscribe()
 		readerDone := c.currentReaderDone()
 		for _, subscription := range successes {
-			c.startReconnectSuccess(subscription)
+			go c.notifyReconnect(subscription, nil)
 			c.log.Debug("resubscribed", slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.id())),
 				slog.String("custom", string(subscription.custom())),
@@ -538,16 +562,6 @@ func (c *Conn) reconnect(done chan struct{}) {
 		if c.reconnectWaveStable(readerDone) {
 			return
 		}
-	}
-}
-
-func (c *Conn) notifyReconnectFailure(err error) {
-	for _, subscription := range c.takeSubscriptionsForReconnect() {
-		c.startReconnectFailureHandler()
-		go func(subscription *Subscription) {
-			defer c.finishReconnectFailureHandler()
-			c.notifyReconnect(subscription, err)
-		}(subscription)
 	}
 }
 
@@ -576,15 +590,14 @@ func (c *Conn) finishReconnect(done chan struct{}) {
 	}
 }
 
-// takeSubscriptionsForReconnect collects all subscriptions (active and
-// pending) that need to be re-established on the new connection, clears both
-// maps, and returns the deduplicated list.
-func (c *Conn) takeSubscriptionsForReconnect() []*Subscription {
-	c.subscriptionsMu.Lock()
-	defer c.subscriptionsMu.Unlock()
+// subscriptionsForReconnect collects the deduplicated set of subscriptions
+// that need to be re-established on the current connection.
+func (c *Conn) subscriptionsForReconnect() []*Subscription {
+	c.subscriptionsMu.RLock()
+	defer c.subscriptionsMu.RUnlock()
 
-	subscriptions := make([]*Subscription, 0, len(c.subscriptions)+len(c.pending))
-	seen := make(map[*Subscription]struct{}, len(c.subscriptions)+len(c.pending))
+	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
+	seen := make(map[*Subscription]struct{}, len(c.subscriptions))
 	for _, subscription := range c.subscriptions {
 		if _, ok := seen[subscription]; ok {
 			continue
@@ -592,23 +605,35 @@ func (c *Conn) takeSubscriptionsForReconnect() []*Subscription {
 		seen[subscription] = struct{}{}
 		subscriptions = append(subscriptions, subscription)
 	}
-	for subscription := range c.pending {
-		if _, ok := seen[subscription]; ok {
-			continue
-		}
-		seen[subscription] = struct{}{}
-		subscriptions = append(subscriptions, subscription)
-	}
-	clear(c.subscriptions)
-	clear(c.pending)
 	return subscriptions
+}
+
+func (c *Conn) updateSubscriptionID(subscription *Subscription, id uint32) {
+	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
+	for existingID, existingSubscription := range c.subscriptions {
+		if existingSubscription == subscription {
+			delete(c.subscriptions, existingID)
+		}
+	}
+	c.subscriptions[id] = subscription
+}
+
+func (c *Conn) removeSubscription(subscription *Subscription) {
+	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
+	for id, existingSubscription := range c.subscriptions {
+		if existingSubscription == subscription {
+			delete(c.subscriptions, id)
+		}
+	}
 }
 
 // resubscribe re-establishes all subscriptions inherited from the previous
 // WebSocket connection. Each re-subscribe attempt has a timeout of 15 seconds.
 // Failures are reported via [SubscriptionHandler.HandleReconnect].
 func (c *Conn) resubscribe() []*Subscription {
-	subscriptions := c.takeSubscriptionsForReconnect()
+	subscriptions := c.subscriptionsForReconnect()
 
 	c.log.Info("reconnected, resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 
@@ -626,17 +651,10 @@ func (c *Conn) resubscribe() []*Subscription {
 			sub, err := c.subscribeDuringReconnect(ctx, subscription.resourceURI)
 			if err != nil {
 				if errors.Is(err, errReconnectInterrupted) {
-					c.subscriptionsMu.Lock()
-					if c.pending == nil {
-						c.pending = make(map[*Subscription]struct{})
-					}
-					c.pending[subscription] = struct{}{}
-					c.subscriptionsMu.Unlock()
 					return
 				}
-				c.startReconnectFailureHandler()
+				c.removeSubscription(subscription)
 				go func(subscription *Subscription, err error) {
-					defer c.finishReconnectFailureHandler()
 					c.notifyReconnect(subscription, err)
 				}(subscription, err)
 				c.log.Error("error resubscribing",
@@ -651,10 +669,7 @@ func (c *Conn) resubscribe() []*Subscription {
 
 			subscriptionID := sub.id()
 			subscription.setCurrent(subscriptionID, sub.custom())
-
-			c.subscriptionsMu.Lock()
-			c.subscriptions[subscriptionID] = subscription
-			c.subscriptionsMu.Unlock()
+			c.updateSubscriptionID(subscription, subscriptionID)
 
 			successesMu.Lock()
 			successes = append(successes, subscription)
@@ -690,47 +705,12 @@ func (c *Conn) reconnectWaveStable(readerDone chan struct{}) bool {
 	}
 }
 
-func (c *Conn) startReconnectFailureHandler() {
-	c.reconnectMu.Lock()
-	if c.reconnectHandlers == 0 {
-		c.reconnectHandlersDone = make(chan struct{})
-	}
-	c.reconnectHandlers++
-	c.reconnectMu.Unlock()
-}
-
-func (c *Conn) finishReconnectFailureHandler() {
-	c.reconnectMu.Lock()
-	defer c.reconnectMu.Unlock()
-	if c.reconnectHandlers == 0 {
-		return
-	}
-	c.reconnectHandlers--
-	if c.reconnectHandlers == 0 {
-		close(c.reconnectHandlersDone)
-		c.reconnectHandlersDone = nil
-	}
-}
-
-// notifyReconnectSuccess delivers reconnect success as soon as the
-// subscription handshake on the replacement connection has succeeded.
-func (c *Conn) notifyReconnectSuccess(subscription *Subscription) {
-	c.notifyReconnect(subscription, nil)
-}
-
 func (c *Conn) notifyReconnect(subscription *Subscription, err error) {
 	handler, ok := subscription.handler().(ReconnectHandler)
 	if !ok {
 		return
 	}
 	handler.HandleReconnect(err)
-}
-
-// startReconnectSuccess launches notifyReconnectSuccess asynchronously.
-func (c *Conn) startReconnectSuccess(subscription *Subscription) {
-	go func() {
-		c.notifyReconnectSuccess(subscription)
-	}()
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.
@@ -784,9 +764,39 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 			go sub.handler().HandleEvent(payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
+	case typeResync:
+		c.notifyResync()
 	default:
 		c.log.Debug("received an unexpected message", slog.Group("message", "type", typ))
 	}
+}
+
+func (c *Conn) notifyResync() {
+	c.subscriptionsMu.RLock()
+	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
+	seen := make(map[*Subscription]struct{}, len(c.subscriptions))
+	for _, subscription := range c.subscriptions {
+		if _, ok := seen[subscription]; ok {
+			continue
+		}
+		seen[subscription] = struct{}{}
+		subscriptions = append(subscriptions, subscription)
+	}
+	c.subscriptionsMu.RUnlock()
+
+	for _, subscription := range subscriptions {
+		handler, ok := subscription.handler().(ResyncHandler)
+		if ok {
+			go handler.HandleResync()
+		}
+	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // An OutOfRangeError occurs when reading values from payload received from the service.

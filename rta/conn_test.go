@@ -59,7 +59,6 @@ func newTestConn() *Conn {
 	conn := &Conn{}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	conn.subscriptions = make(map[uint32]*Subscription)
-	conn.pending = make(map[*Subscription]struct{})
 	for i := range cap(conn.expected) {
 		conn.expected[i] = make(map[uint32]chan<- *handshake)
 	}
@@ -163,6 +162,26 @@ func TestSubscriptionCurrentCustomUsesReconnectPayload(t *testing.T) {
 
 	if got := string(subscription.CurrentCustom()); got != `{"ConnectionId":"00000000-0000-0000-0000-000000000002"}` {
 		t.Fatalf("CurrentCustom = %s, want reconnect payload", got)
+	}
+}
+
+func TestHandleMessageResyncNotifiesHandlers(t *testing.T) {
+	conn := newTestConn()
+	called := make(chan struct{}, 1)
+	subscription := &Subscription{ID: 1}
+	subscription.Handle(testSubscriptionHandler{
+		handleResync: func() {
+			called <- struct{}{}
+		},
+	})
+	conn.subscriptions[1] = subscription
+
+	conn.handleMessage(typeResync, nil)
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resync handler")
 	}
 }
 
@@ -459,7 +478,7 @@ func TestConnReconnectRetriesIfReplacementSocketDropsAfterSuccessfulResubscribe(
 	}
 }
 
-func TestWaitBlocksUntilReconnectErrorHandlersFinish(t *testing.T) {
+func TestWaitDoesNotBlockOnReconnectErrorHandlers(t *testing.T) {
 	originalURL := connectURL
 	defer func() { connectURL = originalURL }()
 
@@ -541,25 +560,19 @@ func TestWaitBlocksUntilReconnectErrorHandlersFinish(t *testing.T) {
 
 	select {
 	case err := <-waitDone:
-		t.Fatalf("Wait returned early with %v while reconnect error handler was still running", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	close(releaseErrorHandler)
-
-	select {
-	case err := <-waitDone:
 		if err != nil {
 			t.Fatalf("Wait returned error: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Wait after reconnect error handler finished")
+		t.Fatal("Wait blocked on reconnect error handler")
 	}
+	close(releaseErrorHandler)
 }
 
 type testSubscriptionHandler struct {
 	handleReconnect      func()
 	handleReconnectError func(error)
+	handleResync         func()
 	handleEvent          func(json.RawMessage)
 }
 
@@ -578,6 +591,12 @@ func (h testSubscriptionHandler) HandleReconnect(err error) {
 func (h testSubscriptionHandler) HandleEvent(custom json.RawMessage) {
 	if h.handleEvent != nil {
 		h.handleEvent(custom)
+	}
+}
+
+func (h testSubscriptionHandler) HandleResync() {
+	if h.handleResync != nil {
+		h.handleResync()
 	}
 }
 

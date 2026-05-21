@@ -30,10 +30,12 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 		custom := c.subscription.CurrentCustom()
 		var data subscriptionData
 		if err := json.Unmarshal(custom, &data); err != nil {
+			c.resetBrokenSubscription(c.subscription)
 			c.subscription, c.subscriptionData = nil, nil
 			return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
 		}
 		if data.ConnectionID == uuid.Nil {
+			c.resetBrokenSubscription(c.subscription)
 			c.subscription, c.subscriptionData = nil, nil
 			return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, custom)
 		}
@@ -48,17 +50,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 
 	defer func() {
 		if err != nil {
-			if c.subscription != nil {
-				// If the subscription was unsuccessful, we reset the subscription state
-				// along with the custom data so it can be retried.
-				go func(subscription *rta.Subscription) {
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-					defer cancel()
-					if err := c.rta.Unsubscribe(ctx, subscription); err != nil {
-						c.log.Error("error resetting broken subscription", slog.Any("error", err))
-					}
-				}(c.subscription)
-			}
+			c.resetBrokenSubscription(c.subscription)
 			c.subscription, c.subscriptionData = nil, nil
 		}
 	}()
@@ -84,6 +76,21 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 		(&subscriptionHandler{Client: c}).refreshSessionConnections(c.subscriptionData.ConnectionID)
 	}
 	return c.subscription, c.subscriptionData, nil
+}
+
+func (c *Client) resetBrokenSubscription(subscription *rta.Subscription) {
+	if subscription == nil || c.rta == nil {
+		return
+	}
+	// If the subscription was unsuccessful, reset the RTA state in the
+	// background so a future subscribe can retry without leaking the old handle.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+		defer cancel()
+		if err := c.rta.Unsubscribe(ctx, subscription); err != nil {
+			c.log.Error("error resetting broken subscription", slog.Any("error", err))
+		}
+	}()
 }
 
 // resourceURI is the resource URI used to subscribe with RTA (Real-Time Activity) Services
@@ -173,24 +180,42 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return reference.Equal(session.Reference())
 		}) {
 			go func(s *Session) {
-				ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
-				defer cancel()
-
-				if err := s.Sync(ctx); err != nil {
-					h.log.Error("error synchronizing multiplayer session",
-						slog.Any("error", err))
-					return
-				}
-				h.log.Debug("synchronized multiplayer session",
-					slog.Group("session",
-						slog.String("ref", s.Reference().URL().String()),
-					),
-				)
-				s.handler().HandleSessionChange(s)
+				h.syncSession(s)
 			}(session)
 		}
 	}
 	h.sessionsMu.RUnlock()
+}
+
+// HandleResync implements [rta.ResyncHandler].
+func (h *subscriptionHandler) HandleResync() {
+	h.sessionsMu.RLock()
+	sessions := make([]*Session, 0, len(h.sessions))
+	for _, session := range h.sessions {
+		sessions = append(sessions, session)
+	}
+	h.sessionsMu.RUnlock()
+
+	for _, session := range sessions {
+		go h.syncSession(session)
+	}
+}
+
+func (h *subscriptionHandler) syncSession(session *Session) {
+	ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
+	defer cancel()
+
+	if err := session.Sync(ctx); err != nil {
+		h.log.Error("error synchronizing multiplayer session",
+			slog.Any("error", err))
+		return
+	}
+	h.log.Debug("synchronized multiplayer session",
+		slog.Group("session",
+			slog.String("ref", session.Reference().URL().String()),
+		),
+	)
+	session.handler().HandleSessionChange(session)
 }
 
 // HandleReconnect implements [rta.SubscriptionHandler].
