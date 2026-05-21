@@ -45,17 +45,19 @@ func (r TokenRequest[P]) Do(ctx context.Context, config xal.Config, reqURL strin
 	req.Header.Set("User-Agent", config.UserAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-xbl-contract-version", "1")
-	nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey, timestamp.Now())
+	if err := nsal.AuthPolicy.Sign(req, buf.Bytes(), proofKey, timestamp.Now()); err != nil {
+		return fmt.Errorf("sign request: %w", err)
+	}
 
 	resp, err := xal.ContextClient(ctx).Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	timestamp.Update(resp.Header)
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 	}
-	timestamp.Update(resp.Header)
 
 	if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {
 		return fmt.Errorf("decode response body: %w", err)
