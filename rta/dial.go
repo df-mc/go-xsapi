@@ -44,7 +44,7 @@ func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, er
 		conn:          c,
 		dialer:        internalDialer,
 		log:           log,
-		subscriptions: make(map[uint32]*Subscription),
+		subscriptions: newSubscriptionRegistry(),
 	}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	for i := range conn.expected {

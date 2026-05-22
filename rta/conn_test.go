@@ -21,9 +21,9 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 	first := make(chan struct{})
 	second := make(chan struct{})
 
-	conn.reconnectMu.Lock()
-	conn.reconnectDone = first
-	conn.reconnectMu.Unlock()
+	conn.reconnectState.mu.Lock()
+	conn.reconnectState.done = first
+	conn.reconnectState.mu.Unlock()
 
 	waitDone := make(chan error, 1)
 	go func() {
@@ -31,9 +31,9 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 	}()
 
 	time.Sleep(50 * time.Millisecond)
-	conn.reconnectMu.Lock()
-	conn.reconnectDone = second
-	conn.reconnectMu.Unlock()
+	conn.reconnectState.mu.Lock()
+	conn.reconnectState.done = second
+	conn.reconnectState.mu.Unlock()
 	close(first)
 
 	select {
@@ -42,9 +42,9 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	conn.reconnectMu.Lock()
-	conn.reconnectDone = nil
-	conn.reconnectMu.Unlock()
+	conn.reconnectState.mu.Lock()
+	conn.reconnectState.done = nil
+	conn.reconnectState.mu.Unlock()
 	close(second)
 
 	select {
@@ -60,7 +60,7 @@ func TestWaitBlocksAcrossChainedReconnects(t *testing.T) {
 func newTestConn() *Conn {
 	conn := &Conn{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
-	conn.subscriptions = make(map[uint32]*Subscription)
+	conn.subscriptions = newSubscriptionRegistry()
 	for i := range conn.expected {
 		conn.expected[i] = make(map[uint32]expectedHandshake)
 	}
@@ -69,6 +69,9 @@ func newTestConn() *Conn {
 
 func TestSubscriptionCurrentCustomReturnsDetachedCopy(t *testing.T) {
 	subscription := &Subscription{ID: 1, Custom: json.RawMessage(`{"value":"original"}`)}
+	if subscription.Active() {
+		t.Fatal("newly constructed subscription is active")
+	}
 	custom := subscription.CurrentCustom()
 	custom[10] = 'X'
 	if got := string(subscription.CurrentCustom()); got != `{"value":"original"}` {
@@ -76,6 +79,9 @@ func TestSubscriptionCurrentCustomReturnsDetachedCopy(t *testing.T) {
 	}
 
 	setSubscriptionCurrent(subscription, 2, json.RawMessage(`{"value":"current"}`))
+	if !subscription.Active() {
+		t.Fatal("subscription is inactive after current state update")
+	}
 	custom = subscription.CurrentCustom()
 	custom[10] = 'X'
 	if got := string(subscription.CurrentCustom()); got != `{"value":"current"}` {
@@ -123,7 +129,7 @@ func TestResubscribeRetriesTransientStatuses(t *testing.T) {
 	conn := newTestConn()
 	subscription := &Subscription{ID: 1, resourceURI: "resource://session"}
 	setSubscriptionCurrent(subscription, 1, nil)
-	conn.subscriptions[1] = subscription
+	conn.subscriptions.byID[1] = subscription
 
 	var attempts atomic.Int32
 	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
@@ -149,10 +155,10 @@ func TestResubscribeRetriesTransientStatuses(t *testing.T) {
 	if got := subscription.id(); got != 2 {
 		t.Fatalf("subscription ID = %d, want 2", got)
 	}
-	if _, ok := conn.subscriptions[1]; ok {
+	if _, ok := conn.subscriptions.byID[1]; ok {
 		t.Fatal("old subscription ID was not removed")
 	}
-	if conn.subscriptions[2] != subscription {
+	if conn.subscriptions.byID[2] != subscription {
 		t.Fatal("subscription was not registered with retried ID")
 	}
 }
@@ -194,10 +200,10 @@ func TestSubscribeRetriesIfConnectionChangesBeforeRegistration(t *testing.T) {
 	if got := subscription.id(); got != 2 {
 		t.Fatalf("subscription ID = %d, want 2", got)
 	}
-	if current := conn.subscriptions[2]; current != subscription {
+	if current := conn.subscriptions.byID[2]; current != subscription {
 		t.Fatal("subscription was not registered with the replacement connection ID")
 	}
-	if _, ok := conn.subscriptions[1]; ok {
+	if _, ok := conn.subscriptions.byID[1]; ok {
 		t.Fatal("stale subscription ID was registered")
 	}
 }
@@ -300,13 +306,13 @@ func TestUnsubscribeRemovesAllIDsForSubscription(t *testing.T) {
 	conn := newTestConn()
 	subscription := &Subscription{ID: 1}
 	setSubscriptionCurrent(subscription, 1, nil)
-	conn.subscriptions[1] = subscription
+	conn.subscriptions.byID[1] = subscription
 	conn.expectHook = func(op uint8, sequence uint32, payload []any) (<-chan *handshake, chan struct{}, error) {
 		if got := payload[0].(uint32); got != 1 {
 			t.Fatalf("unsubscribe ID = %d, want 1", got)
 		}
 		setSubscriptionCurrent(subscription, 2, nil)
-		conn.subscriptions[2] = subscription
+		conn.subscriptions.byID[2] = subscription
 		ch := make(chan *handshake, 1)
 		ch <- &handshake{status: StatusOK}
 		return ch, conn.currentReaderDone(), nil
@@ -315,10 +321,10 @@ func TestUnsubscribeRemovesAllIDsForSubscription(t *testing.T) {
 	if err := conn.Unsubscribe(context.Background(), subscription); err != nil {
 		t.Fatalf("Unsubscribe returned error: %v", err)
 	}
-	if _, ok := conn.subscriptions[1]; ok {
+	if _, ok := conn.subscriptions.byID[1]; ok {
 		t.Fatal("old subscription ID was not deleted")
 	}
-	if _, ok := conn.subscriptions[2]; ok {
+	if _, ok := conn.subscriptions.byID[2]; ok {
 		t.Fatal("replacement subscription ID was not deleted")
 	}
 }
@@ -371,7 +377,7 @@ func TestHandleMessageDispatchesSubscriptionEventsInOrder(t *testing.T) {
 			got <- string(custom)
 		},
 	})
-	conn.subscriptions[7] = subscription
+	conn.subscriptions.byID[7] = subscription
 
 	conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"n":1}`)})
 	conn.handleMessage(typeEvent, []json.RawMessage{json.RawMessage(`7`), json.RawMessage(`{"n":2}`)})
@@ -397,7 +403,7 @@ func TestHandleMessageResyncNotifiesHandlers(t *testing.T) {
 			called <- struct{}{}
 		},
 	})
-	conn.subscriptions[1] = subscription
+	conn.subscriptions.byID[1] = subscription
 
 	conn.handleMessage(typeResync, nil)
 
@@ -417,7 +423,7 @@ func TestHandleMessageResyncIgnoredDuringSuppressionWindow(t *testing.T) {
 			called <- struct{}{}
 		},
 	})
-	conn.subscriptions[1] = subscription
+	conn.subscriptions.byID[1] = subscription
 	conn.suppressResyncFor(time.Minute)
 
 	conn.handleMessage(typeResync, nil)
@@ -859,6 +865,7 @@ func setSubscriptionCurrent(subscription *Subscription, id uint32, custom json.R
 	subscription.currentID = id
 	subscription.currentCustom = append(json.RawMessage(nil), custom...)
 	subscription.currentSet = true
+	subscription.active = true
 	subscription.mu.Unlock()
 }
 
