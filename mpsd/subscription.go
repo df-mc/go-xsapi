@@ -19,7 +19,7 @@ import (
 func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscriptionData, err error) {
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
-	if c.subscription != nil && c.subscriptionData != nil {
+	if c.subscription != nil && c.subscription.Active() && c.subscriptionData != nil {
 		// If the subscription was already made with RTA, return the cached
 		// subscription along with its decoded payload.
 		return c.subscription, c.subscriptionData, nil
@@ -49,7 +49,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 	// The custom data includes a connection ID which can be used for the
 	// Connection field in the member constants for receiving notifications for
 	// the changes to its participating multiplayer session.
-	if err := json.Unmarshal(c.subscription.Custom, &c.subscriptionData); err != nil {
+	if err := json.Unmarshal(c.subscription.Custom(), &c.subscriptionData); err != nil {
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
 	}
 	if c.subscriptionData == nil || c.subscriptionData.ConnectionID == uuid.Nil {
@@ -107,6 +107,8 @@ type subscriptionData struct {
 type subscriptionHandler struct {
 	*Client
 	log *slog.Logger
+
+	rta.NopSubscriptionHandler
 }
 
 // HandleEvent handles an event received over the RTA subscription associated
