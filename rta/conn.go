@@ -3,6 +3,7 @@ package rta
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -168,6 +169,8 @@ type Subscription struct {
 	h           SubscriptionHandler
 	mu          sync.RWMutex
 	resourceURI string
+
+	once sync.Once
 }
 
 // ID returns the ID assigned to the [Subscription] within a single RTA connection.
@@ -201,6 +204,15 @@ func (s *Subscription) Active() bool {
 	return s.active
 }
 
+func (s *Subscription) cancel(err error) {
+	s.once.Do(func() {
+		s.mu.Lock()
+		s.active = false
+		s.mu.Unlock()
+		go s.handler().HandleError(err)
+	})
+}
+
 // Handle registers a [SubscriptionHandler] on the [Subscription] to handle
 // future events that may occur in the subscription. If h is nil, a no-op
 // handler is registered.
@@ -229,29 +241,24 @@ type SubscriptionHandler interface {
 	// removes the caller.
 	HandleEvent(custom json.RawMessage)
 
-	// HandleReconnect is called when the Conn has reconnected to the RTA service
+	// HandleResync is called when the Conn has reconnected to the RTA service
 	// and the subscription has been re-established on the new connection.
-	//
-	// If err is non-nil, the re-subscribe has failed. In this case, the [Subscription]
-	// still holds the ID and custom data from the previous connection. The handler does
-	// not need to call [Conn.Unsubscribe].
-	//
-	// If err is nil, the Subscription was successfully re-established on the
+	// The Subscription was successfully re-established on the
 	// new connection and has been assigned a new ID. The custom data may also
 	// differ from the previous connection depending on the targeting resource.
 	// In this case, the handler remains responsible for calling [Conn.Unsubscribe]
 	// during cleanup.
-	HandleReconnect(err error)
-
 	HandleResync()
+
+	HandleError(err error)
 }
 
 // NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
 type NopSubscriptionHandler struct{}
 
 func (NopSubscriptionHandler) HandleEvent(json.RawMessage) {}
-func (NopSubscriptionHandler) HandleReconnect(error)       {}
 func (NopSubscriptionHandler) HandleResync()               {}
+func (NopSubscriptionHandler) HandleError(error)           {}
 
 // write sends a JSON array composed of the given type and payload over the
 // WebSocket connection. A background context is used intentionally, because
@@ -383,10 +390,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 
 			sub, err := c.subscribe(ctx, subscription.ResourceURI())
 			if err != nil {
-				subscription.mu.Lock()
-				subscription.active = false
-				subscription.mu.Unlock()
-				go subscription.handler().HandleReconnect(err)
+				subscription.cancel(fmt.Errorf("resubscribe: %w", err))
 
 				c.log.Error("error resubscribing",
 					slog.Group("subscription",
@@ -409,7 +413,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 
 			// Notify the handler that the subscription has been refreshed on the
 			// new connection as the custom data may differ from the previous one.
-			go subscription.handler().HandleReconnect(nil)
+			go subscription.handler().HandleResync()
 			c.log.Debug("resubscribed", slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.ID())),
 				slog.String("custom", string(subscription.Custom())),
@@ -435,11 +439,13 @@ func (c *Conn) close(cause error) (err error) {
 		c.cancel(cause)
 		err = c.conn.Close(websocket.StatusNormalClosure, "")
 
+		notifyErr := cause
+		if !errors.Is(notifyErr, net.ErrClosed) {
+			notifyErr = errors.Join(notifyErr, net.ErrClosed)
+		}
 		c.subscriptionsMu.RLock()
 		for _, subscription := range c.subscriptions {
-			subscription.mu.Lock()
-			subscription.active = false
-			subscription.mu.Unlock()
+			subscription.cancel(notifyErr)
 		}
 		c.subscriptionsMu.RUnlock()
 	})
