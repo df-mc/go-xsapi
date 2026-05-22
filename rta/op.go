@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-type expectation struct {
+type response struct {
 	sequence uint32
 	status   int32
 	payload  []json.RawMessage
@@ -21,7 +21,7 @@ const (
 const (
 	operationSubscribe uint8 = iota
 	operationUnsubscribe
-	operationCapacity // The capacity of expected expectation uses.
+	operationCapacity // The maximum value for operation.
 )
 
 func typeToOperation(typ uint32) uint8 {
@@ -46,11 +46,11 @@ func operationToType(op uint8) uint32 {
 	}
 }
 
-func (c *Conn) expect(op uint8, sequence uint32, payload []any) (<-chan *expectation, error) {
+func (c *Conn) expect(op uint8, sequence uint32, payload []any) (<-chan *response, error) {
 	if err := c.write(operationToType(op), append([]any{sequence}, payload...)); err != nil {
 		return nil, err
 	}
-	hand := make(chan *expectation, 1)
+	hand := make(chan *response, 1)
 	c.expectedMu.Lock()
 	c.expected[op][sequence] = hand
 	c.expectedMu.Unlock()

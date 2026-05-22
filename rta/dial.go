@@ -35,7 +35,7 @@ func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, er
 	}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	for i := range cap(conn.expected) {
-		conn.expected[i] = make(map[uint32]chan<- *expectation)
+		conn.expected[i] = make(map[uint32]chan<- *response)
 	}
 	go conn.read()
 	return conn, nil
