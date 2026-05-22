@@ -53,7 +53,7 @@ func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscri
 		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
 	}
 	if c.subscriptionData == nil || c.subscriptionData.ConnectionID == uuid.Nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.Custom)
+		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.Custom())
 	}
 	c.subscription.Handle(&subscriptionHandler{
 		Client: c,

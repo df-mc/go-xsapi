@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -189,7 +190,7 @@ func (s *Subscription) ID() uint32 {
 func (s *Subscription) Custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.custom
+	return slices.Clone(s.custom)
 }
 
 // ResourceURI returns the URI identifying the resource which the [Subscription] is targeting.
@@ -470,8 +471,8 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		}
 		op := typeToOperation(typ)
 		c.expectedMu.Lock()
-		defer c.expectedMu.Unlock()
 		ch, ok := c.expected[op][resp.sequence]
+		c.expectedMu.Unlock()
 		if !ok {
 			c.log.Debug("unexpected handshake response", slog.Group("message", "type", typ, "sequence", resp.sequence))
 			return
