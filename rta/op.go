@@ -46,15 +46,12 @@ func operationToType(op uint8) uint32 {
 	}
 }
 
-func (c *Conn) expect(op uint8, sequence uint32, payload []any) (<-chan *response, error) {
-	if err := c.write(operationToType(op), append([]any{sequence}, payload...)); err != nil {
-		return nil, err
-	}
-	hand := make(chan *response, 1)
+func (c *Conn) expect(op uint8, sequence uint32) <-chan *response {
+	ch := make(chan *response, 1)
 	c.expectedMu.Lock()
-	c.expected[op][sequence] = hand
+	c.expected[op][sequence] = ch
 	c.expectedMu.Unlock()
-	return hand, nil
+	return ch
 }
 
 func (c *Conn) release(op uint8, sequence uint32) {

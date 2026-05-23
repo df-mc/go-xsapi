@@ -139,8 +139,9 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 		}
 
 		seq := c.sequences[op].Add(1)
-		ch, err := c.expect(op, seq, payload)
-		if err != nil {
+		ch := c.expect(op, seq)
+		if err := c.write(operationToType(op), append([]any{seq}, payload...)); err != nil {
+			c.release(op, seq)
 			continue
 		}
 		select {
