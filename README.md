@@ -22,12 +22,8 @@ if err != nil {
 	panic(fmt.Sprintf("error requesting device authorization flow: %s", err))
 }
 
-// We print out the verification URI and the user code to [os.Stderr]
-// so it doesn't need to be captured by Output: line in this example.
-_, _ = fmt.Fprintf(os.Stderr,
-	"Sign in to your Microsoft Account at %s using the code %s.",
-	da.VerificationURI, da.UserCode,
-)
+log.Printf("Sign in to your Microsoft Account at %s using the code %s.",
+	da.VerificationURI, da.UserCode)
 
 // Make a context for polling the access token while the user completes sign-in.
 // In this case, we allow one minute to complete login (you may configure a longer timeout).
@@ -55,6 +51,8 @@ defer func() {
 	}
 }()
 
+log.Printf("Logged in as %s", client.UserInfo().GamerTag)
+
 // Use social (peoplehub) endpoint to search a user using the query.
 ctx, cancel := context.WithTimeout(signals, time.Second*15)
 defer cancel()
@@ -74,3 +72,5 @@ fmt.Println(user.GamerTag)
 ## Contact
 
 [![Discord Banner 2](https://discordapp.com/api/guilds/623638955262345216/widget.png?style=banner2)](https://discord.gg/U4kFWHhTNR)
+
+### Note: We do not under any circumstance support or endorse the usage of go-xsapi with malicious intent.
