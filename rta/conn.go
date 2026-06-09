@@ -401,7 +401,7 @@ func (c *Conn) reconnect() {
 	c.connMu.Unlock()
 	go c.read()
 
-	c.subscriptionsMu.RLock()
+	c.subscriptionsMu.Lock()
 	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
 	for _, subscription := range c.subscriptions {
 		if subscription.Active() {
@@ -409,7 +409,7 @@ func (c *Conn) reconnect() {
 		}
 	}
 	clear(c.subscriptions)
-	c.subscriptionsMu.RUnlock()
+	c.subscriptionsMu.Unlock()
 
 	c.log.Info("reconnected, resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 	go c.resubscribe(subscriptions)
