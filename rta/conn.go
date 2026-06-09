@@ -120,6 +120,7 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
+	// Stop tracking the subscription on the connection.
 	c.subscriptionsMu.Lock()
 	delete(c.subscriptions, sub.ID())
 	c.subscriptionsMu.Unlock()
@@ -128,10 +129,15 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		sub.deactivate(fmt.Errorf("unsubscribe: %w", err))
 		return err
 	}
-	// A nil error means that no error is notified to the resource.
-	sub.deactivate(nil)
+	// Notify that the subscription has been closed so the service
+	// might be able to clean up resources tied to this subscription.
+	sub.deactivate(ErrUnsubscribed)
 	return nil
 }
+
+// ErrUnsubscribed is an error notified by [SubscriptionHandler.HandleError] when
+// the RTA subscription is unsubscribed by the user.
+var ErrUnsubscribed = errors.New("rta: subscription removed from RTA connection")
 
 // unsubscribe performs a sequenced call to unsubscribe the given [Subscription].
 // The caller must deactivate the subscription when an error has occurred.
