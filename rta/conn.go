@@ -76,10 +76,6 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 	return err
 }
 
-func (c *Conn) CloseDemo() error {
-	return c.conn.Close(websocket.StatusNormalClosure, "")
-}
-
 // subscribe performs a sequenced call to subscribe to the given resource URI using
 // the provided [context.Context]. The caller is responsible for registering the
 // returned [Subscription] in the Conn's subscriptions map using [Subscription.ID].
