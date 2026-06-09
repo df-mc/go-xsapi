@@ -129,7 +129,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		sub.deactivate(fmt.Errorf("unsubscribe: %w", err))
 		return err
 	}
-	// Notify that the subscription has been closed so the service
+	// Notify that the subscription has been unsubscribed so the service
 	// might be able to clean up resources tied to this subscription.
 	sub.deactivate(ErrUnsubscribed)
 	return nil

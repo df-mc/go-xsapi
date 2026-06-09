@@ -67,10 +67,7 @@ func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 // context error immediately.
 func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
 	for attempt := 0; attempt < maxReconnectAttempts; attempt++ {
-		c, _, err := websocket.Dial(ctx, connectURL.String(), &websocket.DialOptions{
-			Subprotocols: []string{subprotocol},
-			HTTPClient:   d.client,
-		})
+		c, err := d.dial(ctx)
 		if err != nil {
 			sleep := backoffDuration(attempt)
 			d.log.Error("error re-establishing WebSocket connection",
