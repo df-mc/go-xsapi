@@ -93,13 +93,11 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	}
 	h.subscriptionData.Store(&data)
 
-	var (
-		wg         = new(sync.WaitGroup)
-		shouldWait bool
-	)
+	h.log.Debug("received subscription data", "connectionID", data.ConnectionID)
+
+	wg := new(sync.WaitGroup)
 	h.sessionsMu.RLock()
 	for _, session := range h.sessions {
-		shouldWait = true
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
@@ -128,10 +126,7 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	}
 	h.sessionsMu.RUnlock()
 
-	if shouldWait {
-		wg.Wait()
-		h.log.Debug("resynced subscription", "connectionID", data.ConnectionID)
-	}
+	wg.Wait()
 	return nil
 }
 
@@ -196,13 +191,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 }
 
 func (h *subscriptionHandler) HandleResync() {
-	var (
-		wg         = new(sync.WaitGroup)
-		shouldWait bool
-	)
+	wg := new(sync.WaitGroup)
 	h.sessionsMu.RLock()
 	for _, session := range h.sessions {
-		shouldWait = true
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
@@ -212,10 +203,7 @@ func (h *subscriptionHandler) HandleResync() {
 		})
 	}
 	h.sessionsMu.RUnlock()
-
-	if shouldWait {
-		wg.Wait()
-	}
+	wg.Wait()
 }
 
 func (h *subscriptionHandler) HandleError(err error) {
