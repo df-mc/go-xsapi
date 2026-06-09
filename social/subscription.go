@@ -32,7 +32,9 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		}
 	}
 
+	c.subscriptionMu.Lock()
 	c.subscriptionHandlers[h] = struct{}{}
+	c.subscriptionMu.Unlock()
 	return nil
 }
 

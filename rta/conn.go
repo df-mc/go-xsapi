@@ -411,7 +411,7 @@ func (c *Conn) reconnect() {
 	clear(c.subscriptions)
 	c.subscriptionsMu.Unlock()
 
-	c.log.Info("reconnected, resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
+	c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 	go c.resubscribe(subscriptions)
 }
 
