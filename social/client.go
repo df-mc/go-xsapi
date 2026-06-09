@@ -27,13 +27,23 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Client{
-		client:   client,
-		rta:      conn,
-		unsub:    conn,
-		userInfo: userInfo,
-		log:      log,
+	c := &Client{
+		client:               client,
+		rta:                  conn,
+		unsub:                conn,
+		userInfo:             userInfo,
+		log:                  log,
+		subscriptionHandlers: make(map[SubscriptionHandler]struct{}),
 	}
+	c.subscription = rta.NewSubscription(socialEndpoint.JoinPath(
+		"users",
+		"xuid("+userInfo.XUID+")",
+		"friends",
+	).String(), &subscriptionHandler{
+		Client: c,
+		log:    c.log.With("src", "social subscription"),
+	})
+	return c
 }
 
 // Client is an API client for Xbox Live Social APIs. It communicates
@@ -53,7 +63,7 @@ type Client struct {
 
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
-	subscriptionHandlers []SubscriptionHandler
+	subscriptionHandlers map[SubscriptionHandler]struct{}
 }
 
 // Close closes the Client with a context of 15 seconds timeout.
@@ -77,11 +87,10 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
 
-	if c.subscription != nil {
+	if c.subscription.Active() {
 		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err)
 		}
-		c.subscription, c.subscriptionHandlers = nil, nil
 	}
 	return nil
 }

@@ -60,15 +60,24 @@ type Conn struct {
 // Subscribe attempts to subscribe with the specific resource URI, with the [context.Context]
 // to be used during the handshake. A Subscription may be returned, which contains an ID
 // and Custom data as the result of handshake.
-func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
-	sub, err := c.subscribe(ctx, resourceURI)
+func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
+	if sub.Active() {
+		// The subscription is already active. We don't need to resubscribe.
+		return nil
+	}
+	err := c.subscribe(ctx, sub)
 	if err != nil {
-		return nil, err
+		sub.deactivate(err)
+		return err
 	}
 	c.subscriptionsMu.Lock()
-	c.subscriptions[sub.id] = sub
+	c.subscriptions[sub.ID()] = sub
 	c.subscriptionsMu.Unlock()
-	return sub, nil
+	return err
+}
+
+func (c *Conn) CloseDemo() error {
+	return c.conn.Close(websocket.StatusNormalClosure, "")
 }
 
 // subscribe performs a sequenced call to subscribe to the given resource URI using
@@ -78,50 +87,66 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
-func (c *Conn) subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
-	h, err := c.call(ctx, operationSubscribe, []any{resourceURI})
+func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+
+	h, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	switch h.status {
 	case StatusOK:
 		if len(h.payload) < 2 {
-			return nil, &OutOfRangeError{
+			return &OutOfRangeError{
 				Payload: h.payload,
 				Index:   1,
 			}
 		}
-		sub := &Subscription{
-			resourceURI: resourceURI,
-			active:      true,
-
-			h: NopSubscriptionHandler{}, // fast-path for defaulting handler without locking
-		}
 		if err := json.Unmarshal(h.payload[0], &sub.id); err != nil {
-			return nil, fmt.Errorf("decode subscription ID: %w", err)
+			return fmt.Errorf("decode subscription ID: %w", err)
 		}
-		sub.custom = h.payload[1]
-		return sub, nil
+		sub.custom, sub.active = h.payload[1], true
+		if err := sub.handler().HandleSubscribe(h.payload[1]); err != nil {
+			// This resource has failed to understand this subscription.
+			if err2 := c.unsubscribe(ctx, sub); err2 != nil {
+				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
+			}
+			return err
+		}
+		return nil
 	default:
-		return nil, unexpectedStatusCode(h.status, h.payload)
+		return unexpectedStatusCode(h.status, h.payload)
 	}
 }
 
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
+	c.subscriptionsMu.Lock()
+	delete(c.subscriptions, sub.ID())
+	c.subscriptionsMu.Unlock()
+
+	if err := c.unsubscribe(ctx, sub); err != nil {
+		sub.deactivate(fmt.Errorf("unsubscribe: %w", err))
+		return err
+	}
+	// A nil error means that no error is notified to the resource.
+	sub.deactivate(nil)
+	return nil
+}
+
+// unsubscribe performs a sequenced call to unsubscribe the given [Subscription].
+// The caller must deactivate the subscription when an error has occurred.
+func (c *Conn) unsubscribe(ctx context.Context, sub *Subscription) error {
 	h, err := c.call(ctx, operationUnsubscribe, []any{sub.ID()})
 	if err != nil {
 		return err
 	}
-
 	if h.status != StatusOK {
 		return unexpectedStatusCode(h.status, h.payload)
 	}
-	c.subscriptionsMu.Lock()
-	delete(c.subscriptions, sub.ID())
-	c.subscriptionsMu.Unlock()
 	return nil
 }
 
@@ -130,7 +155,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 // The response is then decoded into a [handshake] and returned. The caller is
 // responsible for checking its status code.
 //
-// If the Conn is currently reconnecting, [call] blocks until the reconnect
+// If the Conn is currently reconnecting, call blocks until the reconnect
 // completes before sending a message to the server.
 func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, error) {
 	for {
@@ -161,18 +186,24 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	}
 }
 
+func NewSubscription(resourceURI string, h SubscriptionHandler) *Subscription {
+	sub := &Subscription{resourceURI: resourceURI}
+	sub.Handle(h)
+	return sub
+}
+
 // Subscription represents a subscription contracted with the resource URI available through
 // the real-time activity service. A Subscription may be contracted via Conn.Subscribe.
 type Subscription struct {
 	id     uint32
 	custom json.RawMessage
-	active bool
 
-	h           SubscriptionHandler
+	h           atomic.Pointer[SubscriptionHandler]
 	mu          sync.RWMutex
 	resourceURI string
 
-	once sync.Once
+	// active indicates whether the Subscription is currently active on the RTA connection.
+	active bool
 }
 
 // ID returns the ID assigned to the [Subscription] within a single RTA connection.
@@ -200,19 +231,25 @@ func (s *Subscription) ResourceURI() string {
 	return s.resourceURI
 }
 
+// Active reports whether the [Subscription] is currently active.
 func (s *Subscription) Active() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.active
 }
 
-func (s *Subscription) cancel(err error) {
-	s.once.Do(func() {
-		s.mu.Lock()
+// deactivate deactivates the Subscription using the given error as the cause.
+// When err is non-nil, it is reported to the resource via [SubscriptionHandler.HandleError].
+// When the Subscription is already inactive, deactivate is no-op.
+func (s *Subscription) deactivate(cause error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active {
 		s.active = false
-		s.mu.Unlock()
-		go s.handler().HandleError(err)
-	})
+		if cause != nil {
+			go s.handler().HandleError(cause)
+		}
+	}
 }
 
 // Handle registers a [SubscriptionHandler] on the [Subscription] to handle
@@ -222,35 +259,24 @@ func (s *Subscription) Handle(h SubscriptionHandler) {
 	if h == nil {
 		h = NopSubscriptionHandler{}
 	}
-	s.mu.Lock()
-	s.h = h
-	s.mu.Unlock()
+	s.h.Store(&h)
 }
 
 // handler returns the [SubscriptionHandler] currently registered on the [Subscription].
 func (s *Subscription) handler() SubscriptionHandler {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.h
+	return *s.h.Load()
 }
 
 // SubscriptionHandler is the interface for handling events that may occur in a single
 // [Subscription]. An implementation can be registered on a Subscription via [Subscription.Handle].
 type SubscriptionHandler interface {
+	HandleSubscribe(custom json.RawMessage) error
+
 	// HandleEvent handles an event message received over the RTA subscription.
 	// The event data reflects what occurred within that subscription.
 	// For example, in Social API, an event is received when a user adds or
 	// removes the caller.
 	HandleEvent(custom json.RawMessage)
-
-	// HandleReconnect is called when the Conn has reconnected to the RTA service
-	// and the subscription has been re-established on the new connection.
-	// The Subscription was successfully re-established on the
-	// new connection and has been assigned a new ID. The custom data may also
-	// differ from the previous connection depending on the targeting resource.
-	// In this case, the handler remains responsible for calling [Conn.Unsubscribe]
-	// during cleanup.
-	HandleReconnect()
 
 	// HandleResync is called when a Resync message is received from the RTA service
 	// and the resource targeted by the Subscription may have been changed.
@@ -264,10 +290,10 @@ type SubscriptionHandler interface {
 // NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
 type NopSubscriptionHandler struct{}
 
-func (NopSubscriptionHandler) HandleEvent(json.RawMessage) {}
-func (NopSubscriptionHandler) HandleReconnect()            {}
-func (NopSubscriptionHandler) HandleResync()               {}
-func (NopSubscriptionHandler) HandleError(error)           {}
+func (NopSubscriptionHandler) HandleSubscribe(json.RawMessage) error { return nil }
+func (NopSubscriptionHandler) HandleEvent(json.RawMessage)           {}
+func (NopSubscriptionHandler) HandleResync()                         {}
+func (NopSubscriptionHandler) HandleError(error)                     {}
 
 // write sends a JSON array composed of the given type and payload over the
 // WebSocket connection. A background context is used intentionally, because
@@ -362,7 +388,7 @@ func (c *Conn) reconnect() {
 		close(done)
 	}()
 
-	conn, err := c.dialer.dial(c.ctx)
+	conn, err := c.dialer.reconnect(c.ctx)
 	if err != nil {
 		c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
 		_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
@@ -373,13 +399,15 @@ func (c *Conn) reconnect() {
 	c.connMu.Unlock()
 	go c.read()
 
-	c.subscriptionsMu.Lock()
+	c.subscriptionsMu.RLock()
 	subscriptions := make([]*Subscription, 0, len(c.subscriptions))
 	for _, subscription := range c.subscriptions {
-		subscriptions = append(subscriptions, subscription)
+		if subscription.Active() {
+			subscriptions = append(subscriptions, subscription)
+		}
 	}
 	clear(c.subscriptions)
-	c.subscriptionsMu.Unlock()
+	c.subscriptionsMu.RUnlock()
 
 	c.log.Info("reconnected, resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 	go c.resubscribe(subscriptions)
@@ -395,34 +423,23 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 		go func(subscription *Subscription) {
 			defer wg.Done()
 
+			log := c.log.With(slog.Group("subscription",
+				slog.Uint64("id", uint64(subscription.ID())),
+				slog.String("resourceURI", subscription.ResourceURI()),
+			))
+
 			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 			defer cancel()
-			sub, err := c.subscribe(ctx, subscription.ResourceURI())
-			if err != nil {
-				subscription.cancel(fmt.Errorf("resubscribe: %w", err))
-
-				c.log.Error("error resubscribing",
-					slog.Group("subscription",
-						slog.Uint64("id", uint64(subscription.ID())),
-						slog.String("resourceURI", subscription.ResourceURI()),
-					),
-					slog.Any("error", err),
-				)
+			if err := c.subscribe(ctx, subscription); err != nil {
+				subscription.deactivate(fmt.Errorf("resubscribe: %w", err))
+				log.Error("error resubscribing", slog.Any("error", err))
 				return
 			}
 
-			subscription.mu.Lock()
-			subscription.id = sub.id
-			subscription.custom = sub.custom
-			subscription.mu.Unlock()
-
 			c.subscriptionsMu.Lock()
-			c.subscriptions[subscription.id] = subscription
+			c.subscriptions[subscription.ID()] = subscription
 			c.subscriptionsMu.Unlock()
 
-			// Notify the handler that the subscription has been refreshed on the
-			// new connection as the custom data may differ from the previous one.
-			go subscription.handler().HandleReconnect()
 			c.log.Debug("resubscribed", slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.ID())),
 				slog.String("custom", string(subscription.Custom())),
@@ -454,7 +471,7 @@ func (c *Conn) close(cause error) (err error) {
 		}
 		c.subscriptionsMu.RLock()
 		for _, subscription := range c.subscriptions {
-			subscription.cancel(notifyErr)
+			subscription.deactivate(notifyErr)
 		}
 		c.subscriptionsMu.RUnlock()
 	})
@@ -467,7 +484,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 	case typeSubscribe, typeUnsubscribe: // Subscribe & Unsubscribe handshake response
 		resp, err := readResponse(payload)
 		if err != nil {
-			c.log.Error("error reading handshake response", slog.Any("error", err))
+			c.log.Error("error reading response", slog.Any("error", err))
 			return
 		}
 		op := typeToOperation(typ)
@@ -475,7 +492,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		ch, ok := c.expected[op][resp.sequence]
 		c.expectedMu.Unlock()
 		if !ok {
-			c.log.Debug("unexpected handshake response", slog.Group("message", "type", typ, "sequence", resp.sequence))
+			c.log.Debug("unexpected response", slog.Group("message", "type", typ, "sequence", resp.sequence))
 			return
 		}
 		ch <- resp
@@ -492,7 +509,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		c.subscriptionsMu.RLock()
 		sub, ok := c.subscriptions[subscriptionID]
 		c.subscriptionsMu.RUnlock()
-		if ok {
+		if ok && sub.Active() {
 			go sub.handler().HandleEvent(payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
@@ -500,7 +517,9 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 		c.log.Debug("received resync")
 		c.subscriptionsMu.RLock()
 		for _, subscription := range c.subscriptions {
-			go subscription.handler().HandleResync()
+			if subscription.Active() {
+				go subscription.handler().HandleResync()
+			}
 		}
 		c.subscriptionsMu.RUnlock()
 	default:
@@ -534,8 +553,8 @@ func readHeader(payload []json.RawMessage) (typ uint32, err error) {
 	return typ, json.Unmarshal(payload[0], &typ)
 }
 
-// readResponse decodes a expectation from the first 2 values from the payload.
-// An OutOfRangeError may be returned if the payload has not enough length to read.
+// readResponse decodes a response from the first 2 values from the payload.
+// An [OutOfRangeError] if the payload length is not sufficient for reading.
 func readResponse(payload []json.RawMessage) (*response, error) {
 	if len(payload) < 2 {
 		return nil, &OutOfRangeError{

@@ -26,24 +26,13 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		return errors.New("xsapi/social: cannot subscribe with a nil SubscriptionHandler")
 	}
 
-	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
-	if c.subscription == nil || !c.subscription.Active() {
-		resourceURI := socialEndpoint.JoinPath(
-			"users",
-			"xuid("+c.userInfo.XUID+")",
-			"friends",
-		).String()
-		c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
-		if err != nil {
+	if !c.subscription.Active() {
+		if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
 			return err
 		}
-		c.subscription.Handle(&subscriptionHandler{
-			Client: c,
-		})
 	}
 
-	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
+	c.subscriptionHandlers[h] = struct{}{}
 	return nil
 }
 
@@ -52,6 +41,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 // [SubscriptionHandler] implementations registered via [Client.Subscribe].
 type subscriptionHandler struct {
 	*Client
+	log *slog.Logger
 
 	rta.NopSubscriptionHandler
 }
@@ -93,7 +83,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		}
 
 		h.subscriptionMu.RLock()
-		for _, handler := range h.subscriptionHandlers {
+		for handler := range h.subscriptionHandlers {
 			go handler.HandleIncomingFriendRequestCountChange(*data.Count)
 		}
 		h.subscriptionMu.RUnlock()
@@ -107,7 +97,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		}
 
 		h.subscriptionMu.RLock()
-		for _, handler := range h.subscriptionHandlers {
+		for handler := range h.subscriptionHandlers {
 			xuids := slices.Clone(data.XUIDs)
 			go handler.HandleSocialNotification(data.Type, xuids)
 		}
@@ -116,6 +106,16 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		h.log.Warn("unexpected subscription notification type",
 			slog.String("type", data.Type),
 		)
+	}
+}
+
+func (h *subscriptionHandler) HandleError(err error) {
+	h.log.Error("subscription lost", "err", err)
+
+	h.subscriptionMu.RLock()
+	defer h.subscriptionMu.RUnlock()
+	for handler := range h.subscriptionHandlers {
+		go handler.HandleSubscriptionLost()
 	}
 }
 
@@ -139,6 +139,11 @@ type SubscriptionHandler interface {
 	// The payload contains only the updated count; the XUIDs of the users
 	// involved are not included. Therefore, it is generally used for notification purposes.
 	HandleIncomingFriendRequestCountChange(count int)
+
+	// HandleSubscriptionLost is called when the underlying subscription is lost.
+	// The caller might be able to call [Client.Subscribe] again using the same handler
+	// to reconnect to the RTA service.
+	HandleSubscriptionLost()
 }
 
 // NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
@@ -146,6 +151,7 @@ type NopSubscriptionHandler struct{}
 
 func (NopSubscriptionHandler) HandleSocialNotification(string, []string)  {}
 func (NopSubscriptionHandler) HandleIncomingFriendRequestCountChange(int) {}
+func (NopSubscriptionHandler) HandleSubscriptionLost()                    {}
 
 const (
 	// NotificationTypeAdded is the notification type for when one or more users

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -28,7 +29,7 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Client{
+	c := &Client{
 		client:   client,
 		rta:      conn,
 		unsub:    conn,
@@ -37,6 +38,11 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 
 		sessions: make(map[string]*Session),
 	}
+	c.subscription = rta.NewSubscription(resourceURI, &subscriptionHandler{
+		Client: c,
+		log:    c.log.With("src", "subscription handler"),
+	})
+	return c
 }
 
 // Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
@@ -53,10 +59,7 @@ type Client struct {
 	// It contains the connection ID used to associate multiplayer sessions
 	// created by the Client with the RTA subscription to receive changes to
 	// themselves.
-	subscriptionData *subscriptionData
-	// subscriptionMu is a mutex that is held when either accessing subscription
-	// and subscriptionData.
-	subscriptionMu sync.Mutex
+	subscriptionData atomic.Pointer[subscriptionData]
 
 	// unsub is the narrow shutdown dependency used for removing RTA
 	// subscriptions. In production it is the same value as rta.
@@ -99,14 +102,10 @@ func (c *Client) Close() error {
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
-	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
-
-	if c.subscription != nil {
+	if c.subscription.Active() {
 		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
-		c.subscription, c.subscriptionData = nil, nil
 	}
 	return nil
 }
