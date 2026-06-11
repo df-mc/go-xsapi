@@ -28,7 +28,7 @@ import (
 // controlled by Conn, and can be stored atomically to a Subscription from [Subscription.Handle].
 type Conn struct {
 	conn   *websocket.Conn
-	connMu sync.Mutex
+	connMu sync.RWMutex
 
 	dialer *dialer
 
@@ -302,7 +302,7 @@ func (NopSubscriptionHandler) HandleError(error)                     {}
 // the caller's context must not be passed to WebSocket write methods, as
 // cancellation or deadline would close the underlying connection.
 func (c *Conn) write(typ uint32, payload []any) error {
-	return wsjson.Write(context.Background(), c.conn, append([]any{typ}, payload...))
+	return wsjson.Write(context.Background(), c.currentConn(), append([]any{typ}, payload...))
 }
 
 // wait blocks until any in-progress reconnect attempt has finished.
@@ -325,8 +325,7 @@ func (c *Conn) wait(ctx context.Context) error {
 }
 
 // drainExpected closes all pending response channels in c.expected, clears
-// the map, and resets all sequence counters to zero so the next sequenced
-// call will start from zero again. It is called when the connection is lost.
+// the map. It is called when the connection is lost.
 func (c *Conn) drainExpected() {
 	c.expectedMu.Lock()
 	for op := range operationCapacity {
@@ -338,6 +337,14 @@ func (c *Conn) drainExpected() {
 	c.expectedMu.Unlock()
 }
 
+// currentConn returns the currently-active WebSocket connection.
+// It is safe for concurrent use.
+func (c *Conn) currentConn() *websocket.Conn {
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	return c.conn
+}
+
 // read continuously reads JSON messages from the WebSocket connection and
 // dispatches them for handling. If the connection is lost unexpectedly, it
 // triggers a reconnect. If the Conn was closed by the user via [Conn.Close],
@@ -347,7 +354,7 @@ func (c *Conn) read() {
 
 	for {
 		var payload []json.RawMessage
-		if err := wsjson.Read(context.Background(), c.conn, &payload); err != nil {
+		if err := wsjson.Read(context.Background(), c.currentConn(), &payload); err != nil {
 			if c.ctx.Err() != nil {
 				// Conn was closed by the user. Do not reconnect.
 				return
@@ -361,7 +368,10 @@ func (c *Conn) read() {
 			c.log.Error("error reading header", slog.Any("error", err))
 			continue
 		}
-		go c.handleMessage(typ, payload[1:])
+		if err := c.handleMessage(typ, payload[1:]); err != nil {
+			c.log.Error("error handling message", slog.Any("error", err))
+			continue
+		}
 	}
 }
 
@@ -465,7 +475,7 @@ func (c *Conn) Close() (err error) {
 func (c *Conn) close(cause error) (err error) {
 	c.once.Do(func() {
 		c.cancel(cause)
-		err = c.conn.Close(websocket.StatusNormalClosure, "")
+		err = c.currentConn().Close(websocket.StatusNormalClosure, "")
 
 		notifyErr := cause
 		if !errors.Is(notifyErr, net.ErrClosed) {
@@ -481,32 +491,38 @@ func (c *Conn) close(cause error) (err error) {
 }
 
 // handleMessage handles a message received in read with the type.
-func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
+func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) error {
 	switch typ {
 	case typeSubscribe, typeUnsubscribe: // Subscribe & Unsubscribe handshake response
 		resp, err := readResponse(payload)
 		if err != nil {
-			c.log.Error("error reading response", slog.Any("error", err))
-			return
+			return fmt.Errorf("decode response: %w", err)
 		}
 		op := typeToOperation(typ)
 		c.expectedMu.Lock()
 		ch, ok := c.expected[op][resp.sequence]
+		if ok {
+			delete(c.expected[op], resp.sequence)
+		}
 		c.expectedMu.Unlock()
 		if !ok {
-			c.log.Debug("unexpected response", slog.Group("message", "type", typ, "sequence", resp.sequence))
-			return
+			return fmt.Errorf("unexpected response for operation %d with sequence %d", op, resp.sequence)
 		}
-		ch <- resp
+		select {
+		case ch <- resp:
+			return nil
+		case <-c.ctx.Done():
+			return c.ctx.Err()
+		default:
+			return fmt.Errorf("channel buffer is full")
+		}
 	case typeEvent:
 		if len(payload) < 2 {
-			c.log.Debug("event message has no custom")
-			return
+			return errors.New("event message has no custom data")
 		}
 		var subscriptionID uint32
 		if err := json.Unmarshal(payload[0], &subscriptionID); err != nil {
-			c.log.Error("error decoding subscription ID", slog.Any("error", err))
-			return
+			return fmt.Errorf("decode subscription ID: %w", err)
 		}
 		c.subscriptionsMu.RLock()
 		sub, ok := c.subscriptions[subscriptionID]
@@ -515,6 +531,7 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 			go sub.handler().HandleEvent(payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
+		return nil
 	case typeResync:
 		c.log.Debug("received resync")
 		c.subscriptionsMu.RLock()
@@ -524,8 +541,9 @@ func (c *Conn) handleMessage(typ uint32, payload []json.RawMessage) {
 			}
 		}
 		c.subscriptionsMu.RUnlock()
+		return nil
 	default:
-		c.log.Debug("received an unexpected message", slog.Group("message", "type", typ))
+		return fmt.Errorf("unknown message type: %d", typ)
 	}
 }
 
