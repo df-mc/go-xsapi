@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -168,45 +170,59 @@ func (c *Client) HTTPClient() *http.Client {
 // the [http.RoundTripper] contract. The request is cloned before any headers
 // are set to avoid mutating the original.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
+	var reqBodyClosed bool
 	if req.Body != nil {
-		// The [http.RoundTripper] contract requires the body to be closed
-		// by the caller of RoundTrip, even on error. We handle it here
-		// rather than delegating to the base transport because the body
-		// is buffered for signing before being forwarded.
-		defer req.Body.Close()
+		defer func() {
+			if !reqBodyClosed {
+				_ = req.Body.Close()
+			}
+		}()
 	}
 	if c.closed.Load() {
 		return nil, net.ErrClosed
 	}
 
+	// If the 'Authorization' header is already present on the request, skip requesting a new XSTS token.
+	if req.Header.Get("Authorization") != "" {
+		reqBodyClosed = true
+		return c.baseTransport().RoundTrip(req)
+	}
+
 	// Propagate the request's context so that XSTS token retrieval
 	// respects any deadlines or cancellations set by the caller.
 	ctx := req.Context()
+	exclusion, _ := ctx.Value(headerExclusion{}).(headerExclusionSet)
+	if exclusion.authorization() {
+		reqBodyClosed = true
+		return c.baseTransport().RoundTrip(req)
+	}
+
 	token, policy, err := c.TokenAndSignature(ctx, req.URL)
 	if err != nil {
 		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
 	}
 
-	var (
-		// Clone the request so that the original headers are never mutated,
-		// as required by the [http.RoundTripper] contract.
-		req2 = req.Clone(ctx)
-		// Body bytes buffered for inclusion in the request signature.
-		data []byte
-	)
+	// Clone the request so that the original headers are never mutated,
+	// as required by the [http.RoundTripper] contract.
+	req2 := req.Clone(ctx)
 	token.SetAuthHeader(req2)
-	// If a body is present, it is buffered in full so that it can be included
-	// in the 'Signature' header. It is then restored on the cloned request.
-	if req.Body != nil {
-		signingBuffer := &bytes.Buffer{}
-		if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
-			signingBuffer.Reset()
-			return nil, fmt.Errorf("clone request body: %w", err)
+
+	// Generate a signature unless the request has opted out via WithoutAuthHeaders.
+	if req2.Header.Get("Signature") == "" && !exclusion.signature() {
+		// If a body is present, it is buffered in full so that it can be included
+		// in the 'Signature' header. It is then restored on the cloned request.
+		var data []byte
+		if req.Body != nil {
+			signingBuffer := &bytes.Buffer{}
+			if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
+				signingBuffer.Reset()
+				return nil, fmt.Errorf("clone request body: %w", err)
+			}
+			data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 		}
-		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
-	}
-	if err := policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
-		return nil, fmt.Errorf("sign request: %w", err)
+		if err := policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
+			return nil, fmt.Errorf("sign request: %w", err)
+		}
 	}
 
 	return c.baseTransport().RoundTrip(req2)
@@ -347,4 +363,43 @@ func AcceptLanguage(tags []language.Tag) internal.RequestOption {
 // with the given name and value on outgoing requests.
 func RequestHeader(key, value string) internal.RequestOption {
 	return internal.RequestHeader(key, value)
+}
+
+// WithoutAuthHeaders returns a cloned HTTP request configured to exclude
+// specified authentication headers from being automatically added by the
+// XSAPI client. This is useful when certain authentication headers should
+// not be set on outgoing requests.
+//
+// Header names are matched case-insensitively.
+func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
+	if len(headers) == 0 {
+		headers = []string{"Authorization", "Signature"}
+	}
+	return req.Clone(context.WithValue(req.Context(), headerExclusion{}, headerExclusionSet(headers)))
+}
+
+// headerExclusion is a context key that stores which authentication headers
+// should be excluded from automatic generation by the XSAPI client.
+type headerExclusion struct{}
+
+// headerExclusionSet represents a list of header names to exclude from
+// automatic authentication header generation. Header names are case-insensitive.
+type headerExclusionSet []string
+
+// contains reports whether the given header name is in the exclusion set.
+// The comparison is case-insensitive.
+func (s headerExclusionSet) contains(header string) bool {
+	return slices.ContainsFunc(s, func(s string) bool {
+		return strings.EqualFold(s, header)
+	})
+}
+
+// authorization reports whether the 'Authorization' header is excluded.
+func (s headerExclusionSet) authorization() bool {
+	return s.contains("Authorization")
+}
+
+// signature reports whether the 'Signature' header is excluded.
+func (s headerExclusionSet) signature() bool {
+	return s.contains("Signature")
 }
