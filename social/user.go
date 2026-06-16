@@ -413,7 +413,7 @@ func (u *User) UnmarshalJSON(b []byte) error {
 	}
 	if data.FriendedDateTimeUTC != "" {
 		var err error
-		u.FriendedAt, err = time.ParseInLocation(bareTimeLayout, data.FriendedDateTimeUTC, time.UTC)
+		u.FriendedAt, err = time.ParseInLocation(time.RFC3339Nano, data.FriendedDateTimeUTC, time.UTC)
 		if err != nil {
 			return fmt.Errorf("xsapi/social: parse User.FriendedAt: %w", err)
 		}
