@@ -31,16 +31,16 @@ func TestSubscribeHandlerErrorDoesNotDeadlock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- conn.SubscribeSubscription(ctx, sub)
+		done <- conn.SubscribeWith(ctx, sub)
 	}()
 
 	select {
 	case err := <-done:
 		if !errors.Is(err, wantErr) {
-			t.Fatalf("SubscribeSubscription error = %v, want %v", err, wantErr)
+			t.Fatalf("SubscribeWith error = %v, want %v", err, wantErr)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("SubscribeSubscription deadlocked after HandleSubscribe error")
+		t.Fatal("SubscribeWith deadlocked after HandleSubscribe error")
 	}
 	if got := srv.unsubscribeCount.Load(); got != 1 {
 		t.Fatalf("unsubscribe count = %d, want 1", got)
@@ -57,8 +57,8 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
-		t.Fatalf("SubscribeSubscription returned error: %v", err)
+	if err := conn.SubscribeWith(ctx, sub); err != nil {
+		t.Fatalf("SubscribeWith returned error: %v", err)
 	}
 
 	srv.unsubscribeStatus.Store(StatusServiceUnavailable)
@@ -84,7 +84,7 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	}
 }
 
-func TestConcurrentSubscribeSubscriptionCoalescesSingleHandshake(t *testing.T) {
+func TestConcurrentSubscribeWithCoalescesSingleHandshake(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
@@ -99,14 +99,14 @@ func TestConcurrentSubscribeSubscriptionCoalescesSingleHandshake(t *testing.T) {
 	errs := make(chan error, 16)
 	for range 16 {
 		wg.Go(func() {
-			errs <- conn.SubscribeSubscription(ctx, sub)
+			errs <- conn.SubscribeWith(ctx, sub)
 		})
 	}
 	wg.Wait()
 	close(errs)
 	for err := range errs {
 		if err != nil {
-			t.Fatalf("SubscribeSubscription returned error: %v", err)
+			t.Fatalf("SubscribeWith returned error: %v", err)
 		}
 	}
 	if got := srv.subscribeCount.Load(); got != 1 {
@@ -153,8 +153,8 @@ func TestReconnectWaitsForResubscribe(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
-		t.Fatalf("SubscribeSubscription returned error: %v", err)
+	if err := conn.SubscribeWith(ctx, sub); err != nil {
+		t.Fatalf("SubscribeWith returned error: %v", err)
 	}
 
 	resubscribeGate := srv.blockSubscribe(2)
@@ -169,12 +169,12 @@ func TestReconnectWaitsForResubscribe(t *testing.T) {
 
 	callDone := make(chan error, 1)
 	go func() {
-		callDone <- conn.SubscribeSubscription(ctx, sub)
+		callDone <- conn.SubscribeWith(ctx, sub)
 	}()
 
 	select {
 	case err := <-callDone:
-		t.Fatalf("SubscribeSubscription returned before resubscribe completed: %v", err)
+		t.Fatalf("SubscribeWith returned before resubscribe completed: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -182,10 +182,10 @@ func TestReconnectWaitsForResubscribe(t *testing.T) {
 	select {
 	case err := <-callDone:
 		if err != nil {
-			t.Fatalf("SubscribeSubscription returned error: %v", err)
+			t.Fatalf("SubscribeWith returned error: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("SubscribeSubscription did not return after resubscribe completed")
+		t.Fatal("SubscribeWith did not return after resubscribe completed")
 	}
 	select {
 	case <-reconnectDone:

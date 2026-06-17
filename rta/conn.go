@@ -62,16 +62,16 @@ type Conn struct {
 // returned, which contains an ID and Custom data as the result of handshake.
 func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
 	sub := NewSubscription(resourceURI, nil)
-	if err := c.SubscribeSubscription(ctx, sub); err != nil {
+	if err := c.SubscribeWith(ctx, sub); err != nil {
 		return nil, err
 	}
 	return sub, nil
 }
 
-// SubscribeSubscription attempts to subscribe using a caller-owned
-// Subscription. It is useful for services that need to preserve the same
-// subscription object across reconnects.
-func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) error {
+// SubscribeWith attempts to subscribe using a caller-owned Subscription. It is
+// useful for services that need to preserve the same subscription object across
+// reconnects.
+func (c *Conn) SubscribeWith(ctx context.Context, sub *Subscription) error {
 	if ctx == nil {
 		return errors.New("rta: nil context")
 	}
