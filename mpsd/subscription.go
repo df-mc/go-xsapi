@@ -25,7 +25,7 @@ func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 			return data.ConnectionID, nil
 		}
 	}
-	if err = c.rta.Subscribe(ctx, c.subscription); err != nil {
+	if err = c.rta.SubscribeSubscription(ctx, c.subscription); err != nil {
 		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
 	// If an error has occurred while decoding the subscription data, a method call to [rta.Conn.Subscribe]
@@ -95,9 +95,9 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 
 	h.log.Debug("received subscription data", "connectionID", data.ConnectionID)
 
+	sessions := h.sessionSnapshot()
 	wg := new(sync.WaitGroup)
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	for _, session := range sessions {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
@@ -124,7 +124,6 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 			}
 		})
 	}
-	h.sessionsMu.RUnlock()
 
 	wg.Wait()
 	return nil
@@ -191,9 +190,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 }
 
 func (h *subscriptionHandler) HandleResync() {
+	sessions := h.sessionSnapshot()
 	wg := new(sync.WaitGroup)
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	for _, session := range sessions {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
@@ -202,18 +201,26 @@ func (h *subscriptionHandler) HandleResync() {
 			}
 		})
 	}
-	h.sessionsMu.RUnlock()
 	wg.Wait()
 }
 
 func (h *subscriptionHandler) HandleError(err error) {
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	for _, session := range h.sessionSnapshot() {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)
 		go session.Close()
 	}
-	h.sessionsMu.RUnlock()
+}
+
+func (h *subscriptionHandler) sessionSnapshot() []*Session {
+	h.sessionsMu.RLock()
+	defer h.sessionsMu.RUnlock()
+
+	sessions := make([]*Session, 0, len(h.sessions))
+	for _, session := range h.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions
 }
 
 // parseReference parses a SessionReference from a resource identifier included

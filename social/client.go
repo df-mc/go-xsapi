@@ -92,5 +92,6 @@ func (c *Client) CloseContext(ctx context.Context) error {
 			return fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err)
 		}
 	}
+	clear(c.subscriptionHandlers)
 	return nil
 }

@@ -27,7 +27,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 	}
 
 	if !c.subscription.Active() {
-		if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
+		if err := c.rta.SubscribeSubscription(ctx, c.subscription); err != nil {
 			return err
 		}
 	}
@@ -117,7 +117,9 @@ func (h *subscriptionHandler) HandleError(err error) {
 	h.subscriptionMu.RLock()
 	defer h.subscriptionMu.RUnlock()
 	for handler := range h.subscriptionHandlers {
-		go handler.HandleSubscriptionLost()
+		if lostHandler, ok := handler.(SubscriptionLostHandler); ok {
+			go lostHandler.HandleSubscriptionLost()
+		}
 	}
 }
 
@@ -141,7 +143,11 @@ type SubscriptionHandler interface {
 	// The payload contains only the updated count; the XUIDs of the users
 	// involved are not included. Therefore, it is generally used for notification purposes.
 	HandleIncomingFriendRequestCountChange(count int)
+}
 
+// SubscriptionLostHandler is an optional extension interface for handlers that
+// need to observe terminal loss of the underlying RTA subscription.
+type SubscriptionLostHandler interface {
 	// HandleSubscriptionLost is called when the underlying subscription is lost.
 	// The caller might be able to call [Client.Subscribe] again using the same handler
 	// to reconnect to the RTA service.

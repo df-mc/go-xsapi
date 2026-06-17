@@ -7,10 +7,56 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+// Dialer represents the options for establishing a Conn with real-time
+// activity services with DialContext or Dial.
+type Dialer struct {
+	Options  *websocket.DialOptions
+	ErrorLog *slog.Logger
+}
+
+// Dial calls DialContext with a 15 seconds timeout.
+func (d Dialer) Dial(client *http.Client) (*Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+	return d.DialContext(ctx, client)
+}
+
+// DialContext establishes a connection with real-time activity service.
+func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, error) {
+	dialer := d.dialer(client)
+	c, err := dialer.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return newConn(c, dialer), nil
+}
+
+func (d Dialer) dialer(client *http.Client) *dialer {
+	log := d.ErrorLog
+	if log == nil {
+		log = slog.Default()
+	}
+	options := &websocket.DialOptions{}
+	if d.Options != nil {
+		*options = *d.Options
+		options.Subprotocols = slices.Clone(d.Options.Subprotocols)
+	}
+	options.HTTPClient = client
+	if !slices.Contains(options.Subprotocols, subprotocol) {
+		options.Subprotocols = append(options.Subprotocols, subprotocol)
+	}
+	return &dialer{
+		client:  client,
+		log:     log,
+		options: options,
+	}
+}
 
 // Dial establishes a connection with real-time activity service.
 //
@@ -18,22 +64,14 @@ import (
 // The [http.Client] is used to authenticate handshake HTTP requests and is typically retrieved from
 // [github.com/df-mc/go-xspai.Client.HTTPClient].
 func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, error) {
-	if log == nil {
-		log = slog.Default()
-	}
+	return Dialer{ErrorLog: log}.DialContext(ctx, client)
+}
 
-	d := &dialer{
-		client: client,
-		log:    log,
-	}
-	c, err := d.dial(ctx)
-	if err != nil {
-		return nil, err
-	}
+func newConn(c *websocket.Conn, d *dialer) *Conn {
 	conn := &Conn{
 		conn:          c,
 		dialer:        d,
-		log:           log,
+		log:           d.log,
 		subscriptions: make(map[uint32]*Subscription),
 	}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
@@ -41,20 +79,20 @@ func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, er
 		conn.expected[i] = make(map[uint32]chan<- *response)
 	}
 	go conn.read()
-	return conn, nil
+	return conn
 }
 
 type dialer struct {
-	client *http.Client
-	log    *slog.Logger
+	client  *http.Client
+	log     *slog.Logger
+	options *websocket.DialOptions
 }
 
 // dial establishes a new WebSocket connection.
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
-	c, _, err := websocket.Dial(ctx, connectURL.String(), &websocket.DialOptions{
-		Subprotocols: []string{subprotocol},
-		HTTPClient:   d.client,
-	})
+	options := *d.options
+	options.Subprotocols = slices.Clone(d.options.Subprotocols)
+	c, _, err := websocket.Dial(ctx, connectURL.String(), &options)
 	if err != nil {
 		return nil, err
 	}
