@@ -210,11 +210,11 @@ func (h *subscriptionHandler) HandleError(err error) {
 	for _, session := range h.sessionSnapshot() {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)
-		go func(s *Session) {
-			if closeErr := s.Close(); closeErr != nil {
-				s.log.Error("error closing session after subscription loss", "err", closeErr)
+		go func() {
+			if closeErr := session.Close(); closeErr != nil {
+				session.log.Error("error closing session after subscription loss", "err", closeErr)
 			}
-		}(session)
+		}()
 	}
 }
 
