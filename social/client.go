@@ -28,12 +28,11 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 		log = slog.Default()
 	}
 	c := &Client{
-		client:               client,
-		rta:                  conn,
-		unsub:                conn,
-		userInfo:             userInfo,
-		log:                  log,
-		subscriptionHandlers: make(map[SubscriptionHandler]struct{}),
+		client:   client,
+		rta:      conn,
+		unsub:    conn,
+		userInfo: userInfo,
+		log:      log,
 	}
 	c.subscription = rta.NewSubscription(socialEndpoint.JoinPath(
 		"users",
@@ -63,7 +62,7 @@ type Client struct {
 
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
-	subscriptionHandlers map[SubscriptionHandler]struct{}
+	subscriptionHandlers []SubscriptionHandler
 }
 
 // Close closes the Client with a context of 15 seconds timeout.
@@ -92,6 +91,6 @@ func (c *Client) CloseContext(ctx context.Context) error {
 			return fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err)
 		}
 	}
-	clear(c.subscriptionHandlers)
+	c.subscriptionHandlers = nil
 	return nil
 }

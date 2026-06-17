@@ -3,6 +3,7 @@ package rta
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -92,8 +93,12 @@ type dialer struct {
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 	options := *d.options
 	options.Subprotocols = slices.Clone(d.options.Subprotocols)
-	c, _, err := websocket.Dial(ctx, connectURL.String(), &options)
+	c, resp, err := websocket.Dial(ctx, connectURL.String(), &options)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
 		return nil, err
 	}
 	return c, nil

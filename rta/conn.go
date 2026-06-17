@@ -371,7 +371,10 @@ func (s *Subscription) Handle(h SubscriptionHandler) {
 
 // handler returns the [SubscriptionHandler] currently registered on the [Subscription].
 func (s *Subscription) handler() SubscriptionHandler {
-	return *s.h.Load()
+	if h := s.h.Load(); h != nil {
+		return *h
+	}
+	return NopSubscriptionHandler{}
 }
 
 // SubscriptionHandler is the interface for handling events that may occur in a single
@@ -581,6 +584,7 @@ func (c *Conn) reconnect() {
 // WebSocket connection. Each re-subscribe attempt has a timeout of 15 seconds.
 // Failures are reported via [SubscriptionHandler.HandleError].
 func (c *Conn) resubscribe(subscriptions []*Subscription) {
+	var successCount atomic.Int32
 	wg := new(sync.WaitGroup)
 	wg.Add(len(subscriptions))
 	for _, s := range subscriptions {
@@ -604,6 +608,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 			}
 
 			c.trackSubscription(subscription)
+			successCount.Add(1)
 
 			c.log.Debug("resubscribed", slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.ID())),
@@ -614,7 +619,10 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 	}
 
 	wg.Wait()
-	c.log.Info("resubscribed existing subscriptions", slog.Int("count", len(subscriptions)))
+	c.log.Info("resubscribed existing subscriptions",
+		slog.Int("success", int(successCount.Load())),
+		slog.Int("total", len(subscriptions)),
+	)
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.

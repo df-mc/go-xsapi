@@ -132,6 +132,17 @@ func TestSubscribeResourceURICompatibility(t *testing.T) {
 	}
 }
 
+func TestZeroValueSubscriptionUsesNopHandler(t *testing.T) {
+	var sub Subscription
+
+	if err := sub.handleSubscribe(json.RawMessage(`{"ok":true}`)); err != nil {
+		t.Fatalf("handleSubscribe returned error: %v", err)
+	}
+	sub.handleEvent(json.RawMessage(`{"ok":true}`))
+	sub.handleResync()
+	sub.handleError(errors.New("lost"))
+}
+
 func TestReconnectWaitsForResubscribe(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -249,7 +260,11 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer func() {
+		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
+			s.t.Logf("server close: %v", err)
+		}
+	}()
 
 	for {
 		var payload []json.RawMessage

@@ -116,7 +116,9 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 			if err != nil {
 				// TODO: Use a background context so we can propagate the error to the caller.
 				session.log.Error("error updating connection ID", "err", err)
-				_ = session.Close()
+				if closeErr := session.Close(); closeErr != nil {
+					session.log.Error("error closing session after connection ID update failure", "err", closeErr)
+				}
 				return
 			}
 			if deleted {
@@ -208,7 +210,11 @@ func (h *subscriptionHandler) HandleError(err error) {
 	for _, session := range h.sessionSnapshot() {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)
-		go session.Close()
+		go func(s *Session) {
+			if closeErr := s.Close(); closeErr != nil {
+				s.log.Error("error closing session after subscription loss", "err", closeErr)
+			}
+		}(session)
 	}
 }
 

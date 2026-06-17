@@ -69,7 +69,7 @@ func (c *Client) UserByXUID(ctx context.Context, xuid string, opts ...internal.R
 	return users[0], nil
 }
 
-// UserByGamerTag looks up for a user using the gamertag.
+// UserByGamerTag looks up a user by classic or modern gamertag.
 func (c *Client) UserByGamerTag(ctx context.Context, gamertag string, opts ...internal.RequestOption) (u User, err error) {
 	users, err := c.Search(ctx, gamertag, opts...)
 	if err != nil {
@@ -79,11 +79,33 @@ func (c *Client) UserByGamerTag(ctx context.Context, gamertag string, opts ...in
 		return u, errors.New("xsapi/social: no users found")
 	}
 	for _, user := range users {
-		if strings.EqualFold(user.GamerTag, gamertag) {
+		if user.matchesGamertag(gamertag) {
 			return user, nil
 		}
 	}
 	return u, errors.New("xsapi/social: user not found")
+}
+
+func (u User) matchesGamertag(gamertag string) bool {
+	names := []string{u.GamerTag, u.UniqueModernGamerTag}
+	if u.ModernGamerTag != "" && u.ModernGamerTagSuffix != "" {
+		names = append(names,
+			u.ModernGamerTag+"#"+u.ModernGamerTagSuffix,
+			u.ModernGamerTag+u.ModernGamerTagSuffix,
+		)
+	}
+	inputs := []string{gamertag}
+	if strings.Contains(gamertag, "#") {
+		inputs = append(inputs, strings.Replace(gamertag, "#", "", 1))
+	}
+	for _, name := range names {
+		for _, input := range inputs {
+			if name != "" && strings.EqualFold(name, input) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // UsersByXUIDs returns the [User] profiles for all given XUIDs in a single

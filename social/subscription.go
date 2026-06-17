@@ -33,7 +33,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 	}
 
 	c.subscriptionMu.Lock()
-	c.subscriptionHandlers[h] = struct{}{}
+	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
 	c.subscriptionMu.Unlock()
 	return nil
 }
@@ -84,11 +84,10 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return
 		}
 
-		h.subscriptionMu.RLock()
-		for handler := range h.subscriptionHandlers {
+		handlers := h.handlers()
+		for _, handler := range handlers {
 			go handler.HandleIncomingFriendRequestCountChange(*data.Count)
 		}
-		h.subscriptionMu.RUnlock()
 		return
 	case NotificationTypeAdded, NotificationTypeRemoved, NotificationTypeChanged:
 		if len(data.XUIDs) == 0 {
@@ -98,12 +97,11 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return
 		}
 
-		h.subscriptionMu.RLock()
-		for handler := range h.subscriptionHandlers {
+		handlers := h.handlers()
+		for _, handler := range handlers {
 			xuids := slices.Clone(data.XUIDs)
 			go handler.HandleSocialNotification(data.Type, xuids)
 		}
-		h.subscriptionMu.RUnlock()
 	default:
 		h.log.Warn("unexpected subscription notification type",
 			slog.String("type", data.Type),
@@ -114,13 +112,17 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 func (h *subscriptionHandler) HandleError(err error) {
 	h.log.Error("subscription lost", "err", err)
 
-	h.subscriptionMu.RLock()
-	defer h.subscriptionMu.RUnlock()
-	for handler := range h.subscriptionHandlers {
+	for _, handler := range h.handlers() {
 		if lostHandler, ok := handler.(SubscriptionLostHandler); ok {
 			go lostHandler.HandleSubscriptionLost()
 		}
 	}
+}
+
+func (h *subscriptionHandler) handlers() []SubscriptionHandler {
+	h.subscriptionMu.RLock()
+	defer h.subscriptionMu.RUnlock()
+	return slices.Clone(h.subscriptionHandlers)
 }
 
 // SubscriptionHandler is the interface for receiving real-time notifications
