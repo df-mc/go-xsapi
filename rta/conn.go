@@ -90,6 +90,9 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 		err := c.subscribe(ctx, sub, false)
 		sub.opMu.Unlock()
 		if errors.Is(err, errConnectionInterrupted) {
+			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
+				return err
+			}
 			continue
 		}
 		if err != nil {
@@ -221,12 +224,12 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any, wait bool) (*r
 		ch := c.expect(op, seq)
 		if err := c.write(operationToType(op), append([]any{seq}, payload...)); err != nil {
 			c.release(op, seq)
+			go c.reconnect()
 			if !wait {
 				return nil, errConnectionInterrupted
 			}
-			go c.reconnect()
 			select {
-			case <-time.After(10 * time.Millisecond):
+			case <-time.After(connectionInterruptRetryDelay):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-c.ctx.Done():
@@ -256,6 +259,19 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any, wait bool) (*r
 }
 
 var errConnectionInterrupted = errors.New("rta: connection interrupted")
+
+const connectionInterruptRetryDelay = 10 * time.Millisecond
+
+func pauseAfterConnectionInterrupt(ctx, connCtx context.Context) error {
+	select {
+	case <-time.After(connectionInterruptRetryDelay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-connCtx.Done():
+		return context.Cause(connCtx)
+	}
+}
 
 func NewSubscription(resourceURI string, h SubscriptionHandler) *Subscription {
 	sub := &Subscription{resourceURI: resourceURI}
