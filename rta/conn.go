@@ -72,9 +72,6 @@ func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription
 // useful for services that need to preserve the same subscription object across
 // reconnects.
 func (c *Conn) SubscribeWith(ctx context.Context, sub *Subscription) error {
-	if ctx == nil {
-		return errors.New("rta: nil context")
-	}
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
@@ -147,9 +144,6 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
-	if ctx == nil {
-		return errors.New("rta: nil context")
-	}
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
