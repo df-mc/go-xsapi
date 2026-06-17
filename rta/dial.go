@@ -53,7 +53,6 @@ func (d Dialer) dialer(client *http.Client) *dialer {
 		options.Subprotocols = append(options.Subprotocols, subprotocol)
 	}
 	return &dialer{
-		client:  client,
 		log:     log,
 		options: options,
 	}
@@ -84,7 +83,6 @@ func newConn(c *websocket.Conn, d *dialer) *Conn {
 }
 
 type dialer struct {
-	client  *http.Client
 	log     *slog.Logger
 	options *websocket.DialOptions
 }

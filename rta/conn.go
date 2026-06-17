@@ -34,7 +34,7 @@ type Conn struct {
 
 	sequences  [operationCapacity]atomic.Uint32
 	expected   [operationCapacity]map[uint32]chan<- *response
-	expectedMu sync.RWMutex
+	expectedMu sync.Mutex
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
@@ -87,7 +87,7 @@ func (c *Conn) SubscribeWith(ctx context.Context, sub *Subscription) error {
 			sub.opMu.Unlock()
 			return nil
 		}
-		err := c.subscribe(ctx, sub, false)
+		err := c.subscribe(ctx, sub)
 		sub.opMu.Unlock()
 		if errors.Is(err, errConnectionInterrupted) {
 			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
@@ -111,8 +111,8 @@ func (c *Conn) SubscribeWith(ctx context.Context, sub *Subscription) error {
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
-func (c *Conn) subscribe(ctx context.Context, sub *Subscription, wait bool) error {
-	h, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()}, wait)
+func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
+	h, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()})
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription, wait bool) erro
 		sub.activate(id, custom)
 		if err := sub.handleSubscribe(custom); err != nil {
 			// This resource has failed to understand this subscription.
-			if err2 := c.unsubscribeID(ctx, id, wait); err2 != nil {
+			if err2 := c.unsubscribeID(ctx, id); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
 			}
 			return err
@@ -163,7 +163,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 			return nil
 		}
 		sub.setUnsubscribing(true)
-		err := c.unsubscribe(ctx, sub, false)
+		err := c.unsubscribeID(ctx, sub.ID())
 		if err != nil && !errors.Is(err, errConnectionInterrupted) {
 			sub.setUnsubscribing(false)
 			sub.opMu.Unlock()
@@ -182,14 +182,8 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 // the RTA subscription is unsubscribed by the user.
 var ErrUnsubscribed = errors.New("rta: subscription removed from RTA connection")
 
-// unsubscribe performs a sequenced call to unsubscribe the given [Subscription].
-// The caller must deactivate the subscription when an error has occurred.
-func (c *Conn) unsubscribe(ctx context.Context, sub *Subscription, wait bool) error {
-	return c.unsubscribeID(ctx, sub.ID(), wait)
-}
-
-func (c *Conn) unsubscribeID(ctx context.Context, id uint32, wait bool) error {
-	h, err := c.call(ctx, operationUnsubscribe, []any{id}, wait)
+func (c *Conn) unsubscribeID(ctx context.Context, id uint32) error {
+	h, err := c.call(ctx, operationUnsubscribe, []any{id})
 	if err != nil {
 		return err
 	}
@@ -201,60 +195,38 @@ func (c *Conn) unsubscribeID(ctx context.Context, id uint32, wait bool) error {
 
 // call sends a sequenced message to the server and blocks using the given
 // [context.Context] until the server responds with a matching sequence number.
-// The response is then decoded into a [handshake] and returned. The caller is
+// The response is then decoded into a response and returned. The caller is
 // responsible for checking its status code.
 //
-// If the Conn is currently reconnecting, call blocks until the reconnect
-// completes before sending a message to the server.
-func (c *Conn) call(ctx context.Context, op uint8, payload []any, wait bool) (*response, error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if err := c.ctx.Err(); err != nil {
-			return nil, context.Cause(c.ctx)
-		}
-		if wait {
-			if err := c.wait(ctx); err != nil {
-				return nil, err
-			}
-		}
+// Callers that run outside the reconnect path should call [Conn.wait] before
+// calling call.
+func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := c.ctx.Err(); err != nil {
+		return nil, context.Cause(c.ctx)
+	}
 
-		seq := c.sequences[op].Add(1)
-		ch := c.expect(op, seq)
-		if err := c.write(operationToType(op), append([]any{seq}, payload...)); err != nil {
-			c.release(op, seq)
-			go c.reconnect()
-			if !wait {
-				return nil, errConnectionInterrupted
-			}
-			select {
-			case <-time.After(connectionInterruptRetryDelay):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-c.ctx.Done():
-				return nil, context.Cause(c.ctx)
-			}
-			continue
+	seq := c.sequences[op].Add(1)
+	ch := c.expect(op, seq)
+	if err := c.write(operationToType(op), append([]any{seq}, payload...)); err != nil {
+		c.release(op, seq)
+		go c.reconnect()
+		return nil, errConnectionInterrupted
+	}
+	select {
+	case result, ok := <-ch:
+		if !ok {
+			return nil, errConnectionInterrupted
 		}
-		select {
-		case result, ok := <-ch:
-			if !ok {
-				if !wait {
-					c.release(op, seq)
-					return nil, errConnectionInterrupted
-				}
-				continue
-			}
-			c.release(op, seq)
-			return result, nil
-		case <-ctx.Done():
-			c.release(op, seq)
-			return nil, ctx.Err()
-		case <-c.ctx.Done():
-			c.release(op, seq)
-			return nil, context.Cause(c.ctx)
-		}
+		return result, nil
+	case <-ctx.Done():
+		c.release(op, seq)
+		return nil, ctx.Err()
+	case <-c.ctx.Done():
+		c.release(op, seq)
+		return nil, context.Cause(c.ctx)
 	}
 }
 
@@ -585,12 +557,9 @@ func (c *Conn) reconnect() {
 // Failures are reported via [SubscriptionHandler.HandleError].
 func (c *Conn) resubscribe(subscriptions []*Subscription) {
 	var successCount atomic.Int32
-	wg := new(sync.WaitGroup)
-	wg.Add(len(subscriptions))
-	for _, s := range subscriptions {
-		go func(subscription *Subscription) {
-			defer wg.Done()
-
+	var wg sync.WaitGroup
+	for _, subscription := range subscriptions {
+		wg.Go(func() {
 			log := c.log.With(slog.Group("subscription",
 				slog.Uint64("id", uint64(subscription.ID())),
 				slog.String("resourceURI", subscription.ResourceURI()),
@@ -599,7 +568,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 			defer cancel()
 			subscription.opMu.Lock()
-			err := c.subscribe(ctx, subscription, false)
+			err := c.subscribe(ctx, subscription)
 			subscription.opMu.Unlock()
 			if err != nil {
 				subscription.deactivate(fmt.Errorf("resubscribe: %w", err))
@@ -615,7 +584,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) {
 				slog.String("custom", string(subscription.Custom())),
 				slog.String("resourceURI", subscription.ResourceURI()),
 			))
-		}(s)
+		})
 	}
 
 	wg.Wait()

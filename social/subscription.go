@@ -17,7 +17,7 @@ import (
 // over the RTA subscription, such as when a user adds or removes the caller.
 //
 // The RTA subscription is created on the first call and cached internally
-// to avoid exceeding RTA's maximum subscription limit. Subsequence calls
+// to avoid exceeding RTA's maximum subscription limit. Subsequent calls
 // reuse the existing subscription and append h to the list of active handlers.
 //
 // Subscribe returns an error if h is nil.
@@ -84,8 +84,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return
 		}
 
-		handlers := h.handlers()
-		for _, handler := range handlers {
+		for _, handler := range h.handlers() {
 			go handler.HandleIncomingFriendRequestCountChange(*data.Count)
 		}
 		return
@@ -97,8 +96,7 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return
 		}
 
-		handlers := h.handlers()
-		for _, handler := range handlers {
+		for _, handler := range h.handlers() {
 			xuids := slices.Clone(data.XUIDs)
 			go handler.HandleSocialNotification(data.Type, xuids)
 		}

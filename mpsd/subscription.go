@@ -28,7 +28,7 @@ func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 	if err = c.rta.SubscribeWith(ctx, c.subscription); err != nil {
 		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	// If an error has occurred while decoding the subscription data, a method call to [rta.Conn.Subscribe]
+	// If an error has occurred while decoding the subscription data, a method call to [rta.Conn.SubscribeWith]
 	// would return an error so it is guaranteed that the subscription data is non-nil.
 	return c.subscriptionData.Load().ConnectionID, nil
 }
@@ -96,7 +96,7 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	h.log.Debug("received subscription data", "connectionID", data.ConnectionID)
 
 	sessions := h.sessionSnapshot()
-	wg := new(sync.WaitGroup)
+	var wg sync.WaitGroup
 	for _, session := range sessions {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
@@ -163,37 +163,35 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		refs = append(refs, ref)
 	}
 
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	for _, session := range h.sessionSnapshot() {
 		if slices.ContainsFunc(refs, func(reference SessionReference) bool {
 			// Shoulder taps may deliver TemplateName and Name in lowercase,
 			// so use Compare for case-insensitive matching.
 			return reference.Equal(session.Reference())
 		}) {
-			go func(s *Session) {
-				ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
+			go func() {
+				ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 				defer cancel()
 
-				if err := s.Sync(ctx); err != nil {
+				if err := session.Sync(ctx); err != nil {
 					h.log.Error("error synchronizing multiplayer session",
 						slog.Any("error", err))
 					return
 				}
 				h.log.Debug("synchronized multiplayer session",
 					slog.Group("session",
-						slog.String("ref", s.Reference().URL().String()),
+						slog.String("ref", session.Reference().URL().String()),
 					),
 				)
-				s.handler().HandleSessionChange(s)
-			}(session)
+				session.handler().HandleSessionChange(session)
+			}()
 		}
 	}
-	h.sessionsMu.RUnlock()
 }
 
 func (h *subscriptionHandler) HandleResync() {
 	sessions := h.sessionSnapshot()
-	wg := new(sync.WaitGroup)
+	var wg sync.WaitGroup
 	for _, session := range sessions {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
