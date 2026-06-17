@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -62,7 +63,7 @@ func (d Dialer) dialer(client *http.Client) *dialer {
 //
 // The [context.Context] is used to control the deadline of the establishment of the WebSocket connection.
 // The [http.Client] is used to authenticate handshake HTTP requests and is typically retrieved from
-// [github.com/df-mc/go-xspai.Client.HTTPClient].
+// [github.com/df-mc/go-xsapi.Client.HTTPClient].
 func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, error) {
 	return Dialer{ErrorLog: log}.DialContext(ctx, client)
 }
@@ -76,9 +77,9 @@ func newConn(c *websocket.Conn, d *dialer) *Conn {
 	}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	for i := range cap(conn.expected) {
-		conn.expected[i] = make(map[uint32]chan<- *response)
+		conn.expected[i] = make(map[uint32]expectedCall)
 	}
-	go conn.read()
+	go conn.read(c)
 	return conn
 }
 
@@ -91,7 +92,7 @@ type dialer struct {
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 	options := *d.options
 	options.Subprotocols = slices.Clone(d.options.Subprotocols)
-	c, resp, err := websocket.Dial(ctx, connectURL.String(), &options)
+	c, resp, err := websocket.Dial(ctx, connectURLString(), &options)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
@@ -143,10 +144,18 @@ const maxReconnectAttempts = 4
 // subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
 const subprotocol = "rta.xboxlive.com.V2"
 
+var connectURLMu sync.RWMutex
+
 // connectURL is the URL used to establish a websocket connection with real-time activity services. It is
 // generally present at websocket.Dial with other websocket.DialOptions, specifically along with subprotocol.
 var connectURL = &url.URL{
 	Scheme: "wss",
 	Host:   "rta.xboxlive.com",
 	Path:   "connect",
+}
+
+func connectURLString() string {
+	connectURLMu.RLock()
+	defer connectURLMu.RUnlock()
+	return connectURL.String()
 }
