@@ -218,6 +218,8 @@ func (h *subscriptionHandler) HandleError(err error) {
 	}
 }
 
+// sessionSnapshot returns the currently tracked sessions without keeping
+// sessionsMu held while callers perform network or close operations.
 func (h *subscriptionHandler) sessionSnapshot() []*Session {
 	h.sessionsMu.RLock()
 	defer h.sessionsMu.RUnlock()
