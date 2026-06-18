@@ -36,7 +36,12 @@ type ResolverConfig struct {
 }
 
 // New creates a Resolver using conf and src.
+//
+// New panics if src is nil.
 func (conf ResolverConfig) New(src TokenSource) *Resolver {
+	if src == nil {
+		panic("xal/nsal: nil TokenSource")
+	}
 	if conf.TitleIDs == nil {
 		conf.TitleIDs = defaultTitleIDs
 	}
@@ -86,13 +91,10 @@ func NewResolver(src TokenSource) *Resolver {
 // Resolve resolves the endpoint and signature policy that apply to u, loading
 // configured title data as needed.
 func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, _ error) {
-	if r == nil {
-		return endpoint, policy, errors.New("xal/nsal: nil Resolver")
-	}
 	if endpoint, policy, ok := matchTitleData(r.titles(), u); ok {
 		return endpoint, policy, nil
 	}
-	for _, titleID := range r.titleIDs() {
+	for _, titleID := range r.conf.TitleIDs {
 		title, err := r.title(ctx, titleID)
 		if err != nil {
 			return endpoint, policy, err
@@ -106,12 +108,6 @@ func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, 
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
 func (r *Resolver) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token, policy SignaturePolicy, _ error) {
-	if r == nil {
-		return nil, policy, errors.New("xal/nsal: nil Resolver")
-	}
-	if r.src == nil {
-		return nil, policy, errors.New("xal/nsal: nil TokenSource")
-	}
 	endpoint, policy, err := r.Resolve(ctx, u)
 	if err != nil {
 		return nil, policy, err
@@ -123,14 +119,8 @@ func (r *Resolver) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token, 
 	return token, policy, nil
 }
 
-func (r *Resolver) proofKey() (*ecdsa.PrivateKey, error) {
-	if r == nil {
-		return nil, errors.New("xal/nsal: nil Resolver")
-	}
-	if r.src == nil {
-		return nil, errors.New("xal/nsal: nil TokenSource")
-	}
-	return r.src.ProofKey(), nil
+func (r *Resolver) proofKey() *ecdsa.PrivateKey {
+	return r.src.ProofKey()
 }
 
 func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error) {
@@ -138,12 +128,6 @@ func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error
 		return nil, errors.New("xal/nsal: empty title ID")
 	}
 	r.mu.Lock()
-	if r.cached == nil {
-		r.cached = make(map[string]*TitleData)
-	}
-	if r.loading == nil {
-		r.loading = make(map[string]*titleRequest)
-	}
 	if title, ok := r.cached[titleID]; ok {
 		r.mu.Unlock()
 		return title, nil
@@ -212,20 +196,11 @@ func (r *Resolver) loadTitle(ctx context.Context, titleID string) (*TitleData, e
 }
 
 func (r *Resolver) authorizationToken(ctx context.Context) (Token, error) {
-	if r.src == nil {
-		return nil, errors.New("xal/nsal: nil TokenSource")
-	}
 	token, err := r.src.Token(ctx, authorizationRelyingParty)
 	if err != nil {
 		return nil, fmt.Errorf("request authorization token: %w", err)
 	}
 	return token, nil
-}
-
-func (r *Resolver) titleIDs() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.conf.TitleIDs)
 }
 
 func (r *Resolver) titles() []*TitleData {
@@ -242,9 +217,6 @@ func (r *Resolver) titles() []*TitleData {
 
 func matchTitleData(titles []*TitleData, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
 	for _, title := range titles {
-		if title == nil {
-			continue
-		}
 		if endpoint, policy, ok = title.Match(u); ok {
 			return endpoint, policy, true
 		}

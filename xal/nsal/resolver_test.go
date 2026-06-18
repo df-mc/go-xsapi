@@ -39,7 +39,7 @@ func TestResolverPrefersEarlierTitleData(t *testing.T) {
 				SignaturePolicies: []SignaturePolicy{{Version: 1}},
 			},
 		},
-	}.New(nil)
+	}.New(&transportTokenSource{})
 
 	endpoint, policy, err := resolver.Resolve(context.Background(), mustParseURL(t, "https://20ca2.playfabapi.com/Client/LoginWithXbox"))
 	if err != nil {
@@ -74,32 +74,7 @@ func TestResolverFallsBackToLaterTitleData(t *testing.T) {
 				}},
 			},
 		},
-	}.New(nil)
-
-	endpoint, _, err := resolver.Resolve(context.Background(), mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people"))
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if endpoint.RelyingParty != "default" {
-		t.Fatalf("RelyingParty = %q, want default", endpoint.RelyingParty)
-	}
-}
-
-func TestResolverSkipsNilTitleData(t *testing.T) {
-	resolver := ResolverConfig{
-		TitleIDs: []string{},
-		Titles: []*TitleData{
-			nil,
-			{
-				Endpoints: []Endpoint{{
-					Protocol:     "https",
-					Host:         "*.xboxlive.com",
-					HostType:     HostTypeWildcard,
-					RelyingParty: "default",
-				}},
-			},
-		},
-	}.New(nil)
+	}.New(&transportTokenSource{})
 
 	endpoint, _, err := resolver.Resolve(context.Background(), mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people"))
 	if err != nil {
@@ -111,15 +86,15 @@ func TestResolverSkipsNilTitleData(t *testing.T) {
 }
 
 func TestResolverConfigNewDefaultsTitleIDs(t *testing.T) {
-	resolver := NewResolver(nil)
-	if got, want := resolver.titleIDs(), []string{"current", "default"}; !slices.Equal(got, want) {
+	resolver := NewResolver(&transportTokenSource{})
+	if got, want := resolver.conf.TitleIDs, []string{"current", "default"}; !slices.Equal(got, want) {
 		t.Fatalf("TitleIDs = %v, want %v", got, want)
 	}
 }
 
 func TestResolverConfigNewPreservesEmptyTitleIDs(t *testing.T) {
-	resolver := ResolverConfig{TitleIDs: []string{}}.New(nil)
-	if got := resolver.titleIDs(); len(got) != 0 {
+	resolver := ResolverConfig{TitleIDs: []string{}}.New(&transportTokenSource{})
+	if got := resolver.conf.TitleIDs; len(got) != 0 {
 		t.Fatalf("TitleIDs = %v, want empty", got)
 	}
 }
