@@ -157,6 +157,14 @@ func TestTransportTokenAndSignatureRejectsUnknownEndpoint(t *testing.T) {
 	}
 }
 
+func TestTransportTokenAndSignatureRejectsNilResolver(t *testing.T) {
+	var transport Transport
+	u := mustParseURL(t, "https://multiplayer.minecraft.net/authentication")
+	if _, _, err := transport.TokenAndSignature(context.Background(), u); err == nil {
+		t.Fatal("TokenAndSignature returned nil error for nil Resolver")
+	}
+}
+
 type authorizationToken string
 
 func (t authorizationToken) SetAuthHeader(req *http.Request) {
