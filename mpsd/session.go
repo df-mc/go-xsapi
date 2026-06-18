@@ -527,7 +527,7 @@ func parseSessionReference(loc string) (ref SessionReference, err error) {
 	if len(segments) != 6 {
 		return ref, fmt.Errorf("malformed path: %q", u.Path)
 	}
-	if !strings.EqualFold(segments[0], "serviceconfigs") || !strings.EqualFold(segments[2], "sessionTemplates") || segments[4] != "sessions" {
+	if !strings.EqualFold(segments[0], "serviceconfigs") || !strings.EqualFold(segments[2], "sessionTemplates") || !strings.EqualFold(segments[4], "sessions") {
 		return ref, fmt.Errorf("invalid path to session: %q", u.Path)
 	}
 

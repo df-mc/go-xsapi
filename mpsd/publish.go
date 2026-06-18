@@ -63,7 +63,7 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 	if config.ReadRestriction == "" {
 		config.ReadRestriction = SessionRestrictionFollowed
 	}
-	_, payload, err := c.subscribe(ctx)
+	connectionID, err := c.subscribe(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func (c *Client) Publish(ctx context.Context, ref SessionReference, config Publi
 				Properties: &MemberProperties{
 					System: &MemberPropertiesSystem{
 						Active:     true,
-						Connection: payload.ConnectionID,
+						Connection: connectionID,
 						Subscription: &MemberPropertiesSystemSubscription{
 							ID:          strings.ToUpper(uuid.NewString()),
 							ChangeTypes: []string{ChangeTypeEverything},
@@ -148,10 +148,9 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 		h:      NopHandler{}, // fast-path without locking
 		cache:  d,
 		etag:   resp.Header.Get("ETag"),
-		closed: make(chan struct{}),
 		ref:    ref,
+		closed: make(chan struct{}),
 	}
-
 	s.log = c.log.With(
 		slog.Group("session",
 			slog.String("scid", s.ref.ServiceConfigID.String()),

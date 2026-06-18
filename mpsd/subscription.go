@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/rta"
@@ -16,50 +17,20 @@ import (
 // subscribe subscribes with the RTA (Real-Time Activity) Services in Xbox Live.
 // The subscription is used to associate with a multiplayer session to receive
 // notifications for changes in the session.
-func (c *Client) subscribe(ctx context.Context) (_ *rta.Subscription, _ *subscriptionData, err error) {
-	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
-	if c.subscription != nil && c.subscriptionData != nil {
-		// If the subscription was already made with RTA, return the cached
-		// subscription along with its decoded payload.
-		return c.subscription, c.subscriptionData, nil
-	}
-
-	defer func() {
-		if err != nil {
-			if c.subscription != nil {
-				// If the subscription was unsuccessful, we reset the subscription state
-				// along with the custom data so it can be retried.
-				go func(subscription *rta.Subscription) {
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-					defer cancel()
-					if err := c.rta.Unsubscribe(ctx, subscription); err != nil {
-						c.log.Error("error resetting broken subscription", slog.Any("error", err))
-					}
-				}(c.subscription)
-			}
-			c.subscription, c.subscriptionData = nil, nil
+func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
+	if c.subscription.Active() {
+		if data := c.subscriptionData.Load(); data != nil {
+			// If the subscription was already made with RTA, return the cached
+			// subscription along with its decoded payload.
+			return data.ConnectionID, nil
 		}
-	}()
-
-	c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
-	if err != nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	// The custom data includes a connection ID which can be used for the
-	// Connection field in the member constants for receiving notifications for
-	// the changes to its participating multiplayer session.
-	if err := json.Unmarshal(c.subscription.Custom, &c.subscriptionData); err != nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: decode subscription custom: %w", resourceURI, err)
+	if err = c.rta.Subscribe(ctx, c.subscription); err != nil {
+		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	if c.subscriptionData == nil || c.subscriptionData.ConnectionID == uuid.Nil {
-		return nil, nil, fmt.Errorf("mpsd: subscribe to %q: invalid subscription data: %q", resourceURI, c.subscription.Custom)
-	}
-	c.subscription.Handle(&subscriptionHandler{
-		Client: c,
-		log:    c.log.With("src", "subscription handler"),
-	})
-	return c.subscription, c.subscriptionData, nil
+	// If an error has occurred while decoding the subscription data, a method call to [rta.Conn.Subscribe]
+	// would return an error so it is guaranteed that the subscription data is non-nil.
+	return c.subscriptionData.Load().ConnectionID, nil
 }
 
 // resourceURI is the resource URI used to subscribe with RTA (Real-Time Activity) Services
@@ -107,6 +78,57 @@ type subscriptionData struct {
 type subscriptionHandler struct {
 	*Client
 	log *slog.Logger
+
+	rta.NopSubscriptionHandler
+}
+
+func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
+	// The custom data includes a connection ID which can be used for the
+	// Connection field in the member constants for receiving notifications for
+	// the changes to its participating multiplayer session.
+	var data subscriptionData
+	if err := json.Unmarshal(custom, &data); err != nil {
+		// If we return this error here, the Subscribe() call on rta.Conn will fail.
+		return fmt.Errorf("parse subscription data: %w", err)
+	}
+	h.subscriptionData.Store(&data)
+
+	h.log.Debug("received subscription data", "connectionID", data.ConnectionID)
+
+	sessions := h.sessionSnapshot()
+	var wg sync.WaitGroup
+	for _, session := range sessions {
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+			defer cancel()
+			deleted, err := session.update(ctx, SessionDescription{
+				Members: map[string]*MemberDescription{
+					"me": {
+						Properties: &MemberProperties{
+							System: &MemberPropertiesSystem{
+								Connection: data.ConnectionID,
+								Active:     true,
+							},
+						},
+					},
+				},
+			}, nil)
+			if err != nil {
+				// TODO: Use a background context so we can propagate the error to the caller.
+				session.log.Error("error updating connection ID", "err", err)
+				if closeErr := session.Close(); closeErr != nil {
+					session.log.Error("error closing session after connection ID update failure", "err", closeErr)
+				}
+				return
+			}
+			if deleted {
+				session.markDeleted()
+			}
+		})
+	}
+
+	wg.Wait()
+	return nil
 }
 
 // HandleEvent handles an event received over the RTA subscription associated
@@ -141,32 +163,70 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		refs = append(refs, ref)
 	}
 
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	for _, session := range h.sessionSnapshot() {
 		if slices.ContainsFunc(refs, func(reference SessionReference) bool {
 			// Shoulder taps may deliver TemplateName and Name in lowercase,
 			// so use Compare for case-insensitive matching.
 			return reference.Equal(session.Reference())
 		}) {
-			go func(s *Session) {
-				ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
+			go func() {
+				ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 				defer cancel()
 
-				if err := s.Sync(ctx); err != nil {
+				if err := session.Sync(ctx); err != nil {
 					h.log.Error("error synchronizing multiplayer session",
 						slog.Any("error", err))
 					return
 				}
 				h.log.Debug("synchronized multiplayer session",
 					slog.Group("session",
-						slog.String("ref", s.Reference().URL().String()),
+						slog.String("ref", session.Reference().URL().String()),
 					),
 				)
-				s.handler().HandleSessionChange(s)
-			}(session)
+				session.handler().HandleSessionChange(session)
+			}()
 		}
 	}
-	h.sessionsMu.RUnlock()
+}
+
+func (h *subscriptionHandler) HandleResync() {
+	sessions := h.sessionSnapshot()
+	var wg sync.WaitGroup
+	for _, session := range sessions {
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+			defer cancel()
+			if err := session.Sync(ctx); err != nil {
+				h.log.Error("error resyncing multiplayer session", slog.Any("err", err))
+			}
+		})
+	}
+	wg.Wait()
+}
+
+func (h *subscriptionHandler) HandleError(err error) {
+	for _, session := range h.sessionSnapshot() {
+		// TODO: Cancel the background context of the session.
+		session.log.Error("subscription lost", "err", err)
+		go func() {
+			if closeErr := session.Close(); closeErr != nil {
+				session.log.Error("error closing session after subscription loss", "err", closeErr)
+			}
+		}()
+	}
+}
+
+// sessionSnapshot returns the currently tracked sessions without keeping
+// sessionsMu held while callers perform network or close operations.
+func (h *subscriptionHandler) sessionSnapshot() []*Session {
+	h.sessionsMu.RLock()
+	defer h.sessionsMu.RUnlock()
+
+	sessions := make([]*Session, 0, len(h.sessions))
+	for _, session := range h.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions
 }
 
 // parseReference parses a SessionReference from a resource identifier included

@@ -69,6 +69,23 @@ func (c *Client) UserByXUID(ctx context.Context, xuid string, opts ...internal.R
 	return users[0], nil
 }
 
+// UserByGamerTag looks up for a user using the gamertag.
+func (c *Client) UserByGamerTag(ctx context.Context, gamertag string, opts ...internal.RequestOption) (u User, err error) {
+	users, err := c.Search(ctx, gamertag, opts...)
+	if err != nil {
+		return u, err
+	}
+	if len(users) == 0 {
+		return u, errors.New("xsapi/social: no users found")
+	}
+	for _, user := range users {
+		if strings.EqualFold(user.GamerTag, gamertag) {
+			return user, nil
+		}
+	}
+	return u, errors.New("xsapi/social: user not found")
+}
+
 // UsersByXUIDs returns the [User] profiles for all given XUIDs in a single
 // batch request. The request is sent as a POST to the batch endpoint.
 func (c *Client) UsersByXUIDs(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]User, error) {

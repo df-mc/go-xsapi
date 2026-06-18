@@ -42,7 +42,7 @@ type JoinConfig struct {
 // A Session may be returned, which represents the joined multiplayer session.
 // Make sure to call [Session.Close] to leave the session when it is no longer needed.
 func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig, opts ...internal.RequestOption) (*Session, error) {
-	_, payload, err := c.subscribe(ctx)
+	connectionID, err := c.subscribe(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig
 				Properties: &MemberProperties{
 					System: &MemberPropertiesSystem{
 						Active:     true,
-						Connection: payload.ConnectionID,
+						Connection: connectionID,
 						Subscription: &MemberPropertiesSystemSubscription{
 							ID:          strings.ToUpper(uuid.NewString()),
 							ChangeTypes: []string{ChangeTypeEverything},

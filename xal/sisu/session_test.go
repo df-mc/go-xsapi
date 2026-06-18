@@ -200,6 +200,10 @@ func (h socialSubscriptionHandler) HandleIncomingFriendRequestCountChange(count 
 	h.Logf("HandleFriendRequestCountChange(%d)", count)
 }
 
+func (h socialSubscriptionHandler) HandleSubscriptionLost() {
+	h.Log("HandleSubscriptionLost()")
+}
+
 func publishSession(t testing.TB, client *xsapi.Client) {
 	custom, err := json.Marshal(map[string]any{
 		"Joinability":             "joinable_by_friends",

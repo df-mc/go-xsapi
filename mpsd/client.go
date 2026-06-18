@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -13,30 +14,24 @@ import (
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
-// unsubscriber captures just the part of the RTA connection needed during
-// client shutdown.
-//
-// Client normally uses the live *rta.Conn injected by New. The interface exists
-// so tests can simulate unsubscribe failures and verify that subscription state
-// is preserved for retry instead of being discarded after a failed cleanup.
-type unsubscriber interface {
-	Unsubscribe(context.Context, *rta.Subscription) error
-}
-
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Client{
+	c := &Client{
 		client:   client,
 		rta:      conn,
-		unsub:    conn,
 		userInfo: userInfo,
 		log:      log,
 
 		sessions: make(map[string]*Session),
 	}
+	c.subscription = rta.NewSubscription(resourceURI, &subscriptionHandler{
+		Client: c,
+		log:    c.log.With("src", "subscription handler"),
+	})
+	return c
 }
 
 // Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
@@ -53,16 +48,7 @@ type Client struct {
 	// It contains the connection ID used to associate multiplayer sessions
 	// created by the Client with the RTA subscription to receive changes to
 	// themselves.
-	subscriptionData *subscriptionData
-	// subscriptionMu is a mutex that is held when either accessing subscription
-	// and subscriptionData.
-	subscriptionMu sync.Mutex
-
-	// unsub is the narrow shutdown dependency used for removing RTA
-	// subscriptions. In production it is the same value as rta.
-	// Keeping this separate allows tests to inject controlled failures for the
-	// retry path without having to construct a real rta.Conn.
-	unsub unsubscriber
+	subscriptionData atomic.Pointer[subscriptionData]
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
@@ -99,14 +85,10 @@ func (c *Client) Close() error {
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
-	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
-
-	if c.subscription != nil {
-		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
+	if c.subscription.Active() {
+		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
-		c.subscription, c.subscriptionData = nil, nil
 	}
 	return nil
 }

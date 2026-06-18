@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+
+	"github.com/df-mc/go-xsapi/v2/rta"
 )
 
 // Subscribe subscribes to RTA (Real-Time Activity) services to receive
@@ -15,7 +17,7 @@ import (
 // over the RTA subscription, such as when a user adds or removes the caller.
 //
 // The RTA subscription is created on the first call and cached internally
-// to avoid exceeding RTA's maximum subscription limit. Subsequence calls
+// to avoid exceeding RTA's maximum subscription limit. Subsequent calls
 // reuse the existing subscription and append h to the list of active handlers.
 //
 // Subscribe returns an error if h is nil.
@@ -24,22 +26,15 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		return errors.New("xsapi/social: cannot subscribe with a nil SubscriptionHandler")
 	}
 
-	c.subscriptionMu.Lock()
-	defer c.subscriptionMu.Unlock()
-	if c.subscription == nil {
-		resourceURI := socialEndpoint.JoinPath(
-			"users",
-			"xuid("+c.userInfo.XUID+")",
-			"friends",
-		).String()
-		c.subscription, err = c.rta.Subscribe(ctx, resourceURI)
-		if err != nil {
+	if !c.subscription.Active() {
+		if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
 			return err
 		}
-		c.subscription.Handle(&subscriptionHandler{c})
 	}
 
+	c.subscriptionMu.Lock()
 	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
+	c.subscriptionMu.Unlock()
 	return nil
 }
 
@@ -48,6 +43,9 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 // [SubscriptionHandler] implementations registered via [Client.Subscribe].
 type subscriptionHandler struct {
 	*Client
+	log *slog.Logger
+
+	rta.NopSubscriptionHandler
 }
 
 // HandleEvent handles an event received over the RTA subscription.
@@ -86,11 +84,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return
 		}
 
-		h.subscriptionMu.RLock()
-		for _, handler := range h.subscriptionHandlers {
+		for _, handler := range h.handlers() {
 			go handler.HandleIncomingFriendRequestCountChange(*data.Count)
 		}
-		h.subscriptionMu.RUnlock()
 		return
 	case NotificationTypeAdded, NotificationTypeRemoved, NotificationTypeChanged:
 		if len(data.XUIDs) == 0 {
@@ -100,17 +96,29 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return
 		}
 
-		h.subscriptionMu.RLock()
-		for _, handler := range h.subscriptionHandlers {
+		for _, handler := range h.handlers() {
 			xuids := slices.Clone(data.XUIDs)
 			go handler.HandleSocialNotification(data.Type, xuids)
 		}
-		h.subscriptionMu.RUnlock()
 	default:
 		h.log.Warn("unexpected subscription notification type",
 			slog.String("type", data.Type),
 		)
 	}
+}
+
+func (h *subscriptionHandler) HandleError(err error) {
+	h.log.Error("subscription lost", "err", err)
+
+	for _, handler := range h.handlers() {
+		go handler.HandleSubscriptionLost()
+	}
+}
+
+func (h *subscriptionHandler) handlers() []SubscriptionHandler {
+	h.subscriptionMu.RLock()
+	defer h.subscriptionMu.RUnlock()
+	return slices.Clone(h.subscriptionHandlers)
 }
 
 // SubscriptionHandler is the interface for receiving real-time notifications
@@ -133,6 +141,11 @@ type SubscriptionHandler interface {
 	// The payload contains only the updated count; the XUIDs of the users
 	// involved are not included. Therefore, it is generally used for notification purposes.
 	HandleIncomingFriendRequestCountChange(count int)
+
+	// HandleSubscriptionLost is called when the underlying subscription is lost.
+	// The caller might be able to call [Client.Subscribe] again using the same handler
+	// to reconnect to the RTA service.
+	HandleSubscriptionLost()
 }
 
 // NopSubscriptionHandler is a no-op implementation of [SubscriptionHandler].
@@ -140,6 +153,7 @@ type NopSubscriptionHandler struct{}
 
 func (NopSubscriptionHandler) HandleSocialNotification(string, []string)  {}
 func (NopSubscriptionHandler) HandleIncomingFriendRequestCountChange(int) {}
+func (NopSubscriptionHandler) HandleSubscriptionLost()                    {}
 
 const (
 	// NotificationTypeAdded is the notification type for when one or more users
