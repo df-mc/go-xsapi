@@ -26,10 +26,8 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		return errors.New("xsapi/social: cannot subscribe with a nil SubscriptionHandler")
 	}
 
-	if !c.subscription.Active() {
-		if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
-			return err
-		}
+	if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
+		return err
 	}
 
 	c.subscriptionMu.Lock()

@@ -228,7 +228,7 @@ func TestZeroValueSubscriptionUsesNopHandler(t *testing.T) {
 	handler.HandleError(errors.New("lost"))
 }
 
-func TestSubscribeCanUseReconnectedConnDuringResubscribe(t *testing.T) {
+func TestSubscribeWaitsForReconnectBeforeActiveShortcut(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
@@ -254,19 +254,15 @@ func TestSubscribeCanUseReconnectedConnDuringResubscribe(t *testing.T) {
 		t.Fatal("resubscribe did not reach subscription handler")
 	}
 
-	newSub := NewSubscription("new-resource", NopSubscriptionHandler{})
 	callDone := make(chan error, 1)
 	go func() {
-		callDone <- conn.Subscribe(ctx, newSub)
+		callDone <- conn.Subscribe(ctx, sub)
 	}()
 
 	select {
-	case err := <-callDone:
-		if err != nil {
-			t.Fatalf("Subscribe returned error: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Subscribe blocked behind in-progress resubscribe")
+	case <-callDone:
+		t.Fatal("Subscribe returned before reconnect completed")
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	close(handler.unblock)
@@ -278,8 +274,13 @@ func TestSubscribeCanUseReconnectedConnDuringResubscribe(t *testing.T) {
 	if !sub.Active() {
 		t.Fatal("existing subscription became inactive after resubscribe")
 	}
-	if !newSub.Active() {
-		t.Fatal("new subscription is inactive")
+	select {
+	case err := <-callDone:
+		if err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe did not return after reconnect completed")
 	}
 }
 

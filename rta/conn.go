@@ -65,6 +65,9 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 		return errors.New("rta: nil subscription")
 	}
 	for {
+		if err := c.wait(ctx); err != nil {
+			return err
+		}
 		sub.opMu.Lock()
 		if sub.Active() {
 			sub.opMu.Unlock()
