@@ -175,7 +175,50 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 	c.sessions[s.ref.URL().String()] = s
 	c.sessionsMu.Unlock()
 
+	if err := c.reconcileSessionConnection(ctx, s); err != nil {
+		err = fmt.Errorf("update session %s connection ID: %w", s.Reference().URL(), err)
+		if err2 := s.Close(); err2 != nil {
+			err = errors.Join(
+				err,
+				fmt.Errorf("close session: %w", err2),
+			)
+		}
+		return nil, err
+	}
+
 	return s, nil
+}
+
+func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) error {
+	connectionID, err := c.subscriptionConnectionID()
+	if err != nil {
+		return err
+	}
+	if member, ok := s.Member("me"); ok && member.Properties != nil && member.Properties.System != nil {
+		if system := member.Properties.System; system.Active && system.Connection == connectionID {
+			return nil
+		}
+	}
+	deleted, err := s.update(ctx, SessionDescription{
+		Members: map[string]*MemberDescription{
+			"me": {
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{
+						Connection: connectionID,
+						Active:     true,
+					},
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		s.markDeleted()
+		return errors.New("session was deleted while updating connection ID")
+	}
+	return nil
 }
 
 // handleSessionClosure handles closure of a multiplayer session.

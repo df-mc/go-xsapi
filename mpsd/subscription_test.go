@@ -243,6 +243,115 @@ func TestSubscriptionHandlerResyncNotifiesSessionHandlerAfterSync(t *testing.T) 
 	}
 }
 
+func TestCreateSessionReconcilesCurrentSubscriptionConnection(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	oldConnectionID := uuid.New()
+	currentConnectionID := uuid.New()
+	var activityRequests atomic.Int32
+	var connectionUpdates atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodPost:
+			activityRequests.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		case http.MethodPut:
+			connectionUpdates.Add(1)
+			var update SessionDescription
+			if err := json.NewDecoder(req.Body).Decode(&update); err != nil {
+				t.Fatalf("decode update body: %v", err)
+			}
+			member := update.Members["me"]
+			if member == nil || member.Properties == nil || member.Properties.System == nil {
+				t.Fatalf("connection update body missing me properties: %+v", update)
+			}
+			if got := member.Properties.System.Connection; got != currentConnectionID {
+				t.Fatalf("connection update ID = %v, want %v", got, currentConnectionID)
+			}
+			var body bytes.Buffer
+			if err := json.NewEncoder(&body).Encode(SessionDescription{
+				Members: map[string]*MemberDescription{
+					"me": {
+						Properties: &MemberProperties{
+							System: &MemberPropertiesSystem{
+								Active:     true,
+								Connection: currentConnectionID,
+							},
+						},
+					},
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(&body),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("request method = %s, want POST or PUT", req.Method)
+			return nil, nil
+		}
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.subscriptionData.Store(&subscriptionData{ConnectionID: currentConnectionID})
+	initial := SessionDescription{
+		Members: map[string]*MemberDescription{
+			"me": {
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{
+						Active:     true,
+						Connection: oldConnectionID,
+					},
+				},
+			},
+		},
+	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(initial); err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusCreated,
+		Status:     http.StatusText(http.StatusCreated),
+		Body:       io.NopCloser(&body),
+		Header:     make(http.Header),
+	}
+
+	session, err := c.createSession(context.Background(), ref, resp)
+	if err != nil {
+		t.Fatalf("createSession returned error: %v", err)
+	}
+	if got := activityRequests.Load(); got != 1 {
+		t.Fatalf("activity requests = %d, want 1", got)
+	}
+	if got := connectionUpdates.Load(); got != 1 {
+		t.Fatalf("connection updates = %d, want 1", got)
+	}
+	member, ok := session.Member("me")
+	if !ok || member.Properties == nil || member.Properties.System == nil {
+		t.Fatal("session cache missing me member after reconciliation")
+	}
+	if got := member.Properties.System.Connection; got != currentConnectionID {
+		t.Fatalf("cached connection ID = %v, want %v", got, currentConnectionID)
+	}
+}
+
 func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
