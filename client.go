@@ -111,7 +111,7 @@ type TokenSource interface {
 
 // RTAMode controls when a [Client] connects to Xbox Live RTA (Real-Time
 // Activity) services.
-type RTAMode int
+type RTAMode uint
 
 const (
 	// RTAEager connects to RTA during [ClientConfig.New]. This is the default
