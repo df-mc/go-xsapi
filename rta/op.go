@@ -3,12 +3,19 @@ package rta
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/coder/websocket"
 )
 
 type response struct {
 	sequence uint32
 	status   int32
 	payload  []json.RawMessage
+}
+
+type expectedCall struct {
+	conn *websocket.Conn
+	ch   chan<- *response
 }
 
 const (
@@ -46,10 +53,10 @@ func operationToType(op uint8) uint32 {
 	}
 }
 
-func (c *Conn) expect(op uint8, sequence uint32) <-chan *response {
+func (c *Conn) expect(conn *websocket.Conn, op uint8, sequence uint32) <-chan *response {
 	ch := make(chan *response, 1)
 	c.expectedMu.Lock()
-	c.expected[op][sequence] = ch
+	c.expected[op][sequence] = expectedCall{conn: conn, ch: ch}
 	c.expectedMu.Unlock()
 	return ch
 }

@@ -3,10 +3,13 @@ package rta
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/url"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,46 +19,59 @@ import (
 //
 // The [context.Context] is used to control the deadline of the establishment of the WebSocket connection.
 // The [http.Client] is used to authenticate handshake HTTP requests and is typically retrieved from
-// [github.com/df-mc/go-xspai.Client.HTTPClient].
+// [github.com/df-mc/go-xsapi.Client.HTTPClient].
 func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, error) {
-	if log == nil {
-		log = slog.Default()
-	}
-
-	d := &dialer{
-		client: client,
-		log:    log,
-	}
+	d := newDialer(client, log)
 	c, err := d.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return newConn(c, d), nil
+}
+
+func newConn(c *websocket.Conn, d *dialer) *Conn {
 	conn := &Conn{
 		conn:          c,
 		dialer:        d,
-		log:           log,
+		log:           d.log,
 		subscriptions: make(map[uint32]*Subscription),
 	}
 	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
 	for i := range cap(conn.expected) {
-		conn.expected[i] = make(map[uint32]chan<- *response)
+		conn.expected[i] = make(map[uint32]expectedCall)
 	}
-	go conn.read()
-	return conn, nil
+	go conn.read(c)
+	return conn
 }
 
 type dialer struct {
-	client *http.Client
-	log    *slog.Logger
+	log     *slog.Logger
+	options *websocket.DialOptions
+}
+
+func newDialer(client *http.Client, log *slog.Logger) *dialer {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &dialer{
+		log: log,
+		options: &websocket.DialOptions{
+			Subprotocols: []string{subprotocol},
+			HTTPClient:   client,
+		},
+	}
 }
 
 // dial establishes a new WebSocket connection.
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
-	c, _, err := websocket.Dial(ctx, connectURL.String(), &websocket.DialOptions{
-		Subprotocols: []string{subprotocol},
-		HTTPClient:   d.client,
-	})
+	options := *d.options
+	options.Subprotocols = slices.Clone(d.options.Subprotocols)
+	c, resp, err := websocket.Dial(ctx, connectURLString(), &options)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
 		return nil, err
 	}
 	return c, nil
@@ -102,10 +118,18 @@ const maxReconnectAttempts = 4
 // subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
 const subprotocol = "rta.xboxlive.com.V2"
 
+var connectURLMu sync.RWMutex
+
 // connectURL is the URL used to establish a websocket connection with real-time activity services. It is
 // generally present at websocket.Dial with other websocket.DialOptions, specifically along with subprotocol.
 var connectURL = &url.URL{
 	Scheme: "wss",
 	Host:   "rta.xboxlive.com",
 	Path:   "connect",
+}
+
+func connectURLString() string {
+	connectURLMu.RLock()
+	defer connectURLMu.RUnlock()
+	return connectURL.String()
 }

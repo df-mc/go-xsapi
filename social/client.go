@@ -12,28 +12,16 @@ import (
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
-// unsubscriber captures just the part of the RTA connection needed during
-// client shutdown.
-//
-// Client normally uses the live *rta.Conn injected by New. The interface exists
-// so tests can simulate unsubscribe failures and verify that subscription state
-// is preserved for retry instead of being discarded after a failed cleanup.
-type unsubscriber interface {
-	Unsubscribe(context.Context, *rta.Subscription) error
-}
-
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
 	c := &Client{
-		client:               client,
-		rta:                  conn,
-		unsub:                conn,
-		userInfo:             userInfo,
-		log:                  log,
-		subscriptionHandlers: make(map[SubscriptionHandler]struct{}),
+		client:   client,
+		rta:      conn,
+		userInfo: userInfo,
+		log:      log,
 	}
 	c.subscription = rta.NewSubscription(socialEndpoint.JoinPath(
 		"users",
@@ -51,19 +39,14 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 //   - social.xboxlive.com for relationship management, such as adding or removing friends.
 //   - peoplehub.xboxlive.com for querying user profiles.
 type Client struct {
-	client *http.Client
-	rta    *rta.Conn
-	// unsub is the narrow shutdown dependency used for removing RTA
-	// subscriptions. In production it is the same value as rta.
-	// Keeping this separate allows tests to inject controlled failures for the
-	// retry path without having to construct a real rta.Conn.
-	unsub    unsubscriber
+	client   *http.Client
+	rta      *rta.Conn
 	userInfo xsts.UserInfo
 	log      *slog.Logger
 
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
-	subscriptionHandlers map[SubscriptionHandler]struct{}
+	subscriptionHandlers []SubscriptionHandler
 }
 
 // Close closes the Client with a context of 15 seconds timeout.
@@ -88,9 +71,10 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	defer c.subscriptionMu.Unlock()
 
 	if c.subscription.Active() {
-		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
+		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err)
 		}
 	}
+	c.subscriptionHandlers = nil
 	return nil
 }

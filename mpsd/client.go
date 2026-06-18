@@ -14,16 +14,6 @@ import (
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
-// unsubscriber captures just the part of the RTA connection needed during
-// client shutdown.
-//
-// Client normally uses the live *rta.Conn injected by New. The interface exists
-// so tests can simulate unsubscribe failures and verify that subscription state
-// is preserved for retry instead of being discarded after a failed cleanup.
-type unsubscriber interface {
-	Unsubscribe(context.Context, *rta.Subscription) error
-}
-
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
@@ -32,7 +22,6 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	c := &Client{
 		client:   client,
 		rta:      conn,
-		unsub:    conn,
 		userInfo: userInfo,
 		log:      log,
 
@@ -60,12 +49,6 @@ type Client struct {
 	// created by the Client with the RTA subscription to receive changes to
 	// themselves.
 	subscriptionData atomic.Pointer[subscriptionData]
-
-	// unsub is the narrow shutdown dependency used for removing RTA
-	// subscriptions. In production it is the same value as rta.
-	// Keeping this separate allows tests to inject controlled failures for the
-	// retry path without having to construct a real rta.Conn.
-	unsub unsubscriber
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex
@@ -103,7 +86,7 @@ func (c *Client) Close() error {
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
 	if c.subscription.Active() {
-		if err := c.unsub.Unsubscribe(ctx, c.subscription); err != nil {
+		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
 	}

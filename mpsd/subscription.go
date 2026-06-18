@@ -95,9 +95,9 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 
 	h.log.Debug("received subscription data", "connectionID", data.ConnectionID)
 
-	wg := new(sync.WaitGroup)
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	sessions := h.sessionSnapshot()
+	var wg sync.WaitGroup
+	for _, session := range sessions {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
@@ -116,7 +116,9 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 			if err != nil {
 				// TODO: Use a background context so we can propagate the error to the caller.
 				session.log.Error("error updating connection ID", "err", err)
-				_ = session.Close()
+				if closeErr := session.Close(); closeErr != nil {
+					session.log.Error("error closing session after connection ID update failure", "err", closeErr)
+				}
 				return
 			}
 			if deleted {
@@ -124,7 +126,6 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 			}
 		})
 	}
-	h.sessionsMu.RUnlock()
 
 	wg.Wait()
 	return nil
@@ -162,38 +163,36 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 		refs = append(refs, ref)
 	}
 
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	for _, session := range h.sessionSnapshot() {
 		if slices.ContainsFunc(refs, func(reference SessionReference) bool {
 			// Shoulder taps may deliver TemplateName and Name in lowercase,
 			// so use Compare for case-insensitive matching.
 			return reference.Equal(session.Reference())
 		}) {
-			go func(s *Session) {
-				ctx, cancel := context.WithTimeout(s.Context(), time.Second*15)
+			go func() {
+				ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 				defer cancel()
 
-				if err := s.Sync(ctx); err != nil {
+				if err := session.Sync(ctx); err != nil {
 					h.log.Error("error synchronizing multiplayer session",
 						slog.Any("error", err))
 					return
 				}
 				h.log.Debug("synchronized multiplayer session",
 					slog.Group("session",
-						slog.String("ref", s.Reference().URL().String()),
+						slog.String("ref", session.Reference().URL().String()),
 					),
 				)
-				s.handler().HandleSessionChange(s)
-			}(session)
+				session.handler().HandleSessionChange(session)
+			}()
 		}
 	}
-	h.sessionsMu.RUnlock()
 }
 
 func (h *subscriptionHandler) HandleResync() {
-	wg := new(sync.WaitGroup)
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	sessions := h.sessionSnapshot()
+	var wg sync.WaitGroup
+	for _, session := range sessions {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
@@ -202,18 +201,32 @@ func (h *subscriptionHandler) HandleResync() {
 			}
 		})
 	}
-	h.sessionsMu.RUnlock()
 	wg.Wait()
 }
 
 func (h *subscriptionHandler) HandleError(err error) {
-	h.sessionsMu.RLock()
-	for _, session := range h.sessions {
+	for _, session := range h.sessionSnapshot() {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)
-		go session.Close()
+		go func() {
+			if closeErr := session.Close(); closeErr != nil {
+				session.log.Error("error closing session after subscription loss", "err", closeErr)
+			}
+		}()
 	}
-	h.sessionsMu.RUnlock()
+}
+
+// sessionSnapshot returns the currently tracked sessions without keeping
+// sessionsMu held while callers perform network or close operations.
+func (h *subscriptionHandler) sessionSnapshot() []*Session {
+	h.sessionsMu.RLock()
+	defer h.sessionsMu.RUnlock()
+
+	sessions := make([]*Session, 0, len(h.sessions))
+	for _, session := range h.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions
 }
 
 // parseReference parses a SessionReference from a resource identifier included
