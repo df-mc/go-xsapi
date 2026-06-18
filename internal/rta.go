@@ -8,7 +8,7 @@ import (
 
 // RTASubscriber is the part of [rta.Conn] needed to create subscriptions.
 type RTASubscriber interface {
-	SubscribeWith(context.Context, *rta.Subscription) error
+	Subscribe(context.Context, *rta.Subscription) error
 }
 
 // RTAUnsubscriber is the part of [rta.Conn] needed to remove subscriptions.
@@ -36,7 +36,7 @@ func Unsubscriber(conn *rta.Conn) RTAUnsubscriber {
 
 type unavailableRTA struct{}
 
-func (unavailableRTA) SubscribeWith(context.Context, *rta.Subscription) error {
+func (unavailableRTA) Subscribe(context.Context, *rta.Subscription) error {
 	return rta.ErrUnavailable
 }
 

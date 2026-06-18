@@ -51,7 +51,7 @@ func NewWithRTA(client *http.Client, subscriber RTASubscriber, unsubscriber RTAU
 // RTASubscriber is the part of an RTA connection needed to create Social
 // subscriptions.
 type RTASubscriber interface {
-	SubscribeWith(context.Context, *rta.Subscription) error
+	Subscribe(context.Context, *rta.Subscription) error
 }
 
 // RTAUnsubscriber is the part of an RTA connection needed to remove Social

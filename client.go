@@ -440,12 +440,12 @@ type lazyRTA struct {
 	client *Client
 }
 
-func (r lazyRTA) SubscribeWith(ctx context.Context, sub *rta.Subscription) error {
+func (r lazyRTA) Subscribe(ctx context.Context, sub *rta.Subscription) error {
 	conn, err := r.client.ensureRTA(ctx)
 	if err != nil {
 		return err
 	}
-	return conn.SubscribeWith(ctx, sub)
+	return conn.Subscribe(ctx, sub)
 }
 
 func (r lazyRTA) Unsubscribe(ctx context.Context, sub *rta.Subscription) error {
