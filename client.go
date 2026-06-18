@@ -105,11 +105,17 @@ type TokenSource interface {
 	xasd.TokenSource
 }
 
+// nsalTokenSource adapts a Client token source for [nsal.Resolver]. It keeps
+// the authorization token obtained during Client setup available for lazy NSAL
+// title-data lookups.
 type nsalTokenSource struct {
 	TokenSource
 	authorizationToken *xsts.Token
 }
 
+// XSTSToken returns the cached Xbox Live authorization token while it remains
+// valid. Tokens for other relying parties, and expired authorization tokens,
+// are delegated to the underlying TokenSource.
 func (src nsalTokenSource) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error) {
 	if relyingParty == internal.XBLRelyingParty && src.authorizationToken.Valid() {
 		return src.authorizationToken, nil
