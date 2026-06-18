@@ -69,10 +69,6 @@ type dialer struct {
 	options *websocket.DialOptions
 }
 
-func newDialer(client *http.Client, log *slog.Logger) *dialer {
-	return Dialer{ErrorLog: log}.newDialer(client)
-}
-
 func (d Dialer) newDialer(client *http.Client) *dialer {
 	if d.ErrorLog == nil {
 		d.ErrorLog = slog.Default()

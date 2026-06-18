@@ -96,7 +96,7 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 				if err == errConnectionInterrupted {
 					c.untrackSubscriptionID(id)
 					sub.deactivate(ErrUnsubscribed)
-					sub.clearID()
+					sub.clearInactiveID(id)
 					sub.opMu.Unlock()
 					if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
 						return err
@@ -110,7 +110,7 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 			}
 			c.untrackSubscriptionID(id)
 			sub.deactivate(nil)
-			sub.clearID()
+			sub.clearInactiveID(id)
 		}
 		err := c.subscribe(ctx, sub, func(oldID uint32) {
 			c.retrackSubscription(oldID, sub)
@@ -195,56 +195,55 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
-	for {
-		if err := c.wait(ctx); err != nil {
-			return err
-		}
-		sub.opMu.Lock()
-		if !sub.Active() {
-			id := sub.id()
-			sub.opMu.Unlock()
-			if id != 0 {
-				if err := c.unsubscribe(ctx, id); err != nil {
-					if err == errConnectionInterrupted {
-						if tracked := c.untrackSubscriptionID(id); tracked != nil {
-							tracked.deactivate(ErrUnsubscribed)
-							tracked.clearID()
-						}
-						sub.clearID()
-						return nil
+	if err := c.wait(ctx); err != nil {
+		return err
+	}
+	sub.opMu.Lock()
+	if !sub.Active() {
+		id := sub.id()
+		sub.opMu.Unlock()
+		if id != 0 {
+			if err := c.unsubscribe(ctx, id); err != nil {
+				if err == errConnectionInterrupted {
+					if tracked := c.untrackSubscriptionID(id); tracked != nil {
+						tracked.deactivate(ErrUnsubscribed)
+						tracked.clearInactiveID(id)
 					}
-					return err
+					sub.clearInactiveID(id)
+					return nil
 				}
-				if tracked := c.untrackSubscriptionID(id); tracked != nil {
-					tracked.deactivate(ErrUnsubscribed)
-					tracked.clearID()
-				}
-				sub.clearID()
+				return err
 			}
-			return nil
+			if tracked := c.untrackSubscriptionID(id); tracked != nil {
+				tracked.deactivate(ErrUnsubscribed)
+				tracked.clearInactiveID(id)
+			}
+			sub.clearInactiveID(id)
 		}
-		sub.setUnsubscribing(true)
-		err := c.unsubscribe(ctx, sub.id())
-		if err == errConnectionInterrupted {
-			c.untrackSubscription(sub)
-			sub.deactivate(ErrUnsubscribed)
-			sub.clearID()
-			sub.opMu.Unlock()
-			return nil
-		}
-		if err != nil {
-			sub.setUnsubscribing(false)
-			sub.opMu.Unlock()
-			return err
-		}
+		return nil
+	}
+	sub.setUnsubscribing(true)
+	id := sub.id()
+	err := c.unsubscribe(ctx, id)
+	if err == errConnectionInterrupted {
 		c.untrackSubscription(sub)
-		// Notify that the subscription has been unsubscribed so the service
-		// might be able to clean up resources tied to this subscription.
 		sub.deactivate(ErrUnsubscribed)
-		sub.clearID()
+		sub.clearInactiveID(id)
 		sub.opMu.Unlock()
 		return nil
 	}
+	if err != nil {
+		sub.setUnsubscribing(false)
+		sub.opMu.Unlock()
+		return err
+	}
+	c.untrackSubscription(sub)
+	// Notify that the subscription has been unsubscribed so the service
+	// might be able to clean up resources tied to this subscription.
+	sub.deactivate(ErrUnsubscribed)
+	sub.clearInactiveID(id)
+	sub.opMu.Unlock()
+	return nil
 }
 
 // ErrUnsubscribed is an error notified by [SubscriptionHandler.HandleError] when
@@ -423,10 +422,12 @@ func (s *Subscription) markSubscribeFailed() {
 	s.mu.Unlock()
 }
 
-func (s *Subscription) clearID() {
+func (s *Subscription) clearInactiveID(id uint32) {
 	s.mu.Lock()
-	s.ID = 0
-	s.Custom = nil
+	if !s.active && s.ID == id {
+		s.ID = 0
+		s.Custom = nil
+	}
 	s.mu.Unlock()
 }
 
@@ -522,7 +523,10 @@ func (c *Conn) wait(ctx context.Context) error {
 		if done != nil {
 			select {
 			case <-done:
-				return context.Cause(c.ctx) // nil unless the Conn was closed
+				if err := context.Cause(c.ctx); err != nil {
+					return err
+				}
+				continue
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-c.ctx.Done():

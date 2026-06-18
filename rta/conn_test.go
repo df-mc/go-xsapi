@@ -193,8 +193,16 @@ func TestSubscribeHandlerErrorWithInterruptedCleanupRetriesAfterReconnect(t *tes
 		t.Fatalf("Subscribe error = %v, want %v", err, wantErr)
 	}
 
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer waitCancel()
+	if err := conn.wait(waitCtx); err != nil {
+		t.Fatalf("wait for reconnect returned error: %v", err)
+	}
+
+	retryCtx, retryCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer retryCancel()
 	handler.err = nil
-	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(retryCtx, sub); err != nil {
 		t.Fatalf("retry Subscribe returned error: %v", err)
 	}
 	if got := srv.subscribeCount.Load(); got != 2 {
@@ -375,6 +383,25 @@ func TestUnsubscribeActiveSubscriptionIsIdempotent(t *testing.T) {
 	}
 	if got := srv.unsubscribeCount.Load(); got != 1 {
 		t.Fatalf("unsubscribe count = %d, want 1", got)
+	}
+}
+
+func TestClearInactiveIDDoesNotClearReactivatedSubscription(t *testing.T) {
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	sub.activate(1, json.RawMessage(`{"first":true}`))
+	sub.deactivate(nil)
+	sub.activate(2, json.RawMessage(`{"second":true}`))
+
+	sub.clearInactiveID(1)
+
+	if got := sub.id(); got != 2 {
+		t.Fatalf("subscription ID = %d, want 2", got)
+	}
+	if got := string(sub.custom()); got != `{"second":true}` {
+		t.Fatalf("subscription custom = %s, want second payload", got)
+	}
+	if !sub.Active() {
+		t.Fatal("subscription was deactivated")
 	}
 }
 
