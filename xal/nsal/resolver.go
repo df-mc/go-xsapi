@@ -136,6 +136,9 @@ func (r *Resolver) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token, 
 	return token, policy, nil
 }
 
+// title returns cached title data or starts a single shared load for titleID.
+// Waiting callers reuse the loaded data, but context cancellation from the
+// caller that started the load does not poison other callers with live contexts.
 func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error) {
 	if titleID == "" {
 		return nil, errors.New("xal/nsal: empty title ID")
@@ -196,6 +199,9 @@ func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error
 	return title, nil
 }
 
+// loadTitle requests title data for titleID. "default" uses the public default
+// NSAL endpoint; every other title ID requires an Xbox Live authorization token
+// for the NSAL title-data request.
 func (r *Resolver) loadTitle(ctx context.Context, titleID string) (*TitleData, error) {
 	switch titleID {
 	case "default":
@@ -227,10 +233,15 @@ func (r *Resolver) loadTitle(ctx context.Context, titleID string) (*TitleData, e
 	}
 }
 
+// titleLoadCanceled reports whether err came from the caller context used for a
+// title-data request. These errors are not cached because a later caller may
+// still have a valid context and should be allowed to start a fresh load.
 func titleLoadCanceled(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// matchTitleData searches already configured title data in slice order. These
+// entries have precedence over lazily loaded title data.
 func matchTitleData(titles []*TitleData, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
 	for _, title := range titles {
 		if endpoint, policy, ok = title.Match(u); ok {
