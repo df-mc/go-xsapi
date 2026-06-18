@@ -761,6 +761,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 				return true
 			}
 			if errors.Is(err, errSubscribeRollbackFailed) {
+				subscription.deactivate(fmt.Errorf("resubscribe: %w", err))
 				log.Error("error resubscribing", slog.Any("error", err))
 				continue
 			}

@@ -109,6 +109,48 @@ func TestReconnectBoundsEachDialAttempt(t *testing.T) {
 	}
 }
 
+func TestReconnectSkipsBackoffAfterFinalAttempt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no websocket", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectURLMu.Lock()
+	oldURL := connectURL
+	connectURL = &url.URL{Scheme: "ws", Host: u.Host, Path: "/"}
+	connectURLMu.Unlock()
+	t.Cleanup(func() {
+		connectURLMu.Lock()
+		connectURL = oldURL
+		connectURLMu.Unlock()
+	})
+
+	oldBackoff := reconnectBackoff
+	var backoffCalls atomic.Int32
+	reconnectBackoff = func(int) time.Duration {
+		backoffCalls.Add(1)
+		return 0
+	}
+	t.Cleanup(func() {
+		reconnectBackoff = oldBackoff
+	})
+
+	d := Dialer{ErrorLog: slog.New(slog.NewTextHandler(io.Discard, nil))}.newDialer(srv.Client())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = d.reconnect(ctx)
+	if err == nil {
+		t.Fatal("reconnect returned nil error, want failure")
+	}
+	if got, want := backoffCalls.Load(), int32(maxReconnectAttempts-1); got != want {
+		t.Fatalf("backoff calls = %d, want %d", got, want)
+	}
+}
+
 func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -175,6 +217,45 @@ func TestSubscribeHandlerErrorWithRollbackFailurePreservesTrackedSubscription(t 
 	}
 	if !sub.ready() {
 		t.Fatal("subscription was not ready after successful retry")
+	}
+}
+
+func TestResubscribeRollbackFailureNotifiesHandler(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	wantErr := errors.New("bad resubscribe payload")
+	handler := &notifyingSubscribeHandler{errors: make(chan error, 1)}
+	sub := NewSubscription("test-resource", handler)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	handler.err = wantErr
+	srv.unsubscribeStatus.Store(StatusServiceUnavailable)
+	conn.reconnect()
+
+	select {
+	case err := <-handler.errors:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("HandleError error = %v, want %v", err, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resubscribe rollback failure was not reported to handler")
+	}
+	if sub.Active() {
+		t.Fatal("subscription remained active after terminal resubscribe failure")
+	}
+	conn.subscriptionsMu.RLock()
+	_, tracked := conn.subscriptions[sub.id()]
+	conn.subscriptionsMu.RUnlock()
+	if !tracked {
+		t.Fatal("subscription ID was untracked after rollback unsubscribe failed")
 	}
 }
 
@@ -984,6 +1065,20 @@ type transientSubscribeHandler struct {
 
 func (h *transientSubscribeHandler) HandleSubscribe(json.RawMessage) error {
 	return h.err
+}
+
+type notifyingSubscribeHandler struct {
+	NopSubscriptionHandler
+	err    error
+	errors chan error
+}
+
+func (h *notifyingSubscribeHandler) HandleSubscribe(json.RawMessage) error {
+	return h.err
+}
+
+func (h *notifyingSubscribeHandler) HandleError(err error) {
+	h.errors <- err
 }
 
 type blockingSubscribeHandler struct {

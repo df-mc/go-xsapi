@@ -118,6 +118,12 @@ func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
 		c, err := d.dial(attemptCtx)
 		cancel()
 		if err != nil {
+			if attempt == maxReconnectAttempts-1 {
+				d.log.Error("error re-establishing WebSocket connection",
+					slog.Int("attempt", attempt), slog.Int("maxAttempts", maxReconnectAttempts),
+				)
+				break
+			}
 			sleep := reconnectBackoff(attempt)
 			d.log.Error("error re-establishing WebSocket connection",
 				slog.Int("attempt", attempt), slog.Int("maxAttempts", maxReconnectAttempts),

@@ -85,10 +85,11 @@ func (c *Client) Close() error {
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
-	if c.subscription.Active() {
-		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
-			return fmt.Errorf("mpsd: unsubscribe: %w", err)
-		}
+	if c.rta == nil || c.subscription == nil {
+		return nil
+	}
+	if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
+		return fmt.Errorf("mpsd: unsubscribe: %w", err)
 	}
 	return nil
 }
