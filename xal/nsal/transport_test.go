@@ -9,16 +9,20 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/df-mc/go-xsapi/v2/xal/xasu"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 func TestTransportRoundTripSignsRequest(t *testing.T) {
 	key := mustGenerateKey(t)
 	src := &transportTokenSource{
-		token:    authorizationToken("XBL3.0 x=uhs;token"),
+		token:    authorizationToken("token"),
 		proofKey: key,
 	}
 	body := &trackingBody{ReadCloser: io.NopCloser(strings.NewReader("payload"))}
 	var baseCalled bool
+
 	transport := &Transport{
 		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			baseCalled = true
@@ -95,7 +99,7 @@ func TestTransportRoundTripUsesExistingAuthorization(t *testing.T) {
 func TestTransportRoundTripWithoutSignature(t *testing.T) {
 	key := mustGenerateKey(t)
 	src := &transportTokenSource{
-		token:    authorizationToken("XBL3.0 x=uhs;token"),
+		token:    authorizationToken("token"),
 		proofKey: key,
 	}
 	transport := &Transport{
@@ -157,21 +161,30 @@ func TestTransportTokenAndSignatureRejectsUnknownEndpoint(t *testing.T) {
 	}
 }
 
-type authorizationToken string
-
-func (t authorizationToken) SetAuthHeader(req *http.Request) {
-	req.Header.Set("Authorization", string(t))
+func authorizationToken(s string) *xsts.Token {
+	return &xsts.Token{
+		DisplayClaims: xsts.DisplayClaims{
+			UserInfo: []xsts.UserInfo{
+				{
+					UserInfo: xasu.UserInfo{
+						UserHash: "uhs",
+					},
+				},
+			},
+		},
+		Token: s,
+	}
 }
 
 type transportTokenSource struct {
 	called       bool
 	relyingParty string
-	token        Token
+	token        *xsts.Token
 	proofKey     *ecdsa.PrivateKey
 	err          error
 }
 
-func (src *transportTokenSource) Token(_ context.Context, relyingParty string) (Token, error) {
+func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {
 	src.called = true
 	src.relyingParty = relyingParty
 	if src.err != nil {

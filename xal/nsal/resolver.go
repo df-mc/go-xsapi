@@ -8,6 +8,9 @@ import (
 	"net/url"
 	"slices"
 	"sync"
+
+	"github.com/df-mc/go-xsapi/v2/internal"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 const authorizationRelyingParty = "http://xboxlive.com"
@@ -17,7 +20,7 @@ var defaultTitleIDs = []string{"current", "default"}
 // TokenSource supplies authorization tokens and the proof key used to resolve
 // NSAL title data, XSTS tokens, and request signatures.
 type TokenSource interface {
-	Token(ctx context.Context, relyingParty string) (Token, error)
+	XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error)
 	ProofKey() *ecdsa.PrivateKey
 }
 
@@ -117,15 +120,11 @@ func (r *Resolver) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token, 
 	if err != nil {
 		return nil, policy, err
 	}
-	token, err := r.src.Token(ctx, endpoint.RelyingParty)
+	token, err := r.src.XSTSToken(ctx, endpoint.RelyingParty)
 	if err != nil {
 		return nil, policy, fmt.Errorf("request XSTS token: %w", err)
 	}
 	return token, policy, nil
-}
-
-func (r *Resolver) proofKey() *ecdsa.PrivateKey {
-	return r.src.ProofKey()
 }
 
 func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error) {
@@ -178,9 +177,9 @@ func (r *Resolver) loadTitle(ctx context.Context, titleID string) (*TitleData, e
 		}
 		return title, nil
 	case "current":
-		token, err := r.authorizationToken(ctx)
+		token, err := r.src.XSTSToken(ctx, internal.XBLRelyingParty)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("request authorization token: %w", err)
 		}
 		title, err := Current(ctx, token, r.src.ProofKey())
 		if err != nil {
@@ -188,9 +187,9 @@ func (r *Resolver) loadTitle(ctx context.Context, titleID string) (*TitleData, e
 		}
 		return title, nil
 	default:
-		token, err := r.authorizationToken(ctx)
+		token, err := r.src.XSTSToken(ctx, internal.XBLRelyingParty)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("request authorization token: %w", err)
 		}
 		title, err := Title(ctx, token, r.src.ProofKey(), titleID)
 		if err != nil {
@@ -198,14 +197,6 @@ func (r *Resolver) loadTitle(ctx context.Context, titleID string) (*TitleData, e
 		}
 		return title, nil
 	}
-}
-
-func (r *Resolver) authorizationToken(ctx context.Context) (Token, error) {
-	token, err := r.src.Token(ctx, authorizationRelyingParty)
-	if err != nil {
-		return nil, fmt.Errorf("request authorization token: %w", err)
-	}
-	return token, nil
 }
 
 func matchTitleData(titles []*TitleData, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
