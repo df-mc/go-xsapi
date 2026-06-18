@@ -3,6 +3,7 @@ package mpsd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -63,6 +64,39 @@ func TestSubscriptionHandlerStoresValidConnectionID(t *testing.T) {
 	}
 	if got != id {
 		t.Fatalf("connection ID = %v, want %v", got, id)
+	}
+}
+
+func TestSubscriptionHandlerReturnsSessionConnectionUpdateError(t *testing.T) {
+	wantErr := errors.New("update failed")
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, wantErr
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	id := uuid.New()
+
+	err := h.HandleSubscribe(json.RawMessage(`{"ConnectionId":"` + id.String() + `"}`))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleSubscribe error = %v, want %v", err, wantErr)
 	}
 }
 

@@ -105,6 +105,7 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	h.log.Debug("received subscription data", "connectionID", data.ConnectionID)
 
 	sessions := h.sessionSnapshot()
+	errs := make(chan error, len(sessions))
 	var wg sync.WaitGroup
 	for _, session := range sessions {
 		wg.Go(func() {
@@ -125,9 +126,12 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 			if err != nil {
 				// TODO: Use a background context so we can propagate the error to the caller.
 				session.log.Error("error updating connection ID", "err", err)
+				err = fmt.Errorf("update session %s connection ID: %w", session.Reference().URL(), err)
 				if closeErr := session.Close(); closeErr != nil {
 					session.log.Error("error closing session after connection ID update failure", "err", closeErr)
+					err = errors.Join(err, fmt.Errorf("close session after connection ID update failure: %w", closeErr))
 				}
+				errs <- err
 				return
 			}
 			if deleted {
@@ -137,7 +141,12 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	}
 
 	wg.Wait()
-	return nil
+	close(errs)
+	var err error
+	for sessionErr := range errs {
+		err = errors.Join(err, sessionErr)
+	}
+	return err
 }
 
 // HandleEvent handles an event received over the RTA subscription associated
