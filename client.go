@@ -78,11 +78,8 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	c.userInfo = xui
 
 	c.transport = &nsal.Transport{
-		Base: c.baseTransport(),
-		Resolver: nsal.NewResolver(nsalTokenSource{
-			TokenSource:        src,
-			authorizationToken: token,
-		}),
+		Base:     c.baseTransport(),
+		Resolver: nsal.NewResolver(src),
 	}
 
 	// Connect to RTA services.
@@ -103,24 +100,6 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 type TokenSource interface {
 	xsts.TokenSource
 	xasd.TokenSource
-}
-
-// nsalTokenSource adapts a Client token source for [nsal.Resolver]. It keeps
-// the authorization token obtained during Client setup available for lazy NSAL
-// title-data lookups.
-type nsalTokenSource struct {
-	TokenSource
-	authorizationToken *xsts.Token
-}
-
-// XSTSToken returns the cached Xbox Live authorization token while it remains
-// valid. Tokens for other relying parties, and expired authorization tokens,
-// are delegated to the underlying TokenSource.
-func (src nsalTokenSource) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error) {
-	if relyingParty == internal.XBLRelyingParty && src.authorizationToken.Valid() {
-		return src.authorizationToken, nil
-	}
-	return src.TokenSource.XSTSToken(ctx, relyingParty)
 }
 
 // ClientConfig holds the configuration for creating a [Client].

@@ -144,11 +144,8 @@ func TestClientRoundTripUsesConfiguredHTTPClientForLazyNSAL(t *testing.T) {
 	*client.client = *configuredClient
 	client.client.Transport = client
 	client.transport = &nsal.Transport{
-		Base: client.baseTransport(),
-		Resolver: nsal.NewResolver(nsalTokenSource{
-			TokenSource:        src,
-			authorizationToken: testXSTSToken(time.Now().Add(time.Hour)),
-		}),
+		Base:     client.baseTransport(),
+		Resolver: nsal.NewResolver(src),
 	}
 
 	req, err := http.NewRequest(http.MethodPost, "https://20ca2.playfabapi.com/Client/LoginWithXbox", nil)
@@ -165,40 +162,6 @@ func TestClientRoundTripUsesConfiguredHTTPClientForLazyNSAL(t *testing.T) {
 	}
 	if !finalRequested {
 		t.Fatal("final request was not sent")
-	}
-}
-
-func TestNSALTokenSourceReusesValidAuthorizationToken(t *testing.T) {
-	cachedToken := testXSTSToken(time.Now().Add(time.Hour))
-	src := nsalTokenSource{
-		TokenSource:        stubTokenSource{},
-		authorizationToken: cachedToken,
-	}
-	token, err := src.XSTSToken(context.Background(), "http://xboxlive.com")
-	if err != nil {
-		t.Fatalf("Token returned error: %v", err)
-	}
-	if token != cachedToken {
-		t.Fatal("Token did not reuse valid authorization token")
-	}
-}
-
-func TestNSALTokenSourceRefreshesExpiredAuthorizationToken(t *testing.T) {
-	freshToken := testXSTSToken(time.Now().Add(time.Hour))
-	tokenSource := &recordingTokenSource{token: freshToken}
-	src := nsalTokenSource{
-		TokenSource:        tokenSource,
-		authorizationToken: testXSTSToken(time.Now().Add(-time.Hour)),
-	}
-	token, err := src.XSTSToken(context.Background(), "http://xboxlive.com")
-	if err != nil {
-		t.Fatalf("Token returned error: %v", err)
-	}
-	if token != freshToken {
-		t.Fatal("Token did not refresh expired authorization token")
-	}
-	if got := tokenSource.relyingParty; got != "http://xboxlive.com" {
-		t.Fatalf("XSTSToken relying party = %q, want %q", got, "http://xboxlive.com")
 	}
 }
 
