@@ -7,8 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -180,6 +182,86 @@ func TestSessionUpdateReturnsDeletedOnNoContent(t *testing.T) {
 	}
 	if got := string(session.cache.Properties.Custom); got != `{"property":"old"}` {
 		t.Fatalf("cache mutated during update: got %s", got)
+	}
+}
+
+func TestSessionSyncWaitsForInFlightUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	syncStarted := make(chan struct{}, 1)
+	var updateOnce sync.Once
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodPut:
+			updateOnce.Do(func() { close(updateStarted) })
+			<-releaseUpdate
+
+			header := make(http.Header)
+			header.Set("ETag", `"updated-etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+				Header:     header,
+				Request:    req,
+			}, nil
+		case http.MethodGet:
+			syncStarted <- struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusNotModified,
+				Status:     http.StatusText(http.StatusNotModified),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("request method = %s, want PUT or GET", req.Method)
+			return nil, nil
+		}
+	})}
+
+	session := &Session{
+		client: &Client{client: httpClient},
+		ref:    ref,
+		etag:   `"old-etag"`,
+		closed: make(chan struct{}),
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := session.update(context.Background(), SessionDescription{}, nil)
+		updateDone <- err
+	}()
+	<-updateStarted
+
+	syncDone := make(chan error, 1)
+	go func() {
+		syncDone <- session.Sync(context.Background())
+	}()
+
+	select {
+	case <-syncStarted:
+		t.Fatal("Sync started an HTTP request while update was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseUpdate)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("update returned error: %v", err)
+	}
+	if err := <-syncDone; err != nil {
+		t.Fatalf("Sync returned error: %v", err)
+	}
+	select {
+	case <-syncStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Sync did not start after update finished")
 	}
 }
 

@@ -114,9 +114,11 @@ func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 // context error immediately.
 func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
 	for attempt := 0; attempt < maxReconnectAttempts; attempt++ {
-		c, err := d.dial(ctx)
+		attemptCtx, cancel := context.WithTimeout(ctx, reconnectAttemptTimeout)
+		c, err := d.dial(attemptCtx)
+		cancel()
 		if err != nil {
-			sleep := backoffDuration(attempt)
+			sleep := reconnectBackoff(attempt)
 			d.log.Error("error re-establishing WebSocket connection",
 				slog.Int("attempt", attempt), slog.Int("maxAttempts", maxReconnectAttempts),
 				slog.Duration("sleep", sleep),
@@ -145,6 +147,11 @@ func backoffDuration(attempt int) time.Duration {
 // maxReconnectAttempts is the maximum number of reconnect attempts before
 // [dialer.reconnect] gives up and returns an error.
 const maxReconnectAttempts = 4
+
+var (
+	reconnectAttemptTimeout = 15 * time.Second
+	reconnectBackoff        = backoffDuration
+)
 
 // subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
 const subprotocol = "rta.xboxlive.com.V2"

@@ -63,6 +63,52 @@ func TestDialerCompatibility(t *testing.T) {
 	defer conn.Close()
 }
 
+func TestReconnectBoundsEachDialAttempt(t *testing.T) {
+	requests := make(chan struct{}, maxReconnectAttempts)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectURLMu.Lock()
+	oldURL := connectURL
+	connectURL = &url.URL{Scheme: "ws", Host: u.Host, Path: "/"}
+	connectURLMu.Unlock()
+	t.Cleanup(func() {
+		connectURLMu.Lock()
+		connectURL = oldURL
+		connectURLMu.Unlock()
+	})
+
+	oldTimeout, oldBackoff := reconnectAttemptTimeout, reconnectBackoff
+	reconnectAttemptTimeout = 20 * time.Millisecond
+	reconnectBackoff = func(int) time.Duration { return 0 }
+	t.Cleanup(func() {
+		reconnectAttemptTimeout = oldTimeout
+		reconnectBackoff = oldBackoff
+	})
+
+	d := Dialer{ErrorLog: slog.New(slog.NewTextHandler(io.Discard, nil))}.newDialer(srv.Client())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = d.reconnect(ctx)
+	if err == nil {
+		t.Fatal("reconnect returned nil error, want failure")
+	}
+	for i := 0; i < maxReconnectAttempts; i++ {
+		select {
+		case <-requests:
+		case <-time.After(time.Second):
+			t.Fatalf("reconnect made %d dial attempts, want %d", i, maxReconnectAttempts)
+		}
+	}
+}
+
 func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()

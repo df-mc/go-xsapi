@@ -79,11 +79,24 @@ func (c *Client) UserByGamerTag(ctx context.Context, gamertag string, opts ...in
 		return u, errors.New("xsapi/social: no users found")
 	}
 	for _, user := range users {
-		if strings.EqualFold(user.GamerTag, gamertag) {
+		if matchesGamerTag(user, gamertag) {
 			return user, nil
 		}
 	}
 	return u, errors.New("xsapi/social: user not found")
+}
+
+func matchesGamerTag(user User, gamertag string) bool {
+	if strings.EqualFold(user.GamerTag, gamertag) || strings.EqualFold(user.UniqueModernGamerTag, gamertag) {
+		return true
+	}
+	if user.ModernGamerTag == "" {
+		return false
+	}
+	if user.ModernGamerTagSuffix == "" {
+		return strings.EqualFold(user.ModernGamerTag, gamertag)
+	}
+	return strings.EqualFold(user.ModernGamerTag+"#"+user.ModernGamerTagSuffix, gamertag)
 }
 
 // UsersByXUIDs returns the [User] profiles for all given XUIDs in a single

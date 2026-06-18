@@ -56,6 +56,9 @@ type Session struct {
 	cache SessionDescription
 	// cacheMu guards the cache from concurrent read-write access.
 	cacheMu sync.RWMutex
+	// syncMu serializes remote operations that refresh or mutate the cached
+	// session state so stale responses cannot overwrite newer session data.
+	syncMu sync.Mutex
 
 	// h is the Handler registered to this Session to receive updates from RTA.
 	h Handler
@@ -154,6 +157,9 @@ func (s *Session) handler() Handler {
 // of the PUT. In that case, deleted is true and the caller is responsible for
 // transitioning the local Session into a deleted/closed state.
 func (s *Session) update(ctx context.Context, changes SessionDescription, opts []internal.RequestOption) (deleted bool, err error) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
 	select {
 	case <-s.closed:
 		return false, net.ErrClosed
@@ -266,6 +272,9 @@ func (sessionContext) Value(any) any {
 // is kept up-to-date automatically though RTA subscription.
 // The request uses the current ETag to perform a conditional GET when possible.
 func (s *Session) Sync(ctx context.Context) error {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
 	select {
 	case <-s.closed:
 		return net.ErrClosed
