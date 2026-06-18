@@ -26,6 +26,11 @@ import (
 	"golang.org/x/text/language"
 )
 
+var (
+	newNSALResolver = nsal.NewResolver
+	dialRTA         = rta.Dial
+)
+
 // NewClient creates a new [Client] using a default [ClientConfig] and a
 // 15-second timeout for the initial login. For more control over the
 // configuration, use [ClientConfig.New] directly.
@@ -38,7 +43,8 @@ func NewClient(src TokenSource) (*Client, error) {
 
 // New creates a new [Client] using the given [TokenSource] and [ClientConfig].
 // The provided context governs the initial login, including
-// requesting XSTS tokens, fetching NSAL data, and connecting to WebSocket services.
+// requesting XSTS tokens, fetching NSAL data, and, by default, connecting to
+// WebSocket services.
 //
 // New clones the [ClientConfig.HTTPClient] internally so that the original
 // client is never mutated. This means that passing [http.DefaultClient] or any
@@ -51,6 +57,11 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
+	}
+	switch config.RTAMode {
+	case RTAEager, RTALazy, RTADisabled:
+	default:
+		return nil, fmt.Errorf("xsapi: invalid RTA mode %d", config.RTAMode)
 	}
 
 	c := &Client{
@@ -78,20 +89,21 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	c.userInfo = xui
 
-	c.resolver, err = nsal.NewResolver(ctx, token, src.ProofKey())
+	c.resolver, err = newNSALResolver(ctx, token, src.ProofKey())
 	if err != nil {
 		return nil, fmt.Errorf("request NSAL resolver: %w", err)
 	}
 
-	// Connect to RTA services.
-	c.rta, err = rta.Dial(ctx, c.HTTPClient(), c.Log())
-	if err != nil {
-		return nil, fmt.Errorf("dial RTA: %w", err)
+	if config.RTAMode == RTAEager {
+		if _, err := c.ensureRTA(ctx); err != nil {
+			return nil, fmt.Errorf("dial RTA: %w", err)
+		}
 	}
 
 	// Initialise API clients, each scoped to their respective endpoint.
-	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log().With("src", "mpsd"))
-	c.social = social.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log().With("src", "social"))
+	rta := lazyRTA{client: c}
+	c.mpsd = mpsd.NewWithRTA(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "mpsd"))
+	c.social = social.NewWithRTA(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	return c, nil
 }
@@ -103,6 +115,25 @@ type TokenSource interface {
 	xasd.TokenSource
 }
 
+// RTAMode controls when a [Client] connects to Xbox Live RTA (Real-Time
+// Activity) services.
+type RTAMode int
+
+const (
+	// RTAEager connects to RTA during [ClientConfig.New]. This is the default
+	// zero value and preserves the historical client construction behavior.
+	RTAEager RTAMode = iota
+
+	// RTALazy defers connecting to RTA until the first operation that needs an
+	// RTA subscription, such as joining an MPSD session as an active member or
+	// subscribing to social updates.
+	RTALazy
+
+	// RTADisabled prevents this client from connecting to RTA. Operations that
+	// require RTA return [rta.ErrUnavailable].
+	RTADisabled
+)
+
 // ClientConfig holds the configuration for creating a [Client].
 type ClientConfig struct {
 	// HTTPClient is the HTTP client used to make requests. If nil,
@@ -113,6 +144,12 @@ type ClientConfig struct {
 	// Logger is the logger used by the client set and its underlying API
 	// clients. If nil, [slog.Default] is used.
 	Logger *slog.Logger
+
+	// RTAMode controls when the client connects to Xbox Live RTA services. The
+	// zero value, [RTAEager], connects during [ClientConfig.New]. Use [RTALazy]
+	// when callers need REST APIs such as MPSD activity listing without opening
+	// an RTA WebSocket until a subscription-backed operation is used.
+	RTAMode RTAMode
 
 	// EnableChat enables the chat functionality.
 	// EnableChat bool
@@ -129,7 +166,10 @@ type Client struct {
 	resolver *nsal.Resolver
 	userInfo xsts.UserInfo
 
-	rta      *rta.Conn
+	rtaMu      sync.Mutex
+	rtaDialing chan struct{}
+	rta        *rta.Conn
+
 	mpsd     *mpsd.Client
 	social   *social.Client
 	presence *presence.Client
@@ -261,7 +301,11 @@ func (c *Client) Presence() *presence.Client {
 }
 
 // RTA returns the connection to Xbox Live RTA (Real-Time Activity) services.
+// If [ClientConfig.RTAMode] is [RTALazy], RTA returns nil until an operation
+// creates the connection.
 func (c *Client) RTA() *rta.Conn {
+	c.rtaMu.Lock()
+	defer c.rtaMu.Unlock()
 	return c.rta
 }
 
@@ -310,10 +354,106 @@ func (c *Client) CloseContext(ctx context.Context) error {
 
 	// Once rta is closed, the client is no longer usable and Close cannot be retried.
 	c.closed.Store(true)
-	if c.rta != nil {
-		c.closeErr = c.rta.Close()
-	}
+	c.closeErr = c.closeRTA(ctx)
 	return c.closeErr
+}
+
+func (c *Client) ensureRTA(ctx context.Context) (*rta.Conn, error) {
+	if c.config.RTAMode == RTADisabled {
+		return nil, rta.ErrUnavailable
+	}
+	for {
+		if c.closed.Load() {
+			return nil, net.ErrClosed
+		}
+		c.rtaMu.Lock()
+		if c.rta != nil {
+			conn := c.rta
+			c.rtaMu.Unlock()
+			return conn, nil
+		}
+		if c.closed.Load() {
+			c.rtaMu.Unlock()
+			return nil, net.ErrClosed
+		}
+		if done := c.rtaDialing; done != nil {
+			c.rtaMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		done := make(chan struct{})
+		c.rtaDialing = done
+		c.rtaMu.Unlock()
+
+		conn, err := dialRTA(ctx, c.HTTPClient(), c.Log())
+
+		c.rtaMu.Lock()
+		if err == nil {
+			if c.closed.Load() {
+				err = net.ErrClosed
+			} else {
+				c.rta = conn
+			}
+		}
+		c.rtaDialing = nil
+		close(done)
+		c.rtaMu.Unlock()
+
+		if err != nil {
+			if conn != nil {
+				_ = conn.Close()
+			}
+			return nil, err
+		}
+		return conn, nil
+	}
+}
+
+func (c *Client) closeRTA(ctx context.Context) error {
+	for {
+		c.rtaMu.Lock()
+		if done := c.rtaDialing; done != nil {
+			c.rtaMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		conn := c.rta
+		c.rta = nil
+		c.rtaMu.Unlock()
+		if conn == nil {
+			return nil
+		}
+		return conn.Close()
+	}
+}
+
+type lazyRTA struct {
+	client *Client
+}
+
+func (r lazyRTA) SubscribeWith(ctx context.Context, sub *rta.Subscription) error {
+	conn, err := r.client.ensureRTA(ctx)
+	if err != nil {
+		return err
+	}
+	return conn.SubscribeWith(ctx, sub)
+}
+
+func (r lazyRTA) Unsubscribe(ctx context.Context, sub *rta.Subscription) error {
+	conn := r.client.RTA()
+	if conn == nil {
+		return rta.ErrUnavailable
+	}
+	return conn.Unsubscribe(ctx, sub)
 }
 
 // AcceptLanguage returns a [internal.RequestOption] that appends the given

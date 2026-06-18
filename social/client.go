@@ -15,13 +15,25 @@ import (
 
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+	return NewWithRTA(client, internal.Subscriber(conn), internal.Unsubscriber(conn), userInfo, log)
+}
+
+// NewWithRTA returns a new [Client] using the provided components and RTA
+// subscription transport.
+func NewWithRTA(client *http.Client, subscriber RTASubscriber, unsubscriber RTAUnsubscriber, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
+	if subscriber == nil {
+		subscriber = internal.Subscriber(nil)
+	}
+	if unsubscriber == nil {
+		unsubscriber = internal.Unsubscriber(nil)
+	}
 	c := &Client{
 		client:       client,
-		subscriber:   internal.Subscriber(conn),
-		unsubscriber: internal.Unsubscriber(conn),
+		subscriber:   subscriber,
+		unsubscriber: unsubscriber,
 		userInfo:     userInfo,
 		log:          log,
 	}
@@ -36,14 +48,26 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	return c
 }
 
+// RTASubscriber is the part of an RTA connection needed to create Social
+// subscriptions.
+type RTASubscriber interface {
+	SubscribeWith(context.Context, *rta.Subscription) error
+}
+
+// RTAUnsubscriber is the part of an RTA connection needed to remove Social
+// subscriptions.
+type RTAUnsubscriber interface {
+	Unsubscribe(context.Context, *rta.Subscription) error
+}
+
 // Client is an API client for Xbox Live Social APIs. It communicates
 // with two endpoints available on Xbox Live:
 //   - social.xboxlive.com for relationship management, such as adding or removing friends.
 //   - peoplehub.xboxlive.com for querying user profiles.
 type Client struct {
 	client       *http.Client
-	subscriber   internal.RTASubscriber
-	unsubscriber internal.RTAUnsubscriber
+	subscriber   RTASubscriber
+	unsubscriber RTAUnsubscriber
 	userInfo     xsts.UserInfo
 	log          *slog.Logger
 
