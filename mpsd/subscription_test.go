@@ -310,6 +310,7 @@ func TestCreateSessionReconcilesCurrentSubscriptionConnection(t *testing.T) {
 	currentConnectionID := uuid.New()
 	var activityRequests atomic.Int32
 	var connectionUpdates atomic.Int32
+	var c *Client
 	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.Method {
 		case http.MethodPost:
@@ -323,6 +324,12 @@ func TestCreateSessionReconcilesCurrentSubscriptionConnection(t *testing.T) {
 			}, nil
 		case http.MethodPut:
 			connectionUpdates.Add(1)
+			c.sessionsMu.RLock()
+			_, tracked := c.sessions[ref.URL().String()]
+			c.sessionsMu.RUnlock()
+			if !tracked {
+				t.Fatal("session was not tracked during connection reconciliation")
+			}
 			var update SessionDescription
 			if err := json.NewDecoder(req.Body).Decode(&update); err != nil {
 				t.Fatalf("decode update body: %v", err)
@@ -361,7 +368,7 @@ func TestCreateSessionReconcilesCurrentSubscriptionConnection(t *testing.T) {
 			return nil, nil
 		}
 	})}
-	c := &Client{
+	c = &Client{
 		client:   httpClient,
 		sessions: map[string]*Session{},
 		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),

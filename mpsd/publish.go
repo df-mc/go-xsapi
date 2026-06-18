@@ -170,6 +170,12 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 		return nil, err
 	}
 
+	// Bind the session before reconciliation so concurrent RTA reconnect
+	// handlers can refresh this session with the latest connection ID.
+	c.sessionsMu.Lock()
+	c.sessions[s.ref.URL().String()] = s
+	c.sessionsMu.Unlock()
+
 	if err := c.reconcileSessionConnection(ctx, s); err != nil {
 		err = fmt.Errorf("update session %s connection ID: %w", s.Reference().URL(), err)
 		if err2 := s.Close(); err2 != nil {
@@ -177,14 +183,12 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 				err,
 				fmt.Errorf("close session: %w", err2),
 			)
+			s.closeMu.Lock()
+			s.closeLocked()
+			s.closeMu.Unlock()
 		}
 		return nil, err
 	}
-
-	// Bind the session to the client so we can receive updates from RTA subscription.
-	c.sessionsMu.Lock()
-	c.sessions[s.ref.URL().String()] = s
-	c.sessionsMu.Unlock()
 
 	return s, nil
 }
