@@ -45,3 +45,5 @@ func (h nonComparableSocialHandler) HandleSocialNotification(typ string, xuids [
 }
 
 func (h nonComparableSocialHandler) HandleIncomingFriendRequestCountChange(int) {}
+
+func (h nonComparableSocialHandler) HandleSubscriptionLost() {}

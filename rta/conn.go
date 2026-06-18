@@ -65,9 +65,6 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 		return errors.New("rta: nil subscription")
 	}
 	for {
-		if err := c.wait(ctx); err != nil {
-			return err
-		}
 		sub.opMu.Lock()
 		if sub.Active() {
 			sub.opMu.Unlock()
@@ -178,9 +175,6 @@ func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
 // [context.Context] until the server responds with a matching sequence number.
 // The response is then decoded into a response and returned. The caller is
 // responsible for checking its status code.
-//
-// Callers that run outside the reconnect path should call [Conn.wait] before
-// calling call.
 func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -500,11 +494,6 @@ func (c *Conn) reconnect() {
 			_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
 			return
 		}
-		c.connMu.Lock()
-		c.conn = conn
-		c.connMu.Unlock()
-		go c.read(conn)
-
 		c.subscriptionsMu.Lock()
 		subscriptions := make([]*Subscription, 0, len(c.subscriptions))
 		for _, subscription := range c.subscriptions {
@@ -514,6 +503,11 @@ func (c *Conn) reconnect() {
 		}
 		clear(c.subscriptions)
 		c.subscriptionsMu.Unlock()
+
+		c.connMu.Lock()
+		c.conn = conn
+		c.connMu.Unlock()
+		go c.read(conn)
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 		if c.resubscribe(subscriptions) {
