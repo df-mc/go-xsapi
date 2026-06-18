@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/xal"
 )
 
@@ -144,8 +145,8 @@ func TestResolverDefaultTitleLoadBypassesNSALTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if endpoint.RelyingParty != authorizationRelyingParty {
-		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, authorizationRelyingParty)
+	if endpoint.RelyingParty != internal.XBLRelyingParty {
+		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, internal.XBLRelyingParty)
 	}
 	if src.called {
 		t.Fatal("token source was called while loading default title data")
@@ -167,8 +168,8 @@ func TestResolverFallsBackAfterTitleLoadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if endpoint.RelyingParty != authorizationRelyingParty {
-		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, authorizationRelyingParty)
+	if endpoint.RelyingParty != internal.XBLRelyingParty {
+		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, internal.XBLRelyingParty)
 	}
 	if !src.called {
 		t.Fatal("token source was not called for current title data")
@@ -267,8 +268,8 @@ func TestResolverFallsBackAfterCurrentTitleRequestError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if endpoint.RelyingParty != authorizationRelyingParty {
-		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, authorizationRelyingParty)
+	if endpoint.RelyingParty != internal.XBLRelyingParty {
+		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, internal.XBLRelyingParty)
 	}
 	if !currentRequested {
 		t.Fatal("current title endpoint was not requested")
@@ -375,7 +376,7 @@ func resetDefaultTitle(t *testing.T) {
 }
 
 func defaultTitleResponse() *http.Response {
-	return titleDataResponse("*.xboxlive.com", authorizationRelyingParty)
+	return titleDataResponse("*.xboxlive.com", internal.XBLRelyingParty)
 }
 
 func titleDataResponse(host, relyingParty string) *http.Response {

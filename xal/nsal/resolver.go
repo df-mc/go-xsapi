@@ -14,7 +14,8 @@ import (
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
-const authorizationRelyingParty = "http://xboxlive.com"
+// titleLoadFailureCacheDuration is the short backoff used after a non-context
+// title-data load failure before another caller may retry the same title.
 const titleLoadFailureCacheDuration = 15 * time.Second
 
 var defaultTitleIDs = []string{"current", "default"}
@@ -83,11 +84,15 @@ type Resolver struct {
 	loading map[string]*titleRequest
 }
 
+// titleFailure records a failed title-data load and when that failure should be
+// retried. Context cancellation failures are not cached.
 type titleFailure struct {
 	err       error
 	retryTime time.Time
 }
 
+// titleRequest tracks a title-data load already in progress so concurrent
+// callers can wait for the same request instead of starting duplicate loads.
 type titleRequest struct {
 	done  chan struct{}
 	title *TitleData
