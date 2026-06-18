@@ -40,6 +40,9 @@ func Default(ctx context.Context) (*TitleData, error) {
 		return nil, fmt.Errorf("make request: %w", err)
 	}
 	req.Header.Set("x-xbl-contract-version", "1")
+	// Default title data is public. If ctx uses an nsal.Transport, opt out so
+	// this lookup does not recursively resolve the same default title.
+	req = WithoutAuthHeaders(req)
 
 	resp, err := xal.ContextClient(ctx).Do(req)
 	if err != nil {

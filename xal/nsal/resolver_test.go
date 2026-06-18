@@ -2,9 +2,15 @@ package nsal
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/df-mc/go-xsapi/v2/xal"
 )
 
 func TestResolverPrefersEarlierTitleData(t *testing.T) {
@@ -134,6 +140,52 @@ func TestResolverTokenAndSignatureUsesResolvedRelyingParty(t *testing.T) {
 	}
 }
 
+func TestResolverDefaultTitleLoadBypassesNSALTransport(t *testing.T) {
+	resetDefaultTitle(t)
+
+	src := &transportTokenSource{token: authorizationToken("unexpected")}
+	resolver := ResolverConfig{TitleIDs: []string{"default"}}.New(src)
+	client := &http.Client{Transport: &Transport{
+		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.URL.String(); got != "https://title.mgt.xboxlive.com/titles/default/endpoints?type=1" {
+				t.Fatalf("request URL = %q, want default title endpoint", got)
+			}
+			if got := req.Header.Get("Authorization"); got != "" {
+				t.Fatalf("Authorization = %q, want empty", got)
+			}
+			if got := req.Header.Get("Signature"); got != "" {
+				t.Fatalf("Signature = %q, want empty", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{
+					"EndPoints": [{
+						"Protocol": "https",
+						"Host": "*.xboxlive.com",
+						"HostType": "wildcard",
+						"RelyingParty": "http://xboxlive.com",
+						"TokenType": "JWT"
+					}]
+				}`)),
+			}, nil
+		}),
+		Resolver: resolver,
+	}}
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), xal.HTTPClient, client), time.Second)
+	defer cancel()
+
+	endpoint, _, err := resolver.Resolve(ctx, mustParseURL(t, "https://sessiondirectory.xboxlive.com/handles"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if endpoint.RelyingParty != authorizationRelyingParty {
+		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, authorizationRelyingParty)
+	}
+	if src.called {
+		t.Fatal("token source was called while loading default title data")
+	}
+}
+
 func TestNilResolverDoesNotMatch(t *testing.T) {
 	var resolver *Resolver
 
@@ -149,4 +201,17 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 		t.Fatalf("parse URL: %v", err)
 	}
 	return u
+}
+
+func resetDefaultTitle(t *testing.T) {
+	t.Helper()
+	defaultTitleMu.Lock()
+	previous := defaultTitle
+	defaultTitle = nil
+	defaultTitleMu.Unlock()
+	t.Cleanup(func() {
+		defaultTitleMu.Lock()
+		defaultTitle = previous
+		defaultTitleMu.Unlock()
+	})
 }
