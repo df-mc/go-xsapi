@@ -174,7 +174,7 @@ func TestNSALTokenSourceReusesValidAuthorizationToken(t *testing.T) {
 		TokenSource:        stubTokenSource{},
 		authorizationToken: cachedToken,
 	}
-	token, err := src.Token(context.Background(), "http://xboxlive.com")
+	token, err := src.XSTSToken(context.Background(), "http://xboxlive.com")
 	if err != nil {
 		t.Fatalf("Token returned error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestNSALTokenSourceRefreshesExpiredAuthorizationToken(t *testing.T) {
 		TokenSource:        tokenSource,
 		authorizationToken: testXSTSToken(time.Now().Add(-time.Hour)),
 	}
-	token, err := src.Token(context.Background(), "http://xboxlive.com")
+	token, err := src.XSTSToken(context.Background(), "http://xboxlive.com")
 	if err != nil {
 		t.Fatalf("Token returned error: %v", err)
 	}

@@ -110,11 +110,11 @@ type nsalTokenSource struct {
 	authorizationToken *xsts.Token
 }
 
-func (src nsalTokenSource) Token(ctx context.Context, relyingParty string) (nsal.Token, error) {
+func (src nsalTokenSource) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error) {
 	if relyingParty == internal.XBLRelyingParty && src.authorizationToken.Valid() {
 		return src.authorizationToken, nil
 	}
-	return src.XSTSToken(ctx, relyingParty)
+	return src.TokenSource.XSTSToken(ctx, relyingParty)
 }
 
 // ClientConfig holds the configuration for creating a [Client].
