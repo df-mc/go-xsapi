@@ -170,6 +170,12 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 			sub.opMu.Unlock()
 			if id != 0 {
 				if err := c.unsubscribe(ctx, id); err != nil {
+					if err == errConnectionInterrupted {
+						if tracked := c.untrackSubscriptionID(id); tracked != nil {
+							tracked.deactivate(ErrUnsubscribed)
+						}
+						return nil
+					}
 					return err
 				}
 				if tracked := c.untrackSubscriptionID(id); tracked != nil {

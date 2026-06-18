@@ -226,6 +226,39 @@ func TestUnsubscribeInterruptedResponseCompletesLocally(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeIDOnlyInterruptedResponseCompletesLocally(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.validateUnsubscribeIDs()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub, err := conn.Subscribe(ctx, "test-resource")
+	if err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.closeUnsubscribeResponse()
+	if err := conn.Unsubscribe(ctx, &Subscription{ID: sub.ID}); err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	if got := srv.unsubscribeCount.Load(); got != 1 {
+		t.Fatalf("unsubscribe count = %d, want 1", got)
+	}
+	if sub.Active() {
+		t.Fatal("original subscription is still active after interrupted ID-only unsubscribe")
+	}
+	conn.subscriptionsMu.RLock()
+	_, tracked := conn.subscriptions[sub.id()]
+	conn.subscriptionsMu.RUnlock()
+	if tracked {
+		t.Fatal("subscription is still tracked after interrupted ID-only unsubscribe")
+	}
+}
+
 func TestConcurrentSubscribeCoalescesSingleHandshake(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -376,6 +409,40 @@ func TestZeroValueSubscriptionUsesNopHandler(t *testing.T) {
 		t.Fatal("default handler does not implement SubscriptionErrorHandler")
 	}
 	errorHandler.HandleError(errors.New("lost"))
+}
+
+func TestResyncMessageRoutesToActiveSubscriptions(t *testing.T) {
+	conn := &Conn{
+		log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		subscriptions: make(map[uint32]*Subscription),
+	}
+	conn.ctx, conn.cancel = context.WithCancelCause(context.Background())
+	defer conn.cancel(nil)
+
+	activeHandler := &resyncRecordingHandler{resync: make(chan struct{}, 1)}
+	active := NewSubscription("active-resource", activeHandler)
+	active.activate(1, nil)
+	conn.trackSubscription(active)
+
+	inactiveHandler := &resyncRecordingHandler{resync: make(chan struct{}, 1)}
+	inactive := NewSubscription("inactive-resource", inactiveHandler)
+	inactive.activate(2, nil)
+	inactive.deactivate(nil)
+	conn.trackSubscription(inactive)
+
+	if err := conn.handleMessage(nil, typeResync, nil); err != nil {
+		t.Fatalf("handleMessage returned error: %v", err)
+	}
+	select {
+	case <-activeHandler.resync:
+	case <-time.After(time.Second):
+		t.Fatal("active subscription did not receive resync")
+	}
+	select {
+	case <-inactiveHandler.resync:
+		t.Fatal("inactive subscription received resync")
+	case <-time.After(50 * time.Millisecond):
+	}
 }
 
 func TestSubscribeWaitsForReconnectBeforeActiveShortcut(t *testing.T) {
@@ -804,6 +871,15 @@ func (h *blockingEventHandler) HandleSubscribe(json.RawMessage) error {
 
 func (h *blockingEventHandler) HandleEvent(custom json.RawMessage) {
 	h.events <- custom
+}
+
+type resyncRecordingHandler struct {
+	NopSubscriptionHandler
+	resync chan struct{}
+}
+
+func (h *resyncRecordingHandler) HandleResync() {
+	h.resync <- struct{}{}
 }
 
 var _ SubscriptionHandler = eventOnlyHandler{}
