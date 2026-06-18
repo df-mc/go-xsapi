@@ -436,6 +436,25 @@ func TestClearInactiveIDDoesNotClearReactivatedSubscription(t *testing.T) {
 	}
 }
 
+func TestActivateDoesNotRewriteExportedFieldsAfterInitialPublish(t *testing.T) {
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	sub.activate(1, json.RawMessage(`{"first":true}`))
+	sub.activate(2, json.RawMessage(`{"second":true}`))
+
+	if got := sub.ID; got != 1 {
+		t.Fatalf("exported subscription ID = %d, want initial ID", got)
+	}
+	if got := string(sub.Custom); got != `{"first":true}` {
+		t.Fatalf("exported subscription custom = %s, want initial custom", got)
+	}
+	if got := sub.id(); got != 2 {
+		t.Fatalf("internal subscription ID = %d, want current ID", got)
+	}
+	if got := string(sub.custom()); got != `{"second":true}` {
+		t.Fatalf("internal subscription custom = %s, want current custom", got)
+	}
+}
+
 func TestUnsubscribeInterruptedResponseCompletesLocally(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()

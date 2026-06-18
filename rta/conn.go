@@ -137,9 +137,8 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 	}
 }
 
-// subscribe performs a sequenced call to subscribe to the given resource URI using
-// the provided [context.Context]. The caller is responsible for registering the
-// returned [Subscription] in the Conn's subscriptions map using [Subscription.ID].
+// subscribe performs a sequenced call to subscribe to the given resource URI
+// using the provided [context.Context].
 //
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
@@ -345,10 +344,13 @@ type Subscription struct {
 	ID     uint32
 	Custom json.RawMessage
 
-	h           atomic.Pointer[SubscriptionHandler]
-	mu          sync.RWMutex
-	opMu        sync.Mutex
-	resourceURI string
+	h             atomic.Pointer[SubscriptionHandler]
+	mu            sync.RWMutex
+	opMu          sync.Mutex
+	resourceURI   string
+	currentID     uint32
+	currentCustom json.RawMessage
+	hasState      bool
 
 	// active indicates whether the Subscription is currently active on the RTA connection.
 	active          bool
@@ -360,6 +362,9 @@ type Subscription struct {
 func (s *Subscription) id() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.hasState {
+		return s.currentID
+	}
 	return s.ID
 }
 
@@ -367,6 +372,9 @@ func (s *Subscription) id() uint32 {
 func (s *Subscription) custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.hasState {
+		return slices.Clone(s.currentCustom)
+	}
 	return slices.Clone(s.Custom)
 }
 
@@ -403,7 +411,10 @@ func (s *Subscription) setUnsubscribing(unsubscribing bool) {
 
 func (s *Subscription) activate(id uint32, custom json.RawMessage) {
 	s.mu.Lock()
-	s.ID, s.Custom = id, slices.Clone(custom)
+	s.currentID, s.currentCustom, s.hasState = id, slices.Clone(custom), true
+	if s.ID == 0 && s.Custom == nil {
+		s.ID, s.Custom = id, slices.Clone(custom)
+	}
 	s.active, s.unsubscribing, s.subscribeFailed = true, false, false
 	s.mu.Unlock()
 }
@@ -411,6 +422,9 @@ func (s *Subscription) activate(id uint32, custom json.RawMessage) {
 func (s *Subscription) failedSubscribeID() (uint32, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.hasState {
+		return s.currentID, s.active && s.subscribeFailed
+	}
 	return s.ID, s.active && s.subscribeFailed
 }
 
@@ -425,9 +439,9 @@ func (s *Subscription) markSubscribeFailed() {
 
 func (s *Subscription) clearInactiveID(id uint32) {
 	s.mu.Lock()
-	if !s.active && s.ID == id {
-		s.ID = 0
-		s.Custom = nil
+	if !s.active && s.hasState && s.currentID == id {
+		s.currentID = 0
+		s.currentCustom = nil
 	}
 	s.mu.Unlock()
 }

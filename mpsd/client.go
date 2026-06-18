@@ -88,6 +88,9 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	if c.rta == nil || c.subscription == nil {
 		return nil
 	}
+	if !c.subscription.Active() {
+		return nil
+	}
 	if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
 		return fmt.Errorf("mpsd: unsubscribe: %w", err)
 	}
