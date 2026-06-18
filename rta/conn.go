@@ -428,8 +428,21 @@ func (c *Conn) trackSubscription(sub *Subscription) {
 }
 
 func (c *Conn) untrackSubscription(sub *Subscription) {
+	c.untrackSubscriptionID(sub.ID())
+}
+
+func (c *Conn) untrackSubscriptionID(id uint32) {
 	c.subscriptionsMu.Lock()
-	delete(c.subscriptions, sub.ID())
+	delete(c.subscriptions, id)
+	c.subscriptionsMu.Unlock()
+}
+
+func (c *Conn) retrackSubscription(oldID uint32, sub *Subscription) {
+	c.subscriptionsMu.Lock()
+	if oldID != sub.ID() {
+		delete(c.subscriptions, oldID)
+	}
+	c.subscriptions[sub.ID()] = sub
 	c.subscriptionsMu.Unlock()
 }
 
@@ -515,12 +528,16 @@ func (c *Conn) reconnect() {
 		}
 		c.subscriptionsMu.Lock()
 		subscriptions := make([]*Subscription, 0, len(c.subscriptions))
+		seen := make(map[*Subscription]struct{}, len(c.subscriptions))
 		for _, subscription := range c.subscriptions {
+			if _, ok := seen[subscription]; ok {
+				continue
+			}
+			seen[subscription] = struct{}{}
 			if subscription.shouldResubscribe() {
 				subscriptions = append(subscriptions, subscription)
 			}
 		}
-		clear(c.subscriptions)
 		c.subscriptionsMu.Unlock()
 
 		c.connMu.Lock()
@@ -551,51 +568,46 @@ func (c *Conn) reconnect() {
 // It reports whether any subscription was interrupted by a lost connection and
 // should be retried by another reconnect attempt.
 func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
-	var successCount atomic.Int32
-	var interruptedSubscription atomic.Bool
-	var wg sync.WaitGroup
+	successCount := 0
 	for _, subscription := range subscriptions {
-		wg.Go(func() {
-			log := c.log.With(slog.Group("subscription",
-				slog.Uint64("id", uint64(subscription.ID())),
-				slog.String("resourceURI", subscription.ResourceURI()),
-			))
+		log := c.log.With(slog.Group("subscription",
+			slog.Uint64("id", uint64(subscription.ID())),
+			slog.String("resourceURI", subscription.ResourceURI()),
+		))
 
-			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
-			defer cancel()
-			subscription.opMu.Lock()
-			err := c.subscribe(ctx, subscription)
-			if err != nil {
-				subscription.opMu.Unlock()
-				if err == errConnectionInterrupted {
-					c.trackSubscription(subscription)
-					interruptedSubscription.Store(true)
-					log.Error("resubscribe interrupted", slog.Any("error", err))
-					return
-				}
-				subscription.deactivate(fmt.Errorf("resubscribe: %w", err))
-				log.Error("error resubscribing", slog.Any("error", err))
-				return
-			}
-
-			c.trackSubscription(subscription)
+		ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
+		subscription.opMu.Lock()
+		oldID := subscription.ID()
+		err := c.subscribe(ctx, subscription)
+		cancel()
+		if err != nil {
 			subscription.opMu.Unlock()
-			successCount.Add(1)
+			if err == errConnectionInterrupted {
+				log.Error("resubscribe interrupted", slog.Any("error", err))
+				return true
+			}
+			c.untrackSubscriptionID(oldID)
+			subscription.deactivate(fmt.Errorf("resubscribe: %w", err))
+			log.Error("error resubscribing", slog.Any("error", err))
+			continue
+		}
 
-			c.log.Debug("resubscribed", slog.Group("subscription",
-				slog.Uint64("id", uint64(subscription.ID())),
-				slog.String("custom", string(subscription.Custom())),
-				slog.String("resourceURI", subscription.ResourceURI()),
-			))
-		})
+		c.retrackSubscription(oldID, subscription)
+		subscription.opMu.Unlock()
+		successCount++
+
+		c.log.Debug("resubscribed", slog.Group("subscription",
+			slog.Uint64("id", uint64(subscription.ID())),
+			slog.String("custom", string(subscription.Custom())),
+			slog.String("resourceURI", subscription.ResourceURI()),
+		))
 	}
 
-	wg.Wait()
 	c.log.Info("resubscribed existing subscriptions",
-		slog.Int("success", int(successCount.Load())),
+		slog.Int("success", successCount),
 		slog.Int("total", len(subscriptions)),
 	)
-	return interruptedSubscription.Load()
+	return false
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.
