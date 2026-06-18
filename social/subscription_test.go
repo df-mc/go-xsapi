@@ -107,3 +107,10 @@ type countingSocialHandler struct{}
 func (*countingSocialHandler) HandleSocialNotification(string, []string)  {}
 func (*countingSocialHandler) HandleIncomingFriendRequestCountChange(int) {}
 func (*countingSocialHandler) HandleSubscriptionLost()                    {}
+
+var _ SubscriptionHandler = legacySocialHandler{}
+
+type legacySocialHandler struct{}
+
+func (legacySocialHandler) HandleSocialNotification(string, []string)  {}
+func (legacySocialHandler) HandleIncomingFriendRequestCountChange(int) {}

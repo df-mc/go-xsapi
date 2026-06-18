@@ -34,7 +34,7 @@ func TestSubscribeHandlerErrorDoesNotDeadlock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- conn.Subscribe(ctx, sub)
+		done <- conn.SubscribeSubscription(ctx, sub)
 	}()
 
 	select {
@@ -50,6 +50,19 @@ func TestSubscribeHandlerErrorDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+func TestDialerCompatibility(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := (Dialer{Options: &websocket.DialOptions{}}).DialContext(ctx, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("DialContext returned error: %v", err)
+	}
+	defer conn.Close()
+}
+
 func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -63,7 +76,7 @@ func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := conn.Subscribe(ctx, sub)
+	err := conn.SubscribeSubscription(ctx, sub)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Subscribe error = %v, want %v", err, wantErr)
 	}
@@ -82,7 +95,7 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := conn.Subscribe(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
 
@@ -94,7 +107,7 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 		t.Fatal("subscription became inactive after failed unsubscribe")
 	}
 	conn.subscriptionsMu.RLock()
-	_, tracked := conn.subscriptions[sub.ID()]
+	_, tracked := conn.subscriptions[sub.id()]
 	conn.subscriptionsMu.RUnlock()
 	if !tracked {
 		t.Fatal("subscription was untracked after failed unsubscribe")
@@ -109,9 +122,10 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeRetriesInterruptedResponse(t *testing.T) {
+func TestUnsubscribeInterruptedResponseCompletesLocally(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
+	srv.validateUnsubscribeIDs()
 
 	conn := srv.Dial(t)
 	defer conn.Close()
@@ -119,7 +133,7 @@ func TestUnsubscribeRetriesInterruptedResponse(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.Subscribe(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
 
@@ -127,17 +141,17 @@ func TestUnsubscribeRetriesInterruptedResponse(t *testing.T) {
 	if err := conn.Unsubscribe(ctx, sub); err != nil {
 		t.Fatalf("Unsubscribe returned error: %v", err)
 	}
-	if got := srv.unsubscribeCount.Load(); got != 2 {
-		t.Fatalf("unsubscribe count = %d, want 2", got)
+	if got := srv.unsubscribeCount.Load(); got != 1 {
+		t.Fatalf("unsubscribe count = %d, want 1", got)
 	}
 	if sub.Active() {
-		t.Fatal("subscription is still active after retried unsubscribe")
+		t.Fatal("subscription is still active after interrupted unsubscribe")
 	}
 	conn.subscriptionsMu.RLock()
-	_, tracked := conn.subscriptions[sub.ID()]
+	_, tracked := conn.subscriptions[sub.id()]
 	conn.subscriptionsMu.RUnlock()
 	if tracked {
-		t.Fatal("subscription is still tracked after retried unsubscribe")
+		t.Fatal("subscription is still tracked after interrupted unsubscribe")
 	}
 }
 
@@ -156,7 +170,7 @@ func TestConcurrentSubscribeCoalescesSingleHandshake(t *testing.T) {
 	errs := make(chan error, 16)
 	for range 16 {
 		wg.Go(func() {
-			errs <- conn.Subscribe(ctx, sub)
+			errs <- conn.SubscribeSubscription(ctx, sub)
 		})
 	}
 	wg.Wait()
@@ -171,6 +185,27 @@ func TestConcurrentSubscribeCoalescesSingleHandshake(t *testing.T) {
 	}
 }
 
+func TestSubscribeResourceURICompatibility(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub, err := conn.Subscribe(ctx, "test-resource")
+	if err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if sub.ID == 0 {
+		t.Fatal("subscription ID was not set")
+	}
+	if string(sub.Custom) != `{"ok":true}` {
+		t.Fatalf("subscription custom = %s, want {\"ok\":true}", sub.Custom)
+	}
+}
+
 func TestReconnectRetriesInterruptedResubscribe(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -181,7 +216,7 @@ func TestReconnectRetriesInterruptedResubscribe(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.Subscribe(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
 
@@ -204,7 +239,7 @@ func TestReconnectRetriesInterruptedResubscribe(t *testing.T) {
 		t.Fatal("subscription became inactive after interrupted resubscribe")
 	}
 	conn.subscriptionsMu.RLock()
-	_, tracked := conn.subscriptions[sub.ID()]
+	_, tracked := conn.subscriptions[sub.id()]
 	conn.subscriptionsMu.RUnlock()
 	if !tracked {
 		t.Fatal("subscription was not tracked after retried resubscribe")
@@ -221,7 +256,7 @@ func TestReconnectClosesAfterPersistentInterruptedResubscribe(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.Subscribe(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
 
@@ -252,12 +287,24 @@ func TestZeroValueSubscriptionUsesNopHandler(t *testing.T) {
 	var sub Subscription
 
 	handler := sub.handler()
-	if err := handler.HandleSubscribe(json.RawMessage(`{"ok":true}`)); err != nil {
+	subscribeHandler, ok := handler.(SubscriptionSubscribeHandler)
+	if !ok {
+		t.Fatal("default handler does not implement SubscriptionSubscribeHandler")
+	}
+	if err := subscribeHandler.HandleSubscribe(json.RawMessage(`{"ok":true}`)); err != nil {
 		t.Fatalf("HandleSubscribe returned error: %v", err)
 	}
 	handler.HandleEvent(json.RawMessage(`{"ok":true}`))
-	handler.HandleResync()
-	handler.HandleError(errors.New("lost"))
+	resyncHandler, ok := handler.(SubscriptionResyncHandler)
+	if !ok {
+		t.Fatal("default handler does not implement SubscriptionResyncHandler")
+	}
+	resyncHandler.HandleResync()
+	errorHandler, ok := handler.(SubscriptionErrorHandler)
+	if !ok {
+		t.Fatal("default handler does not implement SubscriptionErrorHandler")
+	}
+	errorHandler.HandleError(errors.New("lost"))
 }
 
 func TestSubscribeWaitsForReconnectBeforeActiveShortcut(t *testing.T) {
@@ -271,7 +318,7 @@ func TestSubscribeWaitsForReconnectBeforeActiveShortcut(t *testing.T) {
 	sub := NewSubscription("test-resource", handler)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.Subscribe(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
 
@@ -288,7 +335,7 @@ func TestSubscribeWaitsForReconnectBeforeActiveShortcut(t *testing.T) {
 
 	callDone := make(chan error, 1)
 	go func() {
-		callDone <- conn.Subscribe(ctx, sub)
+		callDone <- conn.SubscribeSubscription(ctx, sub)
 	}()
 
 	select {
@@ -330,7 +377,7 @@ func TestReconnectIncludesSubscribeHandlingCustomPayload(t *testing.T) {
 
 	subscribeDone := make(chan error, 1)
 	go func() {
-		subscribeDone <- conn.Subscribe(ctx, sub)
+		subscribeDone <- conn.SubscribeSubscription(ctx, sub)
 	}()
 	select {
 	case <-handler.entered:
@@ -365,10 +412,54 @@ func TestReconnectIncludesSubscribeHandlingCustomPayload(t *testing.T) {
 		t.Fatal("subscription became inactive after reconnect")
 	}
 	conn.subscriptionsMu.RLock()
-	_, tracked := conn.subscriptions[sub.ID()]
+	_, tracked := conn.subscriptions[sub.id()]
 	conn.subscriptionsMu.RUnlock()
 	if !tracked {
 		t.Fatal("subscription was not tracked after reconnect")
+	}
+}
+
+func TestResubscribeRoutesEventsBeforeSubscribeHandlerReturns(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.sendEventAfterSubscribe(2)
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	handler := newBlockingEventHandler(2)
+	sub := NewSubscription("test-resource", handler)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	reconnectDone := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(reconnectDone)
+	}()
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("resubscribe did not reach subscription handler")
+	}
+
+	close(srv.sendSubscribeEvent)
+	select {
+	case got := <-handler.events:
+		if string(got) != `{"event":true}` {
+			t.Fatalf("event payload = %s, want {\"event\":true}", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event was not routed while subscribe handler was blocked")
+	}
+	close(handler.unblock)
+	select {
+	case <-reconnectDone:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not complete")
 	}
 }
 
@@ -383,7 +474,7 @@ func TestReconnectRestartsWhenCurrentConnFailsDuringResubscribe(t *testing.T) {
 	sub := NewSubscription("test-resource", handler)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.Subscribe(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
 
@@ -433,7 +524,7 @@ func TestReconnectClosesPreviousCurrentConn(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.Subscribe(ctx, sub); err != nil {
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
 	if got := srv.activeConns.Load(); got != 1 {
@@ -491,20 +582,61 @@ func (h *blockingSubscribeHandler) HandleSubscribe(json.RawMessage) error {
 	return nil
 }
 
+type blockingEventHandler struct {
+	NopSubscriptionHandler
+	blockAt int32
+	calls   atomic.Int32
+	entered chan struct{}
+	unblock chan struct{}
+	events  chan json.RawMessage
+}
+
+func newBlockingEventHandler(blockAt int32) *blockingEventHandler {
+	return &blockingEventHandler{
+		blockAt: blockAt,
+		entered: make(chan struct{}),
+		unblock: make(chan struct{}),
+		events:  make(chan json.RawMessage, 1),
+	}
+}
+
+func (h *blockingEventHandler) HandleSubscribe(json.RawMessage) error {
+	if h.calls.Add(1) == h.blockAt {
+		close(h.entered)
+		<-h.unblock
+	}
+	return nil
+}
+
+func (h *blockingEventHandler) HandleEvent(custom json.RawMessage) {
+	h.events <- custom
+}
+
+var _ SubscriptionHandler = eventOnlyHandler{}
+
+type eventOnlyHandler struct{}
+
+func (eventOnlyHandler) HandleEvent(json.RawMessage) {}
+
 type connTestServer struct {
-	server            *httptest.Server
-	subscribeCount    atomic.Uint32
-	unsubscribeCount  atomic.Uint32
-	unsubscribeStatus atomic.Int32
-	closeSubscribeID  atomic.Uint32
-	closeSubscribeMin atomic.Uint32
-	closeUnsubscribe  atomic.Bool
-	activeConns       atomic.Int32
+	server             *httptest.Server
+	subscribeCount     atomic.Uint32
+	unsubscribeCount   atomic.Uint32
+	unsubscribeStatus  atomic.Int32
+	closeSubscribeID   atomic.Uint32
+	closeSubscribeMin  atomic.Uint32
+	closeUnsubscribe   atomic.Bool
+	validateUnsubID    atomic.Bool
+	eventSubscribeID   atomic.Uint32
+	sendSubscribeEvent chan struct{}
+	activeConns        atomic.Int32
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
 	t.Helper()
-	s := &connTestServer{}
+	s := &connTestServer{
+		sendSubscribeEvent: make(chan struct{}),
+	}
 	s.unsubscribeStatus.Store(StatusOK)
 	s.server = httptest.NewServer(http.HandlerFunc(s.handle))
 
@@ -552,6 +684,14 @@ func (s *connTestServer) closeUnsubscribeResponse() {
 	s.closeUnsubscribe.Store(true)
 }
 
+func (s *connTestServer) validateUnsubscribeIDs() {
+	s.validateUnsubID.Store(true)
+}
+
+func (s *connTestServer) sendEventAfterSubscribe(id uint32) {
+	s.eventSubscribeID.Store(id)
+}
+
 func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{subprotocol},
@@ -564,6 +704,7 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.activeConns.Add(-1)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
+	activeSubscriptions := make(map[uint32]struct{})
 
 	for {
 		var payload []json.RawMessage
@@ -585,6 +726,7 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 		switch typ {
 		case typeSubscribe:
 			id := s.subscribeCount.Add(1)
+			activeSubscriptions[id] = struct{}{}
 			if minID := s.closeSubscribeMin.Load(); minID != 0 && id >= minID {
 				_ = conn.Close(websocket.StatusGoingAway, "test close")
 				return
@@ -602,11 +744,45 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 			}); err != nil {
 				return
 			}
+			if s.eventSubscribeID.Load() == id {
+				select {
+				case <-s.sendSubscribeEvent:
+				case <-r.Context().Done():
+					return
+				}
+				if err := wsjson.Write(context.Background(), conn, []any{
+					typeEvent,
+					id,
+					json.RawMessage(`{"event":true}`),
+				}); err != nil {
+					return
+				}
+			}
 		case typeUnsubscribe:
 			s.unsubscribeCount.Add(1)
 			if s.closeUnsubscribe.Swap(false) {
 				_ = conn.Close(websocket.StatusGoingAway, "test close")
 				return
+			}
+			if s.validateUnsubID.Load() {
+				if len(payload) < 3 {
+					return
+				}
+				var id uint32
+				if err := json.Unmarshal(payload[2], &id); err != nil {
+					return
+				}
+				if _, ok := activeSubscriptions[id]; !ok {
+					if err := wsjson.Write(context.Background(), conn, []any{
+						typeUnsubscribe,
+						seq,
+						StatusUnknownResource,
+					}); err != nil {
+						return
+					}
+					continue
+				}
+				delete(activeSubscriptions, id)
 			}
 			if err := wsjson.Write(context.Background(), conn, []any{
 				typeUnsubscribe,

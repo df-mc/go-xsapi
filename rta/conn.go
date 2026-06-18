@@ -60,10 +60,21 @@ type Conn struct {
 	cancel context.CancelCauseFunc
 }
 
-// Subscribe attempts to subscribe using a caller-owned Subscription. It is
+// Subscribe attempts to subscribe with the specific resource URI, with the
+// [context.Context] to be used during the handshake. A Subscription may be
+// returned, which contains an ID and Custom data as the result of handshake.
+func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
+	sub := NewSubscription(resourceURI, NopSubscriptionHandler{})
+	if err := c.SubscribeSubscription(ctx, sub); err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+// SubscribeSubscription attempts to subscribe using a caller-owned Subscription. It is
 // useful for services that need to preserve the same subscription object across
 // reconnects.
-func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
+func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
@@ -77,9 +88,9 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 			return nil
 		}
 		c.subscriptionsMu.Lock()
-		err := c.subscribe(ctx, sub)
+		err := c.subscribe(ctx, sub, nil)
 		if err == nil {
-			c.subscriptions[sub.ID()] = sub
+			c.subscriptions[sub.id()] = sub
 		}
 		c.subscriptionsMu.Unlock()
 		if err == errConnectionInterrupted {
@@ -106,7 +117,7 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
-func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
+func (c *Conn) subscribe(ctx context.Context, sub *Subscription, onActivate func(oldID uint32)) error {
 	h, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()})
 	if err != nil {
 		return err
@@ -125,13 +136,19 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 			return fmt.Errorf("decode subscription ID: %w", err)
 		}
 		custom := slices.Clone(h.payload[1])
+		oldID := sub.id()
 		sub.activate(id, custom)
-		if err := sub.handler().HandleSubscribe(custom); err != nil {
-			// This resource has failed to understand this subscription.
-			if err2 := c.unsubscribe(ctx, id); err2 != nil {
-				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
+		if onActivate != nil {
+			onActivate(oldID)
+		}
+		if handler, ok := sub.handler().(SubscriptionSubscribeHandler); ok {
+			if err := handler.HandleSubscribe(custom); err != nil {
+				// This resource has failed to understand this subscription.
+				if err2 := c.unsubscribe(ctx, id); err2 != nil {
+					err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
+				}
+				return err
 			}
-			return err
 		}
 		return nil
 	default:
@@ -155,14 +172,12 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 			return nil
 		}
 		sub.setUnsubscribing(true)
-		err := c.unsubscribe(ctx, sub.ID())
+		err := c.unsubscribe(ctx, sub.id())
 		if err == errConnectionInterrupted {
+			c.untrackSubscription(sub)
+			sub.deactivate(ErrUnsubscribed)
 			sub.opMu.Unlock()
-			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
-				sub.setUnsubscribing(false)
-				return err
-			}
-			continue
+			return nil
 		}
 		if err != nil {
 			sub.setUnsubscribing(false)
@@ -259,8 +274,8 @@ func NewSubscription(resourceURI string, h SubscriptionHandler) *Subscription {
 // Subscription represents a subscription contracted with the resource URI available through
 // the real-time activity service. A Subscription may be contracted via Conn.Subscribe.
 type Subscription struct {
-	id     uint32
-	custom json.RawMessage
+	ID     uint32
+	Custom json.RawMessage
 
 	h           atomic.Pointer[SubscriptionHandler]
 	mu          sync.RWMutex
@@ -272,23 +287,18 @@ type Subscription struct {
 	unsubscribing bool
 }
 
-// ID returns the ID assigned to the [Subscription] within a single RTA connection.
-func (s *Subscription) ID() uint32 {
+// id returns the ID assigned to the [Subscription] within a single RTA connection.
+func (s *Subscription) id() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.id
+	return s.ID
 }
 
-// Custom returns the custom data associated with the [Subscription].
-//
-// The format and semantics of this data depend on the resource the
-// subscription is targeting. It is received alongside the successful
-// subscription response when the [Subscription] was established.
-// The custom data may change if the Conn has reconnected to RTA service.
-func (s *Subscription) Custom() json.RawMessage {
+// custom returns the custom data associated with the [Subscription].
+func (s *Subscription) custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return slices.Clone(s.custom)
+	return slices.Clone(s.Custom)
 }
 
 // ResourceURI returns the URI identifying the resource which the [Subscription] is targeting.
@@ -318,7 +328,7 @@ func (s *Subscription) setUnsubscribing(unsubscribing bool) {
 
 func (s *Subscription) activate(id uint32, custom json.RawMessage) {
 	s.mu.Lock()
-	s.id, s.custom = id, slices.Clone(custom)
+	s.ID, s.Custom = id, slices.Clone(custom)
 	s.active, s.unsubscribing = true, false
 	s.mu.Unlock()
 }
@@ -332,7 +342,9 @@ func (s *Subscription) deactivate(cause error) {
 	s.active, s.unsubscribing = false, false
 	s.mu.Unlock()
 	if active && cause != nil {
-		go s.handler().HandleError(cause)
+		if handler, ok := s.handler().(SubscriptionErrorHandler); ok {
+			go handler.HandleError(cause)
+		}
 	}
 }
 
@@ -354,20 +366,34 @@ func (s *Subscription) handler() SubscriptionHandler {
 	return NopSubscriptionHandler{}
 }
 
-// SubscriptionHandler is the interface for handling events that may occur in a single
-// [Subscription]. An implementation can be registered on a Subscription via [Subscription.Handle].
+// SubscriptionHandler is the interface for handling events that may occur in a
+// single [Subscription]. An implementation can be registered on a Subscription
+// via [Subscription.Handle].
 type SubscriptionHandler interface {
 	// HandleEvent handles an event message received over the RTA subscription.
 	// The event data reflects what occurred within that subscription.
 	// For example, in Social API, an event is received when a user adds or
 	// removes the caller.
 	HandleEvent(custom json.RawMessage)
+}
 
+// SubscriptionSubscribeHandler may be implemented by a [SubscriptionHandler]
+// that needs to handle successful subscription payloads.
+type SubscriptionSubscribeHandler interface {
 	HandleSubscribe(custom json.RawMessage) error
+}
+
+// SubscriptionResyncHandler may be implemented by a [SubscriptionHandler] that
+// needs to handle RTA resync messages.
+type SubscriptionResyncHandler interface {
 	// HandleResync is called when a Resync message is received from the RTA service
 	// and the resource targeted by the Subscription may have been changed.
 	HandleResync()
+}
 
+// SubscriptionErrorHandler may be implemented by a [SubscriptionHandler] that
+// needs to handle unrecoverable subscription errors.
+type SubscriptionErrorHandler interface {
 	// HandleError is called when an unrecoverable error has occurred for this subscription.
 	// The caller may need to resubscribe in order to receive updates for the resource.
 	HandleError(err error)
@@ -426,12 +452,12 @@ func (c *Conn) drainExpected(conn *websocket.Conn) {
 
 func (c *Conn) trackSubscription(sub *Subscription) {
 	c.subscriptionsMu.Lock()
-	c.subscriptions[sub.ID()] = sub
+	c.subscriptions[sub.id()] = sub
 	c.subscriptionsMu.Unlock()
 }
 
 func (c *Conn) untrackSubscription(sub *Subscription) {
-	c.untrackSubscriptionID(sub.ID())
+	c.untrackSubscriptionID(sub.id())
 }
 
 func (c *Conn) untrackSubscriptionID(id uint32) {
@@ -442,10 +468,10 @@ func (c *Conn) untrackSubscriptionID(id uint32) {
 
 func (c *Conn) retrackSubscription(oldID uint32, sub *Subscription) {
 	c.subscriptionsMu.Lock()
-	if oldID != sub.ID() {
+	if oldID != sub.id() {
 		delete(c.subscriptions, oldID)
 	}
-	c.subscriptions[sub.ID()] = sub
+	c.subscriptions[sub.id()] = sub
 	c.subscriptionsMu.Unlock()
 }
 
@@ -593,14 +619,16 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 	successCount := 0
 	for _, subscription := range subscriptions {
 		log := c.log.With(slog.Group("subscription",
-			slog.Uint64("id", uint64(subscription.ID())),
+			slog.Uint64("id", uint64(subscription.id())),
 			slog.String("resourceURI", subscription.ResourceURI()),
 		))
 
 		ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 		subscription.opMu.Lock()
-		oldID := subscription.ID()
-		err := c.subscribe(ctx, subscription)
+		oldID := subscription.id()
+		err := c.subscribe(ctx, subscription, func(oldID uint32) {
+			c.retrackSubscription(oldID, subscription)
+		})
 		cancel()
 		if err != nil {
 			subscription.opMu.Unlock()
@@ -609,18 +637,18 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 				return true
 			}
 			c.untrackSubscriptionID(oldID)
+			c.untrackSubscriptionID(subscription.id())
 			subscription.deactivate(fmt.Errorf("resubscribe: %w", err))
 			log.Error("error resubscribing", slog.Any("error", err))
 			continue
 		}
 
-		c.retrackSubscription(oldID, subscription)
 		subscription.opMu.Unlock()
 		successCount++
 
 		c.log.Debug("resubscribed", slog.Group("subscription",
-			slog.Uint64("id", uint64(subscription.ID())),
-			slog.String("custom", string(subscription.Custom())),
+			slog.Uint64("id", uint64(subscription.id())),
+			slog.String("custom", string(subscription.custom())),
 			slog.String("resourceURI", subscription.ResourceURI()),
 		))
 	}
@@ -708,7 +736,9 @@ func (c *Conn) handleMessage(conn *websocket.Conn, typ uint32, payload []json.Ra
 		c.subscriptionsMu.RLock()
 		for _, subscription := range c.subscriptions {
 			if subscription.Active() {
-				go subscription.handler().HandleResync()
+				if handler, ok := subscription.handler().(SubscriptionResyncHandler); ok {
+					go handler.HandleResync()
+				}
 			}
 		}
 		c.subscriptionsMu.RUnlock()
