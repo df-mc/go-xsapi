@@ -168,7 +168,14 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		}
 		sub.opMu.Lock()
 		if !sub.Active() {
+			id := sub.id()
 			sub.opMu.Unlock()
+			if id != 0 {
+				if err := c.unsubscribe(ctx, id); err != nil {
+					return err
+				}
+				c.untrackSubscriptionID(id)
+			}
 			return nil
 		}
 		sub.setUnsubscribing(true)
@@ -496,8 +503,15 @@ func (c *Conn) currentConn() *websocket.Conn {
 
 // replaceConn publishes conn as the current WebSocket and retires the previous
 // current connection so its read loop cannot keep dispatching stale traffic.
-func (c *Conn) replaceConn(conn *websocket.Conn) {
+// It returns false if the Conn was closed before conn could be published.
+func (c *Conn) replaceConn(conn *websocket.Conn) bool {
 	c.connMu.Lock()
+	if c.ctx.Err() != nil {
+		c.connMu.Unlock()
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+		c.drainExpected(conn)
+		return false
+	}
 	old := c.conn
 	c.conn = conn
 	c.connMu.Unlock()
@@ -505,6 +519,7 @@ func (c *Conn) replaceConn(conn *websocket.Conn) {
 		_ = old.Close(websocket.StatusGoingAway, "reconnecting")
 		c.drainExpected(old)
 	}
+	return true
 }
 
 // isCurrentConn reports whether conn is still the active WebSocket connection.
@@ -595,7 +610,9 @@ func (c *Conn) reconnect() {
 		}
 		c.subscriptionsMu.Unlock()
 
-		c.replaceConn(conn)
+		if !c.replaceConn(conn) {
+			return
+		}
 		go c.read(conn)
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))

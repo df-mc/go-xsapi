@@ -122,6 +122,28 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeIDOnlySubscriptionCompatibility(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.validateUnsubscribeIDs()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub, err := conn.Subscribe(ctx, "test-resource")
+	if err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if err := conn.Unsubscribe(ctx, &Subscription{ID: sub.ID}); err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	if got := srv.unsubscribeCount.Load(); got != 1 {
+		t.Fatalf("unsubscribe count = %d, want 1", got)
+	}
+}
+
 func TestUnsubscribeInterruptedResponseCompletesLocally(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -597,6 +619,35 @@ func TestReconnectClosesPreviousCurrentConn(t *testing.T) {
 	}
 	if got := srv.subscribeCount.Load(); got != 2 {
 		t.Fatalf("subscribe count = %d, want 2", got)
+	}
+}
+
+func TestReplaceConnRefusesAfterClose(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	newConn, _, err := websocket.Dial(ctx, connectURLString(), &websocket.DialOptions{
+		Subprotocols: []string{subprotocol},
+		HTTPClient:   http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+
+	oldConn := conn.currentConn()
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if conn.replaceConn(newConn) {
+		t.Fatal("replaceConn published a socket after Close")
+	}
+	if conn.currentConn() != oldConn {
+		t.Fatal("replaceConn changed current connection after Close")
 	}
 }
 
