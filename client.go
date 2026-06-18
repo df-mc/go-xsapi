@@ -98,8 +98,8 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 
 	// Initialise API clients, each scoped to their respective endpoint.
 	rta := lazyRTA{client: c}
-	c.mpsd = mpsd.NewWithRTA(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "mpsd"))
-	c.social = social.NewWithRTA(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "social"))
+	c.mpsd = mpsd.NewWithRTASubscriber(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "mpsd"))
+	c.social = social.NewWithRTASubscriber(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	return c, nil
 }
@@ -340,6 +340,9 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	return c.closeErr
 }
 
+// ensureRTA returns the existing RTA connection or dials one on demand. Only
+// one caller may dial at a time; concurrent callers wait for that dial to
+// finish and then reuse the resulting connection.
 func (c *Client) ensureRTA(ctx context.Context) (*rta.Conn, error) {
 	if c.config.RTAMode == RTADisabled {
 		return nil, rta.ErrUnavailable
@@ -396,6 +399,9 @@ func (c *Client) ensureRTA(ctx context.Context) (*rta.Conn, error) {
 	}
 }
 
+// closeRTA closes the current RTA connection after any in-progress lazy dial
+// finishes. It clears the stored connection before closing so future calls do
+// not reuse a connection that is being shut down.
 func (c *Client) closeRTA(ctx context.Context) error {
 	for {
 		c.rtaMu.Lock()
@@ -418,10 +424,13 @@ func (c *Client) closeRTA(ctx context.Context) error {
 	}
 }
 
+// lazyRTA adapts Client's on-demand RTA connection lifecycle to the subscriber
+// interfaces used by MPSD and Social clients.
 type lazyRTA struct {
 	client *Client
 }
 
+// Subscribe ensures an RTA connection exists before installing sub.
 func (r lazyRTA) Subscribe(ctx context.Context, sub *rta.Subscription) error {
 	conn, err := r.client.ensureRTA(ctx)
 	if err != nil {
@@ -430,6 +439,8 @@ func (r lazyRTA) Subscribe(ctx context.Context, sub *rta.Subscription) error {
 	return conn.Subscribe(ctx, sub)
 }
 
+// Unsubscribe removes sub from the current RTA connection. It does not dial a
+// lazy connection solely to remove a subscription.
 func (r lazyRTA) Unsubscribe(ctx context.Context, sub *rta.Subscription) error {
 	conn := r.client.RTA()
 	if conn == nil {
