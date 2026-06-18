@@ -306,13 +306,3 @@ func AcceptLanguage(tags []language.Tag) internal.RequestOption {
 func RequestHeader(key, value string) internal.RequestOption {
 	return internal.RequestHeader(key, value)
 }
-
-// WithoutAuthHeaders returns a cloned HTTP request configured to exclude
-// specified authentication headers from being automatically added by the
-// XSAPI client. This is useful when certain authentication headers should
-// not be set on outgoing requests.
-//
-// Header names are matched case-insensitively.
-func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
-	return nsal.WithoutAuthHeaders(req, headers...)
-}
