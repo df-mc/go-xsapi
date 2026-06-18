@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"slices"
 
 	"github.com/df-mc/go-xsapi/v2/rta"
@@ -33,8 +34,25 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		return err
 	}
 
-	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
+	c.addSubscriptionHandler(h)
 	return nil
+}
+
+func (c *Client) addSubscriptionHandler(h SubscriptionHandler) {
+	for _, existing := range c.subscriptionHandlers {
+		if sameSubscriptionHandler(existing, h) {
+			return
+		}
+	}
+	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
+}
+
+func sameSubscriptionHandler(a, b SubscriptionHandler) bool {
+	typ := reflect.TypeOf(a)
+	if typ == nil || typ != reflect.TypeOf(b) || !typ.Comparable() {
+		return false
+	}
+	return a == b
 }
 
 // subscriptionHandler is an internal implementation of [rta.SubscriptionHandler]
