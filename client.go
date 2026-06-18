@@ -54,10 +54,8 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	switch config.RTAMode {
-	case RTAEager, RTALazy, RTADisabled:
-	default:
-		return nil, fmt.Errorf("xsapi: invalid RTA mode %d", config.RTAMode)
+	if config.RTAMode >= rtaCapacity {
+		return nil, fmt.Errorf("xsapi: invalid RTA mode: %d", config.RTAMode)
 	}
 
 	c := &Client{
@@ -128,6 +126,9 @@ const (
 	// RTADisabled prevents this client from connecting to RTA. Operations that
 	// require RTA return [rta.ErrUnavailable].
 	RTADisabled
+
+	// rtaCapacity is the maximum value of RTA mode supported by Client.
+	rtaCapacity
 )
 
 // ClientConfig holds the configuration for creating a [Client].

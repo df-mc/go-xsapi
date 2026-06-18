@@ -23,7 +23,7 @@ var defaultTitleIDs = []string{"current", "default"}
 // TokenSource supplies authorization tokens and the proof key used to resolve
 // NSAL title data, XSTS tokens, and request signatures.
 type TokenSource interface {
-	XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error)
+	xsts.TokenSource
 	ProofKey() *ecdsa.PrivateKey
 }
 
@@ -136,7 +136,7 @@ func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, 
 }
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
-func (r *Resolver) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token, policy SignaturePolicy, _ error) {
+func (r *Resolver) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, _ error) {
 	endpoint, policy, err := r.Resolve(ctx, u)
 	if err != nil {
 		return nil, policy, err

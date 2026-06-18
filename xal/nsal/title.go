@@ -16,6 +16,7 @@ import (
 
 	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 // Default returns the default TitleData used for generic Xbox Live services.
@@ -125,15 +126,8 @@ func Title(ctx context.Context, token interface{ SetAuthHeader(req *http.Request
 // and avoid unnecessary network requests.
 //
 // The provided context controls the lifetime of the HTTP request.
-func Current(ctx context.Context, token Token, proofKey *ecdsa.PrivateKey) (*TitleData, error) {
+func Current(ctx context.Context, token *xsts.Token, proofKey *ecdsa.PrivateKey) (*TitleData, error) {
 	return Title(ctx, token, proofKey, "current")
-}
-
-// A Token represents an XSTS token that supports attaching an 'Authorization'
-// header to the request to authenticate a request to the NSAL. It is used in
-// the [Title] method for retrieving title-specific endpoints from NSAL.
-type Token interface {
-	SetAuthHeader(req *http.Request)
 }
 
 // TitleData describes the network configuration for a specific title as returned
