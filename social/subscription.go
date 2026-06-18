@@ -26,13 +26,14 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 		return errors.New("xsapi/social: cannot subscribe with a nil SubscriptionHandler")
 	}
 
+	c.subscriptionMu.Lock()
+	defer c.subscriptionMu.Unlock()
+
 	if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
 		return err
 	}
 
-	c.subscriptionMu.Lock()
 	c.subscriptionHandlers = append(c.subscriptionHandlers, h)
-	c.subscriptionMu.Unlock()
 	return nil
 }
 
