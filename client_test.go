@@ -127,7 +127,7 @@ func TestDisabledRTAOperationFailsWithoutDialing(t *testing.T) {
 }
 
 func TestClientConfigNewRejectsInvalidRTAMode(t *testing.T) {
-	_, err := (ClientConfig{RTAMode: RTAMode(-1)}).New(context.Background(), stubTokenSource{})
+	_, err := (ClientConfig{RTAMode: RTAMode(999)}).New(context.Background(), stubTokenSource{})
 	if err == nil {
 		t.Fatal("New returned nil error, want invalid RTA mode error")
 	}
