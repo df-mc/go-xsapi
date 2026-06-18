@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
 
+	"github.com/df-mc/go-xsapi/v2/rta"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 	"github.com/google/uuid"
 )
 
@@ -17,6 +20,23 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestJoinWithoutRTAFailsBeforeRequest(t *testing.T) {
+	requests := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected request")
+	})}
+	client := New(httpClient, nil, xsts.UserInfo{XUID: "1"}, nil)
+
+	_, err := client.Join(context.Background(), uuid.New(), JoinConfig{})
+	if !errors.Is(err, rta.ErrUnavailable) {
+		t.Fatalf("Join error = %v, want %v", err, rta.ErrUnavailable)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
 }
 
 func TestSessionConstantsReturnsDetachedCopy(t *testing.T) {

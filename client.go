@@ -78,19 +78,9 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	c.userInfo = xui
 
-	// NSAL (Network Security Allow List) provides two kinds of title data:
-	//  - Default data covering *.xboxlive.com endpoints
-	//  - Title-scoped data for title-specific endpoints such as PlayFab
-	//
-	// Title-scoped data takes priority over default data when resolving the
-	// relying party for an XSTS token. Default data is used as the fallback.
-	c.defaultTitle, err = nsal.Default(ctx)
+	c.resolver, err = nsal.NewResolver(ctx, token, src.ProofKey())
 	if err != nil {
-		return nil, fmt.Errorf("request NSAL default title data: %w", err)
-	}
-	c.currentTitle, err = nsal.Current(ctx, token, src.ProofKey())
-	if err != nil {
-		return nil, fmt.Errorf("request NSAL title data for current authenticated title: %w", err)
+		return nil, fmt.Errorf("request NSAL resolver: %w", err)
 	}
 
 	// Connect to RTA services.
@@ -136,8 +126,8 @@ type Client struct {
 	client *http.Client
 	src    TokenSource
 
-	defaultTitle, currentTitle *nsal.TitleData
-	userInfo                   xsts.UserInfo
+	resolver *nsal.Resolver
+	userInfo xsts.UserInfo
 
 	rta      *rta.Conn
 	mpsd     *mpsd.Client
@@ -231,15 +221,9 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 	if c.closed.Load() {
 		return nil, policy, net.ErrClosed
 	}
-	// Title-scoped data is checked first. Default data is only consulted as a
-	// fallback because it can contain duplicate entries for the same endpoint
-	// (e.g. *.playfabapi.com may appear in both title-scoped and default data).
-	endpoint, policy, ok := c.currentTitle.Match(u)
+	endpoint, policy, ok := c.resolver.Match(u)
 	if !ok {
-		endpoint, policy, ok = c.defaultTitle.Match(u)
-		if !ok {
-			return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
-		}
+		return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
 	}
 
 	token, err := c.src.XSTSToken(ctx, endpoint.RelyingParty)
