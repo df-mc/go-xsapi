@@ -51,9 +51,11 @@ func TestTransportRoundTripSignsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	if _, err := transport.RoundTrip(req); err != nil {
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	defer resp.Body.Close()
 	if !baseCalled {
 		t.Fatal("base transport was not called")
 	}
@@ -88,9 +90,11 @@ func TestTransportRoundTripUsesExistingAuthorization(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer existing")
-	if _, err := transport.RoundTrip(req); err != nil {
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	defer resp.Body.Close()
 	if src.called {
 		t.Fatal("token source was called despite existing Authorization header")
 	}
@@ -119,9 +123,11 @@ func TestTransportRoundTripWithoutSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	if _, err := transport.RoundTrip(WithoutAuthHeaders(req, "Signature")); err != nil {
+	resp, err := transport.RoundTrip(WithoutAuthHeaders(req, "Signature"))
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	defer resp.Body.Close()
 }
 
 func TestTransportRoundTripWithoutAuthHeaders(t *testing.T) {
@@ -143,9 +149,11 @@ func TestTransportRoundTripWithoutAuthHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	if _, err := transport.RoundTrip(WithoutAuthHeaders(req)); err != nil {
+	resp, err := transport.RoundTrip(WithoutAuthHeaders(req))
+	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	defer resp.Body.Close()
 	if src.called {
 		t.Fatal("token source was called despite WithoutAuthHeaders")
 	}

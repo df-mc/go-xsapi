@@ -199,6 +199,23 @@ func TestResolverCachesTitleLoadFailureBeforeFallback(t *testing.T) {
 	}
 }
 
+func TestResolverRejectsDefaultTitleServiceEndpointAfterCurrentLoadError(t *testing.T) {
+	resetDefaultTitle(t)
+
+	currentErr := errors.New("current title unavailable")
+	src := &transportTokenSource{err: currentErr}
+	resolver := ResolverConfig{TitleIDs: []string{"current", "default"}}.New(src)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return titleDataResponse("*.playfabapi.com", "default"), nil
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+
+	_, _, err := resolver.Resolve(ctx, mustParseURL(t, "https://20ca2.playfabapi.com/Client/LoginWithXbox"))
+	if !errors.Is(err, currentErr) {
+		t.Fatalf("Resolve error = %v, want %v", err, currentErr)
+	}
+}
+
 func TestResolverRetriesExpiredTitleLoadFailure(t *testing.T) {
 	resetDefaultTitle(t)
 

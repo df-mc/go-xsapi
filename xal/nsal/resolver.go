@@ -119,6 +119,9 @@ func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, 
 			continue
 		}
 		if endpoint, policy, ok := title.Match(u); ok {
+			if len(errs) != 0 && !canUseEndpointAfterTitleLoadError(endpoint) {
+				return endpoint, policy, fmt.Errorf("no endpoint was found for %s: %w", u, errors.Join(errs...))
+			}
 			return endpoint, policy, nil
 		}
 	}
@@ -245,6 +248,14 @@ func (r *Resolver) loadTitle(ctx context.Context, titleID string) (*TitleData, e
 // still have a valid context and should be allowed to start a fresh load.
 func titleLoadCanceled(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// canUseEndpointAfterTitleLoadError reports whether a lower-precedence endpoint
+// may be used after an earlier title-data source failed to load. Generic Xbox
+// Live endpoints are preconfigured for all titles; title service endpoints are
+// configured per title, so a fallback match may carry the wrong relying party.
+func canUseEndpointAfterTitleLoadError(endpoint Endpoint) bool {
+	return endpoint.RelyingParty == internal.XBLRelyingParty
 }
 
 // matchTitleData searches already configured title data in slice order. These
