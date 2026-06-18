@@ -96,6 +96,7 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 				if err == errConnectionInterrupted {
 					c.untrackSubscriptionID(id)
 					sub.deactivate(ErrUnsubscribed)
+					sub.clearID()
 					sub.opMu.Unlock()
 					if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
 						return err
@@ -109,6 +110,7 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 			}
 			c.untrackSubscriptionID(id)
 			sub.deactivate(nil)
+			sub.clearID()
 		}
 		err := c.subscribe(ctx, sub, func(oldID uint32) {
 			c.retrackSubscription(oldID, sub)
@@ -169,8 +171,8 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription, onActivate func
 		if handler, ok := sub.handler().(SubscriptionSubscribeHandler); ok {
 			if err := handler.HandleSubscribe(custom); err != nil {
 				// This resource has failed to understand this subscription.
+				sub.markSubscribeFailed()
 				if err2 := c.unsubscribe(ctx, id); err2 != nil {
-					sub.markSubscribeFailed()
 					err = errors.Join(errSubscribeRollbackFailed, err, fmt.Errorf("unsubscribe: %w", err2))
 				} else {
 					c.untrackSubscriptionID(id)
@@ -206,14 +208,18 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 					if err == errConnectionInterrupted {
 						if tracked := c.untrackSubscriptionID(id); tracked != nil {
 							tracked.deactivate(ErrUnsubscribed)
+							tracked.clearID()
 						}
+						sub.clearID()
 						return nil
 					}
 					return err
 				}
 				if tracked := c.untrackSubscriptionID(id); tracked != nil {
 					tracked.deactivate(ErrUnsubscribed)
+					tracked.clearID()
 				}
+				sub.clearID()
 			}
 			return nil
 		}
@@ -222,6 +228,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		if err == errConnectionInterrupted {
 			c.untrackSubscription(sub)
 			sub.deactivate(ErrUnsubscribed)
+			sub.clearID()
 			sub.opMu.Unlock()
 			return nil
 		}
@@ -234,6 +241,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		// Notify that the subscription has been unsubscribed so the service
 		// might be able to clean up resources tied to this subscription.
 		sub.deactivate(ErrUnsubscribed)
+		sub.clearID()
 		sub.opMu.Unlock()
 		return nil
 	}
@@ -278,7 +286,9 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	if err := c.write(conn, operationToType(op), append([]any{seq}, payload...)); err != nil {
 		c.release(op, seq)
 		c.drainExpected(conn)
-		c.requestReconnect()
+		if c.isCurrentConn(conn) {
+			c.requestReconnect()
+		}
 		return nil, errConnectionInterrupted
 	}
 	select {
@@ -410,6 +420,13 @@ func (s *Subscription) markSubscribeFailed() {
 		s.subscribeFailed = true
 		s.unsubscribing = false
 	}
+	s.mu.Unlock()
+}
+
+func (s *Subscription) clearID() {
+	s.mu.Lock()
+	s.ID = 0
+	s.Custom = nil
 	s.mu.Unlock()
 }
 
@@ -664,6 +681,9 @@ func (c *Conn) requestReconnect() {
 }
 
 func (c *Conn) beginReconnect() (chan struct{}, bool) {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+
 	if c.ctx.Err() != nil {
 		return nil, false
 	}
@@ -673,20 +693,12 @@ func (c *Conn) beginReconnect() (chan struct{}, bool) {
 	}
 
 	done := make(chan struct{})
-	c.reconnectMu.Lock()
 	c.reconnectDone = done
-	c.reconnectMu.Unlock()
 	return done, true
 }
 
 func (c *Conn) runReconnect(done chan struct{}) {
-	defer c.reconnecting.Store(false)
-	defer func() {
-		c.reconnectMu.Lock()
-		c.reconnectDone = nil
-		c.reconnectMu.Unlock()
-		close(done)
-	}()
+	defer c.finishReconnect(done)
 
 	c.reconnectRequested.Store(false)
 	c.log.Info("re-establishing WebSocket connection...")
@@ -739,6 +751,18 @@ func (c *Conn) runReconnect(done chan struct{}) {
 		}
 		return
 	}
+}
+
+func (c *Conn) finishReconnect(done chan struct{}) {
+	c.reconnectMu.Lock()
+	c.reconnectDone = nil
+	c.reconnecting.Store(false)
+	requested := c.reconnectRequested.Swap(false)
+	c.reconnectMu.Unlock()
+	if requested && c.ctx.Err() == nil {
+		c.requestReconnect()
+	}
+	close(done)
 }
 
 // resubscribe re-establishes all subscriptions inherited from the previous

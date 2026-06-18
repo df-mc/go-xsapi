@@ -353,6 +353,31 @@ func TestUnsubscribeIDOnlySubscriptionCompatibility(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeActiveSubscriptionIsIdempotent(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.validateUnsubscribeIDs()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if err := conn.Unsubscribe(ctx, sub); err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	if err := conn.Unsubscribe(ctx, sub); err != nil {
+		t.Fatalf("second Unsubscribe returned error: %v", err)
+	}
+	if got := srv.unsubscribeCount.Load(); got != 1 {
+		t.Fatalf("unsubscribe count = %d, want 1", got)
+	}
+}
+
 func TestUnsubscribeInterruptedResponseCompletesLocally(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
