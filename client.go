@@ -2,7 +2,6 @@ package xsapi
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -76,14 +75,12 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	c.userInfo = xui
 
-	resolver, err := nsal.NewResolver(ctx, token, src.ProofKey())
-	if err != nil {
-		return nil, fmt.Errorf("request NSAL resolver: %w", err)
-	}
 	c.transport = &nsal.Transport{
-		Base:        c.baseTransport(),
-		Resolver:    resolver,
-		TokenSource: nsalTokenSource{src},
+		Base: c.baseTransport(),
+		Resolver: nsal.NewResolver(nsalTokenSource{
+			TokenSource:        src,
+			authorizationToken: token,
+		}),
 	}
 
 	// Connect to RTA services.
@@ -108,14 +105,14 @@ type TokenSource interface {
 
 type nsalTokenSource struct {
 	TokenSource
+	authorizationToken nsal.Token
 }
 
 func (src nsalTokenSource) Token(ctx context.Context, relyingParty string) (nsal.Token, error) {
+	if relyingParty == internal.XBLRelyingParty && src.authorizationToken != nil {
+		return src.authorizationToken, nil
+	}
 	return src.XSTSToken(ctx, relyingParty)
-}
-
-func (src nsalTokenSource) ProofKey() *ecdsa.PrivateKey {
-	return src.TokenSource.ProofKey()
 }
 
 // ClientConfig holds the configuration for creating a [Client].

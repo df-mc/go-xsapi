@@ -40,8 +40,7 @@ func TestTransportRoundTripSignsRequest(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		}),
-		Resolver:    testResolver(),
-		TokenSource: src,
+		Resolver: testResolver(src),
 	}
 
 	req, err := http.NewRequest(http.MethodPost, "https://multiplayer.minecraft.net/authentication", body)
@@ -77,8 +76,7 @@ func TestTransportRoundTripUsesExistingAuthorization(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		}),
-		Resolver:    testResolver(),
-		TokenSource: src,
+		Resolver: testResolver(src),
 	}
 
 	req, err := http.NewRequest(http.MethodGet, "https://multiplayer.minecraft.net/authentication", nil)
@@ -110,8 +108,7 @@ func TestTransportRoundTripWithoutSignature(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		}),
-		Resolver:    testResolver(),
-		TokenSource: src,
+		Resolver: testResolver(src),
 	}
 
 	req, err := http.NewRequest(http.MethodGet, "https://multiplayer.minecraft.net/authentication", nil)
@@ -135,8 +132,7 @@ func TestTransportRoundTripWithoutAuthHeaders(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		}),
-		Resolver:    testResolver(),
-		TokenSource: src,
+		Resolver: testResolver(src),
 	}
 
 	req, err := http.NewRequest(http.MethodGet, "https://multiplayer.minecraft.net/authentication", nil)
@@ -153,8 +149,7 @@ func TestTransportRoundTripWithoutAuthHeaders(t *testing.T) {
 
 func TestTransportTokenAndSignatureRejectsUnknownEndpoint(t *testing.T) {
 	transport := &Transport{
-		Resolver:    testResolver(),
-		TokenSource: &transportTokenSource{token: authorizationToken("token")},
+		Resolver: testResolver(&transportTokenSource{token: authorizationToken("token")}),
 	}
 	u := mustParseURL(t, "https://example.com")
 	if _, _, err := transport.TokenAndSignature(context.Background(), u); err == nil {
@@ -185,15 +180,15 @@ func (src *transportTokenSource) ProofKey() *ecdsa.PrivateKey {
 	return src.proofKey
 }
 
-func testResolver() *Resolver {
-	return &Resolver{Titles: []*TitleData{{
+func testResolver(src TokenSource) *Resolver {
+	return ResolverConfig{TitleIDs: []string{}, Titles: []*TitleData{{
 		Endpoints: []Endpoint{{
 			Protocol:     "https",
 			Host:         "multiplayer.minecraft.net",
 			HostType:     HostTypeFQDN,
 			RelyingParty: "https://multiplayer.minecraft.net/",
 		}},
-	}}}
+	}}}.New(src)
 }
 
 func mustGenerateKey(t *testing.T) *ecdsa.PrivateKey {

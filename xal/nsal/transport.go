@@ -3,7 +3,6 @@ package nsal
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"io"
@@ -17,13 +16,6 @@ import (
 
 var _ http.RoundTripper = (*Transport)(nil)
 
-// TransportTokenSource supplies authorization tokens and the proof key used to
-// sign requests.
-type TransportTokenSource interface {
-	Token(ctx context.Context, relyingParty string) (Token, error)
-	ProofKey() *ecdsa.PrivateKey
-}
-
 // Transport is an [http.RoundTripper] that resolves outgoing request URLs using
 // NSAL, then applies the required XSTS token and request signature.
 type Transport struct {
@@ -33,9 +25,6 @@ type Transport struct {
 
 	// Resolver resolves endpoint and signature policy data for request URLs.
 	Resolver *Resolver
-
-	// TokenSource supplies authorization tokens and the proof key used by signatures.
-	TokenSource TransportTokenSource
 }
 
 // RoundTrip implements [http.RoundTripper].
@@ -79,7 +68,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 			data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 		}
-		if err := policy.Sign(req2, data, t.TokenSource.ProofKey(), timestamp.Now()); err != nil {
+		key, err := t.Resolver.proofKey()
+		if err != nil {
+			return nil, err
+		}
+		if err := policy.Sign(req2, data, key, timestamp.Now()); err != nil {
 			return nil, fmt.Errorf("sign request: %w", err)
 		}
 	}
@@ -92,19 +85,7 @@ func (t *Transport) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token,
 	if t == nil {
 		return nil, policy, errors.New("xal/nsal: nil Transport")
 	}
-	if t.TokenSource == nil {
-		return nil, policy, errors.New("xal/nsal: nil TokenSource")
-	}
-	endpoint, policy, ok := t.Resolver.Match(u)
-	if !ok {
-		return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
-	}
-
-	token, err := t.TokenSource.Token(ctx, endpoint.RelyingParty)
-	if err != nil {
-		return nil, policy, fmt.Errorf("request XSTS token: %w", err)
-	}
-	return token, policy, nil
+	return t.Resolver.TokenAndSignature(ctx, u)
 }
 
 func (t *Transport) baseTransport() http.RoundTripper {

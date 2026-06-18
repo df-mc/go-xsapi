@@ -1,13 +1,16 @@
 package nsal
 
 import (
+	"context"
 	"net/url"
+	"slices"
 	"testing"
 )
 
 func TestResolverPrefersEarlierTitleData(t *testing.T) {
 	index := 0
-	resolver := &Resolver{
+	resolver := ResolverConfig{
+		TitleIDs: []string{},
 		Titles: []*TitleData{
 			{
 				Endpoints: []Endpoint{{
@@ -30,11 +33,11 @@ func TestResolverPrefersEarlierTitleData(t *testing.T) {
 				SignaturePolicies: []SignaturePolicy{{Version: 1}},
 			},
 		},
-	}
+	}.New(nil)
 
-	endpoint, policy, ok := resolver.Match(mustParseURL(t, "https://20ca2.playfabapi.com/Client/LoginWithXbox"))
-	if !ok {
-		t.Fatal("Match returned ok=false")
+	endpoint, policy, err := resolver.Resolve(context.Background(), mustParseURL(t, "https://20ca2.playfabapi.com/Client/LoginWithXbox"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
 	if endpoint.RelyingParty != "current" {
 		t.Fatalf("RelyingParty = %q, want current", endpoint.RelyingParty)
@@ -45,7 +48,8 @@ func TestResolverPrefersEarlierTitleData(t *testing.T) {
 }
 
 func TestResolverFallsBackToLaterTitleData(t *testing.T) {
-	resolver := &Resolver{
+	resolver := ResolverConfig{
+		TitleIDs: []string{},
 		Titles: []*TitleData{
 			{
 				Endpoints: []Endpoint{{
@@ -64,11 +68,11 @@ func TestResolverFallsBackToLaterTitleData(t *testing.T) {
 				}},
 			},
 		},
-	}
+	}.New(nil)
 
-	endpoint, _, ok := resolver.Match(mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people"))
-	if !ok {
-		t.Fatal("Match returned ok=false")
+	endpoint, _, err := resolver.Resolve(context.Background(), mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
 	if endpoint.RelyingParty != "default" {
 		t.Fatalf("RelyingParty = %q, want default", endpoint.RelyingParty)
@@ -76,7 +80,8 @@ func TestResolverFallsBackToLaterTitleData(t *testing.T) {
 }
 
 func TestResolverSkipsNilTitleData(t *testing.T) {
-	resolver := &Resolver{
+	resolver := ResolverConfig{
+		TitleIDs: []string{},
 		Titles: []*TitleData{
 			nil,
 			{
@@ -88,14 +93,44 @@ func TestResolverSkipsNilTitleData(t *testing.T) {
 				}},
 			},
 		},
-	}
+	}.New(nil)
 
-	endpoint, _, ok := resolver.Match(mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people"))
-	if !ok {
-		t.Fatal("Match returned ok=false")
+	endpoint, _, err := resolver.Resolve(context.Background(), mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
 	}
 	if endpoint.RelyingParty != "default" {
 		t.Fatalf("RelyingParty = %q, want default", endpoint.RelyingParty)
+	}
+}
+
+func TestResolverConfigNewDefaultsTitleIDs(t *testing.T) {
+	resolver := NewResolver(nil)
+	if got, want := resolver.titleIDs(), []string{"current", "default"}; !slices.Equal(got, want) {
+		t.Fatalf("TitleIDs = %v, want %v", got, want)
+	}
+}
+
+func TestResolverConfigNewPreservesEmptyTitleIDs(t *testing.T) {
+	resolver := ResolverConfig{TitleIDs: []string{}}.New(nil)
+	if got := resolver.titleIDs(); len(got) != 0 {
+		t.Fatalf("TitleIDs = %v, want empty", got)
+	}
+}
+
+func TestResolverTokenAndSignatureUsesResolvedRelyingParty(t *testing.T) {
+	src := &transportTokenSource{token: authorizationToken("XBL3.0 x=uhs;token")}
+	resolver := testResolver(src)
+
+	token, _, err := resolver.TokenAndSignature(context.Background(), mustParseURL(t, "https://multiplayer.minecraft.net/authentication"))
+	if err != nil {
+		t.Fatalf("TokenAndSignature: %v", err)
+	}
+	if token != src.token {
+		t.Fatalf("token = %v, want source token", token)
+	}
+	if got := src.relyingParty; got != "https://multiplayer.minecraft.net/" {
+		t.Fatalf("relying party = %q, want https://multiplayer.minecraft.net/", got)
 	}
 }
 
