@@ -83,9 +83,26 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 			return err
 		}
 		sub.opMu.Lock()
-		if sub.Active() {
+		if sub.ready() {
 			sub.opMu.Unlock()
 			return nil
+		}
+		if id, ok := sub.failedSubscribeID(); ok {
+			if err := c.unsubscribe(ctx, id); err != nil {
+				if err == errConnectionInterrupted {
+					c.untrackSubscriptionID(id)
+					sub.deactivate(ErrUnsubscribed)
+					sub.opMu.Unlock()
+					if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
+						return err
+					}
+					continue
+				}
+				sub.opMu.Unlock()
+				return err
+			}
+			c.untrackSubscriptionID(id)
+			sub.deactivate(nil)
 		}
 		err := c.subscribe(ctx, sub, func(oldID uint32) {
 			c.retrackSubscription(oldID, sub)
@@ -98,6 +115,10 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 			continue
 		}
 		if err != nil {
+			if errors.Is(err, errSubscribeRollbackFailed) {
+				sub.opMu.Unlock()
+				return err
+			}
 			c.untrackSubscriptionID(sub.id())
 			sub.deactivate(err)
 			sub.opMu.Unlock()
@@ -143,7 +164,11 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription, onActivate func
 			if err := handler.HandleSubscribe(custom); err != nil {
 				// This resource has failed to understand this subscription.
 				if err2 := c.unsubscribe(ctx, id); err2 != nil {
-					err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
+					sub.markSubscribeFailed()
+					err = errors.Join(errSubscribeRollbackFailed, err, fmt.Errorf("unsubscribe: %w", err2))
+				} else {
+					c.untrackSubscriptionID(id)
+					sub.deactivate(err)
 				}
 				return err
 			}
@@ -153,6 +178,8 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription, onActivate func
 		return unexpectedStatusCode(h.status, h.payload)
 	}
 }
+
+var errSubscribeRollbackFailed = errors.New("rta: subscription rollback failed")
 
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
@@ -234,6 +261,7 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	}
 
 	seq := c.sequences[op].Add(1)
+	reconnectingAtStart := c.reconnecting.Load()
 	conn := c.currentConn()
 	ch := c.expect(conn, op, seq)
 	if err := c.write(conn, operationToType(op), append([]any{seq}, payload...)); err != nil {
@@ -245,6 +273,12 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	select {
 	case result, ok := <-ch:
 		if !ok {
+			return nil, errConnectionInterrupted
+		}
+		if !reconnectingAtStart && c.reconnecting.Load() {
+			return nil, errConnectionInterrupted
+		}
+		if !c.isCurrentConn(conn) {
 			return nil, errConnectionInterrupted
 		}
 		return result, nil
@@ -296,8 +330,9 @@ type Subscription struct {
 	resourceURI string
 
 	// active indicates whether the Subscription is currently active on the RTA connection.
-	active        bool
-	unsubscribing bool
+	active          bool
+	unsubscribing   bool
+	subscribeFailed bool
 }
 
 // id returns the ID assigned to the [Subscription] within a single RTA connection.
@@ -327,10 +362,16 @@ func (s *Subscription) Active() bool {
 	return s.active
 }
 
+func (s *Subscription) ready() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.active && !s.subscribeFailed
+}
+
 func (s *Subscription) shouldResubscribe() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.active && !s.unsubscribing
+	return s.active && !s.unsubscribing && !s.subscribeFailed
 }
 
 func (s *Subscription) setUnsubscribing(unsubscribing bool) {
@@ -342,7 +383,22 @@ func (s *Subscription) setUnsubscribing(unsubscribing bool) {
 func (s *Subscription) activate(id uint32, custom json.RawMessage) {
 	s.mu.Lock()
 	s.ID, s.Custom = id, slices.Clone(custom)
-	s.active, s.unsubscribing = true, false
+	s.active, s.unsubscribing, s.subscribeFailed = true, false, false
+	s.mu.Unlock()
+}
+
+func (s *Subscription) failedSubscribeID() (uint32, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ID, s.active && s.subscribeFailed
+}
+
+func (s *Subscription) markSubscribeFailed() {
+	s.mu.Lock()
+	if s.active {
+		s.subscribeFailed = true
+		s.unsubscribing = false
+	}
 	s.mu.Unlock()
 }
 
@@ -352,7 +408,7 @@ func (s *Subscription) activate(id uint32, custom json.RawMessage) {
 func (s *Subscription) deactivate(cause error) {
 	s.mu.Lock()
 	active := s.active
-	s.active, s.unsubscribing = false, false
+	s.active, s.unsubscribing, s.subscribeFailed = false, false, false
 	s.mu.Unlock()
 	if active && cause != nil {
 		if handler, ok := s.handler().(SubscriptionErrorHandler); ok {
@@ -626,6 +682,9 @@ func (c *Conn) runReconnect(done chan struct{}) {
 			_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
 			return
 		}
+		if !c.replaceConn(conn) {
+			return
+		}
 		c.subscriptionsMu.Lock()
 		subscriptions := make([]*Subscription, 0, len(c.subscriptions))
 		seen := make(map[*Subscription]struct{}, len(c.subscriptions))
@@ -640,9 +699,6 @@ func (c *Conn) runReconnect(done chan struct{}) {
 		}
 		c.subscriptionsMu.Unlock()
 
-		if !c.replaceConn(conn) {
-			return
-		}
 		go c.read(conn)
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
@@ -693,6 +749,10 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 			if err == errConnectionInterrupted {
 				log.Error("resubscribe interrupted", slog.Any("error", err))
 				return true
+			}
+			if errors.Is(err, errSubscribeRollbackFailed) {
+				log.Error("error resubscribing", slog.Any("error", err))
+				continue
 			}
 			c.untrackSubscriptionID(oldID)
 			c.untrackSubscriptionID(subscription.id())
@@ -784,7 +844,7 @@ func (c *Conn) handleMessage(conn *websocket.Conn, typ uint32, payload []json.Ra
 		c.subscriptionsMu.RLock()
 		sub, ok := c.subscriptions[subscriptionID]
 		c.subscriptionsMu.RUnlock()
-		if ok && sub.Active() {
+		if ok && sub.ready() {
 			go sub.handler().HandleEvent(payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
@@ -793,7 +853,7 @@ func (c *Conn) handleMessage(conn *websocket.Conn, typ uint32, payload []json.Ra
 		c.log.Debug("received resync")
 		c.subscriptionsMu.RLock()
 		for _, subscription := range c.subscriptions {
-			if subscription.Active() {
+			if subscription.ready() {
 				if handler, ok := subscription.handler().(SubscriptionResyncHandler); ok {
 					go handler.HandleResync()
 				}
