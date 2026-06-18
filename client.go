@@ -212,6 +212,16 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 	return xstsToken, policy, nil
 }
 
+// WithoutAuthHeaders returns a cloned HTTP request configured to exclude
+// specified authentication headers from being automatically added by
+// [Client.HTTPClient].
+//
+// Header names are matched case-insensitively. If no headers are provided,
+// both Authorization and Signature are excluded.
+func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
+	return nsal.WithoutAuthHeaders(req, headers...)
+}
+
 // Log returns the [slog.Logger] configured via [ClientConfig.Logger].
 func (c *Client) Log() *slog.Logger {
 	return c.config.Logger

@@ -85,6 +85,9 @@ func (t *Transport) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token,
 	if t == nil {
 		return nil, policy, errors.New("xal/nsal: nil Transport")
 	}
+	if t.Resolver == nil {
+		return nil, policy, errors.New("xal/nsal: nil Resolver")
+	}
 	return t.Resolver.TokenAndSignature(ctx, u)
 }
 
