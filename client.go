@@ -109,6 +109,20 @@ type TokenSource interface {
 	xasd.TokenSource
 }
 
+// TokenAndSignaturer resolves an XSTS token and signature policy for a request URL.
+//
+// It is used by callers that need to embed an XSTS token in a request body
+// instead of sending a normal authenticated request through [Client.HTTPClient]
+// or [github.com/df-mc/go-xsapi/v2/xal/nsal.Transport].
+type TokenAndSignaturer interface {
+	TokenAndSignature(ctx context.Context, u *url.URL) (*xsts.Token, nsal.SignaturePolicy, error)
+}
+
+var (
+	_ TokenAndSignaturer = (*Client)(nil)
+	_ TokenAndSignaturer = (*nsal.Resolver)(nil)
+)
+
 // RTAMode controls when a [Client] connects to Xbox Live RTA (Real-Time
 // Activity) services.
 type RTAMode uint
