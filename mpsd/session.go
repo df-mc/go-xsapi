@@ -143,6 +143,9 @@ func (s *Session) Handle(h Handler) {
 func (s *Session) handler() Handler {
 	s.hMu.RLock()
 	defer s.hMu.RUnlock()
+	if s.h == nil {
+		return NopHandler{}
+	}
 	return s.h
 }
 

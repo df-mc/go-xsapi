@@ -84,6 +84,10 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 		}
 		sub.opMu.Lock()
 		if sub.ready() {
+			if c.reconnectInProgress() {
+				sub.opMu.Unlock()
+				continue
+			}
 			sub.opMu.Unlock()
 			return nil
 		}
@@ -512,6 +516,12 @@ func (c *Conn) wait(ctx context.Context) error {
 			return context.Cause(c.ctx)
 		}
 	}
+}
+
+func (c *Conn) reconnectInProgress() bool {
+	c.reconnectMu.RLock()
+	defer c.reconnectMu.RUnlock()
+	return c.reconnecting.Load() || c.reconnectDone != nil
 }
 
 // drainExpected closes pending response channels tied to conn. It is called

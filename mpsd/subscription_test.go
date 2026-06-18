@@ -195,6 +195,54 @@ func TestSubscriptionHandlerResyncWaitsForConnectionUpdate(t *testing.T) {
 	}
 }
 
+func TestSubscriptionHandlerResyncNotifiesSessionHandlerAfterSync(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("request method = %s, want GET", req.Method)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	changes := make(chan *Session, 1)
+	session.Handle(recordingSessionHandler{changes: changes})
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleResync()
+
+	select {
+	case got := <-changes:
+		if got != session {
+			t.Fatal("HandleSessionChange received the wrong session")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleResync did not notify session handler")
+	}
+}
+
 func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
@@ -238,4 +286,12 @@ func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("close requests = %d, want 0", got)
 	}
+}
+
+type recordingSessionHandler struct {
+	changes chan<- *Session
+}
+
+func (h recordingSessionHandler) HandleSessionChange(session *Session) {
+	h.changes <- session
 }

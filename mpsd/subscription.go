@@ -216,7 +216,9 @@ func (h *subscriptionHandler) HandleResync() {
 			defer cancel()
 			if err := session.Sync(ctx); err != nil {
 				h.log.Error("error resyncing multiplayer session", slog.Any("err", err))
+				return
 			}
+			session.handler().HandleSessionChange(session)
 		})
 	}
 	wg.Wait()
