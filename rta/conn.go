@@ -224,10 +224,16 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	}
 }
 
+// errConnectionInterrupted marks a call that lost its socket while the parent
+// connection is still allowed to reconnect and retry the operation.
 var errConnectionInterrupted = errors.New("rta: connection interrupted")
 
+// connectionInterruptRetryDelay briefly yields after a socket interruption so
+// the reconnect goroutine can publish reconnect state before callers retry.
 const connectionInterruptRetryDelay = 10 * time.Millisecond
 
+// pauseAfterConnectionInterrupt waits before retrying an interrupted call, while
+// still respecting both the caller context and the connection lifetime context.
 func pauseAfterConnectionInterrupt(ctx, connCtx context.Context) error {
 	select {
 	case <-time.After(connectionInterruptRetryDelay):
