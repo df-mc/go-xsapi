@@ -18,6 +18,10 @@ var _ http.RoundTripper = (*Transport)(nil)
 
 // Transport is an [http.RoundTripper] that resolves outgoing request URLs using
 // NSAL, then applies the required XSTS token and request signature.
+//
+// Transport only sends the final authenticated request through [Transport.Base].
+// If [Resolver] must load NSAL title data first, that lookup uses the HTTP
+// client from the request context as documented on [Resolver].
 type Transport struct {
 	// Base is the underlying transport used to perform HTTP requests after
 	// authentication headers are applied. If nil, [http.DefaultTransport] is used.

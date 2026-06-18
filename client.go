@@ -35,7 +35,8 @@ func NewClient(src TokenSource) (*Client, error) {
 
 // New creates a new [Client] using the given [TokenSource] and [ClientConfig].
 // The provided context governs the initial login, including
-// requesting XSTS tokens, fetching NSAL data, and connecting to WebSocket services.
+// requesting XSTS tokens and connecting to WebSocket services. NSAL title data
+// is resolved lazily when an authenticated request first needs it.
 //
 // New clones the [ClientConfig.HTTPClient] internally so that the original
 // client is never mutated. This means that passing [http.DefaultClient] or any

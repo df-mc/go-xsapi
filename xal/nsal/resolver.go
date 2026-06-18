@@ -26,7 +26,8 @@ type ResolverConfig struct {
 	// TitleIDs lists title data sources to resolve lazily in precedence order.
 	// Supported special values are "current" and "default". A nil TitleIDs
 	// slice defaults to "current" followed by "default"; an empty non-nil
-	// slice disables lazy title data resolution.
+	// slice disables lazy title data resolution. Other values are passed to
+	// [Title] as explicit title IDs.
 	TitleIDs []string
 
 	// Titles lists already known title data sources in precedence order. These
@@ -50,8 +51,17 @@ func (conf ResolverConfig) New(src TokenSource) *Resolver {
 	}
 }
 
-// Resolver resolves the Xbox Live endpoint and signature policy for outgoing
-// request URLs.
+// Resolver resolves the Xbox Live endpoint, relying party, authorization
+// token, and signature policy for outgoing request URLs.
+//
+// A Resolver owns NSAL title data lookup and caching. Use [Resolve] when only
+// the endpoint and signature policy are needed, or [TokenAndSignature] when a
+// request also needs the XSTS token for the resolved relying party.
+//
+// Lazy NSAL title-data requests use the HTTP client stored in ctx under
+// [github.com/df-mc/go-xsapi/v2/xal.HTTPClient], or http.DefaultClient when no
+// client is present. [Transport.Base] only applies to the final request made
+// after a URL has been resolved.
 type Resolver struct {
 	conf ResolverConfig
 	src  TokenSource
@@ -73,7 +83,9 @@ func NewResolver(src TokenSource) *Resolver {
 	return ResolverConfig{}.New(src)
 }
 
-// Match resolves the endpoint and signature policy that apply to u.
+// Match resolves the endpoint and signature policy that apply to u using only
+// title data already present in or cached by r. It does not load missing title
+// data. Use [Resolver.Resolve] to load configured title data as needed.
 func (r *Resolver) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
 	if r == nil {
 		return endpoint, policy, false
