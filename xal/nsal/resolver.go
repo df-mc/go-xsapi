@@ -91,7 +91,7 @@ func NewResolver(src TokenSource) *Resolver {
 // Resolve resolves the endpoint and signature policy that apply to u, loading
 // configured title data as needed.
 func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, _ error) {
-	if endpoint, policy, ok := matchTitleData(r.titles(), u); ok {
+	if endpoint, policy, ok := matchTitleData(r.conf.Titles, u); ok {
 		return endpoint, policy, nil
 	}
 	var errs []error
@@ -206,18 +206,6 @@ func (r *Resolver) authorizationToken(ctx context.Context) (Token, error) {
 		return nil, fmt.Errorf("request authorization token: %w", err)
 	}
 	return token, nil
-}
-
-func (r *Resolver) titles() []*TitleData {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	titles := slices.Clone(r.conf.Titles)
-	for _, titleID := range r.conf.TitleIDs {
-		if title := r.cached[titleID]; title != nil {
-			titles = append(titles, title)
-		}
-	}
-	return titles
 }
 
 func matchTitleData(titles []*TitleData, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {

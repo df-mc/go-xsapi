@@ -3,6 +3,7 @@ package nsal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -174,6 +175,30 @@ func TestResolverFallsBackAfterTitleLoadError(t *testing.T) {
 	}
 }
 
+func TestResolverLoadsHigherPrecedenceTitleBeforeCachedDefault(t *testing.T) {
+	src := &transportTokenSource{
+		token:    authorizationToken("XBL3.0 x=uhs;token"),
+		proofKey: mustGenerateKey(t),
+	}
+	resolver := ResolverConfig{TitleIDs: []string{"current", "default"}}.New(src)
+	resolver.cached["default"] = titleData("*.playfabapi.com", "default")
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.String(); got != "https://title.mgt.xboxlive.com/titles/current/endpoints" {
+			t.Fatalf("request URL = %q, want current title endpoint", got)
+		}
+		return titleDataResponse("*.playfabapi.com", "current"), nil
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+
+	endpoint, _, err := resolver.Resolve(ctx, mustParseURL(t, "https://20ca2.playfabapi.com/Client/LoginWithXbox"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if endpoint.RelyingParty != "current" {
+		t.Fatalf("RelyingParty = %q, want current", endpoint.RelyingParty)
+	}
+}
+
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
@@ -197,16 +222,31 @@ func resetDefaultTitle(t *testing.T) {
 }
 
 func defaultTitleResponse() *http.Response {
+	return titleDataResponse("*.xboxlive.com", authorizationRelyingParty)
+}
+
+func titleDataResponse(host, relyingParty string) *http.Response {
+	body := fmt.Sprintf(`{
+		"EndPoints": [{
+			"Protocol": "https",
+			"Host": %q,
+			"HostType": "wildcard",
+			"RelyingParty": %q,
+			"TokenType": "JWT"
+		}]
+	}`, host, relyingParty)
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Body: io.NopCloser(strings.NewReader(`{
-			"EndPoints": [{
-				"Protocol": "https",
-				"Host": "*.xboxlive.com",
-				"HostType": "wildcard",
-				"RelyingParty": "http://xboxlive.com",
-				"TokenType": "JWT"
-			}]
-		}`)),
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+func titleData(host, relyingParty string) *TitleData {
+	return &TitleData{Endpoints: []Endpoint{{
+		Protocol:     "https",
+		Host:         host,
+		HostType:     HostTypeWildcard,
+		RelyingParty: relyingParty,
+		TokenType:    "JWT",
+	}}}
 }
