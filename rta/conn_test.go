@@ -442,15 +442,3 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
-
-func waitUntil(t *testing.T, timeout time.Duration, ready func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if ready() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("condition was not satisfied before timeout")
-}
