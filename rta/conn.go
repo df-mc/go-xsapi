@@ -239,7 +239,7 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	if err := c.write(conn, operationToType(op), append([]any{seq}, payload...)); err != nil {
 		c.release(op, seq)
 		c.drainExpected(conn)
-		go c.reconnect()
+		c.requestReconnect()
 		return nil, errConnectionInterrupted
 	}
 	select {
@@ -554,7 +554,7 @@ func (c *Conn) read(conn *websocket.Conn) {
 				return
 			}
 			c.log.Error("error reading from WebSocket connection", slog.Any("error", err))
-			go c.reconnect()
+			c.requestReconnect()
 			return
 		}
 		typ, err := readHeader(payload)
@@ -573,28 +573,50 @@ func (c *Conn) read(conn *websocket.Conn) {
 // run at a time. Concurrent calls after the first are no-ops. If establishment fails,
 // the Conn is closed with the error as the cause.
 func (c *Conn) reconnect() {
-	if c.ctx.Err() != nil {
+	done, ok := c.beginReconnect()
+	if !ok {
 		return
+	}
+	c.runReconnect(done)
+}
+
+// requestReconnect publishes the reconnect wait barrier before returning, then
+// performs the reconnect asynchronously.
+func (c *Conn) requestReconnect() {
+	done, ok := c.beginReconnect()
+	if !ok {
+		return
+	}
+	go c.runReconnect(done)
+}
+
+func (c *Conn) beginReconnect() (chan struct{}, bool) {
+	if c.ctx.Err() != nil {
+		return nil, false
 	}
 	if !c.reconnecting.CompareAndSwap(false, true) {
 		c.reconnectRequested.Store(true)
-		return
+		return nil, false
 	}
-	defer c.reconnecting.Store(false)
-	c.reconnectRequested.Store(false)
-
-	c.log.Info("re-establishing WebSocket connection...")
 
 	done := make(chan struct{})
 	c.reconnectMu.Lock()
 	c.reconnectDone = done
 	c.reconnectMu.Unlock()
+	return done, true
+}
+
+func (c *Conn) runReconnect(done chan struct{}) {
+	defer c.reconnecting.Store(false)
 	defer func() {
 		c.reconnectMu.Lock()
 		c.reconnectDone = nil
 		c.reconnectMu.Unlock()
 		close(done)
 	}()
+
+	c.reconnectRequested.Store(false)
+	c.log.Info("re-establishing WebSocket connection...")
 
 	interruptedAttempts := 0
 	for {

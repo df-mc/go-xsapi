@@ -552,6 +552,77 @@ func TestSubscribeWaitsWhenReconnectDoneNotYetPublished(t *testing.T) {
 	}
 }
 
+func TestRequestReconnectPublishesWaitBarrierBeforeReturning(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	var dialOnce sync.Once
+	blockingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dialOnce.Do(func() { close(dialStarted) })
+		select {
+		case <-releaseDial:
+		case <-r.Context().Done():
+		}
+	}))
+	defer blockingServer.Close()
+
+	u, err := url.Parse(blockingServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectURLMu.Lock()
+	oldURL := connectURL
+	connectURL = &url.URL{Scheme: "ws", Host: u.Host, Path: "/"}
+	connectURLMu.Unlock()
+	t.Cleanup(func() {
+		connectURLMu.Lock()
+		connectURL = oldURL
+		connectURLMu.Unlock()
+	})
+
+	conn.requestReconnect()
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect dial did not start")
+	}
+
+	callCtx, callCancel := context.WithCancel(context.Background())
+	callDone := make(chan error, 1)
+	go func() {
+		callDone <- conn.SubscribeSubscription(callCtx, sub)
+	}()
+
+	select {
+	case err := <-callDone:
+		t.Fatalf("Subscribe returned before reconnect completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	callCancel()
+	select {
+	case err := <-callDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Subscribe error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe did not return after context cancellation")
+	}
+	close(releaseDial)
+}
+
 func TestReconnectIncludesSubscribeHandlingCustomPayload(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
