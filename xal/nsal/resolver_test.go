@@ -5,28 +5,30 @@ import (
 	"testing"
 )
 
-func TestResolverPrefersCurrentTitleData(t *testing.T) {
+func TestResolverPrefersEarlierTitleData(t *testing.T) {
 	index := 0
 	resolver := &Resolver{
-		Current: &TitleData{
-			Endpoints: []Endpoint{{
-				Protocol:             "https",
-				Host:                 "*.playfabapi.com",
-				HostType:             HostTypeWildcard,
-				RelyingParty:         "current",
-				SignaturePolicyIndex: &index,
-			}},
-			SignaturePolicies: []SignaturePolicy{{Version: 2}},
-		},
-		Default: &TitleData{
-			Endpoints: []Endpoint{{
-				Protocol:             "https",
-				Host:                 "*.playfabapi.com",
-				HostType:             HostTypeWildcard,
-				RelyingParty:         "default",
-				SignaturePolicyIndex: &index,
-			}},
-			SignaturePolicies: []SignaturePolicy{{Version: 1}},
+		Titles: []*TitleData{
+			{
+				Endpoints: []Endpoint{{
+					Protocol:             "https",
+					Host:                 "*.playfabapi.com",
+					HostType:             HostTypeWildcard,
+					RelyingParty:         "current",
+					SignaturePolicyIndex: &index,
+				}},
+				SignaturePolicies: []SignaturePolicy{{Version: 2}},
+			},
+			{
+				Endpoints: []Endpoint{{
+					Protocol:             "https",
+					Host:                 "*.playfabapi.com",
+					HostType:             HostTypeWildcard,
+					RelyingParty:         "default",
+					SignaturePolicyIndex: &index,
+				}},
+				SignaturePolicies: []SignaturePolicy{{Version: 1}},
+			},
 		},
 	}
 
@@ -42,23 +44,49 @@ func TestResolverPrefersCurrentTitleData(t *testing.T) {
 	}
 }
 
-func TestResolverFallsBackToDefaultTitleData(t *testing.T) {
+func TestResolverFallsBackToLaterTitleData(t *testing.T) {
 	resolver := &Resolver{
-		Current: &TitleData{
-			Endpoints: []Endpoint{{
-				Protocol:     "https",
-				Host:         "title.mgt.xboxlive.com",
-				HostType:     HostTypeFQDN,
-				RelyingParty: "current",
-			}},
+		Titles: []*TitleData{
+			{
+				Endpoints: []Endpoint{{
+					Protocol:     "https",
+					Host:         "title.mgt.xboxlive.com",
+					HostType:     HostTypeFQDN,
+					RelyingParty: "current",
+				}},
+			},
+			{
+				Endpoints: []Endpoint{{
+					Protocol:     "https",
+					Host:         "*.xboxlive.com",
+					HostType:     HostTypeWildcard,
+					RelyingParty: "default",
+				}},
+			},
 		},
-		Default: &TitleData{
-			Endpoints: []Endpoint{{
-				Protocol:     "https",
-				Host:         "*.xboxlive.com",
-				HostType:     HostTypeWildcard,
-				RelyingParty: "default",
-			}},
+	}
+
+	endpoint, _, ok := resolver.Match(mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people"))
+	if !ok {
+		t.Fatal("Match returned ok=false")
+	}
+	if endpoint.RelyingParty != "default" {
+		t.Fatalf("RelyingParty = %q, want default", endpoint.RelyingParty)
+	}
+}
+
+func TestResolverSkipsNilTitleData(t *testing.T) {
+	resolver := &Resolver{
+		Titles: []*TitleData{
+			nil,
+			{
+				Endpoints: []Endpoint{{
+					Protocol:     "https",
+					Host:         "*.xboxlive.com",
+					HostType:     HostTypeWildcard,
+					RelyingParty: "default",
+				}},
+			},
 		},
 	}
 

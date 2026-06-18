@@ -10,16 +10,13 @@ import (
 // Resolver resolves the Xbox Live endpoint and signature policy for outgoing
 // request URLs.
 type Resolver struct {
-	// Current is the title-specific NSAL data for the authenticated title.
-	// It takes precedence over Default when both match the same URL.
-	Current *TitleData
-
-	// Default is the fallback NSAL data for generic Xbox Live endpoints.
-	Default *TitleData
+	// Titles lists NSAL title data sources in precedence order. Earlier
+	// entries are matched before later entries.
+	Titles []*TitleData
 }
 
-// NewResolver returns a Resolver using the default NSAL title data and the
-// title-specific NSAL data for the authenticated title.
+// NewResolver returns a Resolver using title-specific NSAL data for the
+// authenticated title before the default NSAL title data.
 func NewResolver(ctx context.Context, token Token, proofKey *ecdsa.PrivateKey) (*Resolver, error) {
 	defaultTitle, err := Default(ctx)
 	if err != nil {
@@ -30,8 +27,7 @@ func NewResolver(ctx context.Context, token Token, proofKey *ecdsa.PrivateKey) (
 		return nil, fmt.Errorf("request current title data: %w", err)
 	}
 	return &Resolver{
-		Current: currentTitle,
-		Default: defaultTitle,
+		Titles: []*TitleData{currentTitle, defaultTitle},
 	}, nil
 }
 
@@ -40,13 +36,13 @@ func (r *Resolver) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy,
 	if r == nil {
 		return endpoint, policy, false
 	}
-	if r.Current != nil {
-		if endpoint, policy, ok = r.Current.Match(u); ok {
+	for _, title := range r.Titles {
+		if title == nil {
+			continue
+		}
+		if endpoint, policy, ok = title.Match(u); ok {
 			return endpoint, policy, true
 		}
-	}
-	if r.Default != nil {
-		return r.Default.Match(u)
 	}
 	return endpoint, policy, false
 }
