@@ -142,6 +142,12 @@ func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error
 		select {
 		case <-req.done:
 			if req.err != nil {
+				if titleLoadCanceled(req.err) {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+					return r.title(ctx, titleID)
+				}
 				return nil, req.err
 			}
 			return req.title, nil
@@ -206,6 +212,10 @@ func (r *Resolver) authorizationToken(ctx context.Context) (Token, error) {
 		return nil, fmt.Errorf("request authorization token: %w", err)
 	}
 	return token, nil
+}
+
+func titleLoadCanceled(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func matchTitleData(titles []*TitleData, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {

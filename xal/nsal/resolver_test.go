@@ -244,6 +244,59 @@ func TestResolverLoadsHigherPrecedenceTitleBeforeCachedDefault(t *testing.T) {
 	}
 }
 
+func TestResolverWaiterRetriesAfterSharedTitleLoadCancellation(t *testing.T) {
+	src := &transportTokenSource{
+		token:    authorizationToken("XBL3.0 x=uhs;token"),
+		proofKey: mustGenerateKey(t),
+	}
+	resolver := ResolverConfig{TitleIDs: []string{"current"}}.New(src)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.String(); got != "https://title.mgt.xboxlive.com/titles/current/endpoints" {
+			t.Fatalf("request URL = %q, want current title endpoint", got)
+		}
+		return titleDataResponse("*.playfabapi.com", "current"), nil
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+
+	req := &titleRequest{done: make(chan struct{})}
+	resolver.mu.Lock()
+	resolver.loading["current"] = req
+	resolver.mu.Unlock()
+
+	type result struct {
+		endpoint Endpoint
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		endpoint, _, err := resolver.Resolve(ctx, mustParseURL(t, "https://20ca2.playfabapi.com/Client/LoginWithXbox"))
+		resultCh <- result{endpoint: endpoint, err: err}
+	}()
+	select {
+	case result := <-resultCh:
+		t.Fatalf("Resolve returned before shared title load completed: %v", result.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	resolver.mu.Lock()
+	req.err = context.Canceled
+	delete(resolver.loading, "current")
+	close(req.done)
+	resolver.mu.Unlock()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Resolve: %v", result.err)
+		}
+		if result.endpoint.RelyingParty != "current" {
+			t.Fatalf("RelyingParty = %q, want current", result.endpoint.RelyingParty)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Resolve did not retry after shared title load cancellation")
+	}
+}
+
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
