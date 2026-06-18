@@ -186,14 +186,6 @@ func TestResolverDefaultTitleLoadBypassesNSALTransport(t *testing.T) {
 	}
 }
 
-func TestNilResolverDoesNotMatch(t *testing.T) {
-	var resolver *Resolver
-
-	if _, _, ok := resolver.Match(mustParseURL(t, "https://peoplehub.xboxlive.com/users/me/people")); ok {
-		t.Fatal("nil Resolver matched URL")
-	}
-}
-
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)

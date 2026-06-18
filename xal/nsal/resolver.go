@@ -83,23 +83,13 @@ func NewResolver(src TokenSource) *Resolver {
 	return ResolverConfig{}.New(src)
 }
 
-// Match resolves the endpoint and signature policy that apply to u using only
-// title data already present in or cached by r. It does not load missing title
-// data. Use [Resolver.Resolve] to load configured title data as needed.
-func (r *Resolver) Match(u *url.URL) (endpoint Endpoint, policy SignaturePolicy, ok bool) {
-	if r == nil {
-		return endpoint, policy, false
-	}
-	return matchTitleData(r.titles(), u)
-}
-
 // Resolve resolves the endpoint and signature policy that apply to u, loading
 // configured title data as needed.
 func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, policy SignaturePolicy, _ error) {
 	if r == nil {
 		return endpoint, policy, errors.New("xal/nsal: nil Resolver")
 	}
-	if endpoint, policy, ok := r.Match(u); ok {
+	if endpoint, policy, ok := matchTitleData(r.titles(), u); ok {
 		return endpoint, policy, nil
 	}
 	for _, titleID := range r.titleIDs() {
