@@ -154,9 +154,9 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		sub.setUnsubscribing(true)
 		err := c.unsubscribe(ctx, sub.ID())
 		if err == errConnectionInterrupted {
-			sub.setUnsubscribing(false)
 			sub.opMu.Unlock()
 			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
+				sub.setUnsubscribing(false)
 				return err
 			}
 			continue
