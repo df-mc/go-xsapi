@@ -8,12 +8,14 @@ import (
 	"net/url"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 const authorizationRelyingParty = "http://xboxlive.com"
+const titleLoadFailureCacheDuration = 15 * time.Second
 
 var defaultTitleIDs = []string{"current", "default"}
 
@@ -55,6 +57,7 @@ func (conf ResolverConfig) New(src TokenSource) *Resolver {
 		},
 		src:     src,
 		cached:  make(map[string]*TitleData),
+		failed:  make(map[string]titleFailure),
 		loading: make(map[string]*titleRequest),
 	}
 }
@@ -76,7 +79,13 @@ type Resolver struct {
 
 	mu      sync.Mutex
 	cached  map[string]*TitleData
+	failed  map[string]titleFailure
 	loading map[string]*titleRequest
+}
+
+type titleFailure struct {
+	err       error
+	retryTime time.Time
 }
 
 type titleRequest struct {
@@ -136,6 +145,13 @@ func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error
 		r.mu.Unlock()
 		return title, nil
 	}
+	if failure, ok := r.failed[titleID]; ok {
+		if time.Now().Before(failure.retryTime) {
+			r.mu.Unlock()
+			return nil, failure.err
+		}
+		delete(r.failed, titleID)
+	}
 	if req, ok := r.loading[titleID]; ok {
 		r.mu.Unlock()
 		select {
@@ -163,6 +179,12 @@ func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error
 	r.mu.Lock()
 	if err == nil {
 		r.cached[titleID] = title
+		delete(r.failed, titleID)
+	} else if !titleLoadCanceled(err) {
+		r.failed[titleID] = titleFailure{
+			err:       err,
+			retryTime: time.Now().Add(titleLoadFailureCacheDuration),
+		}
 	}
 	req.title, req.err = title, err
 	delete(r.loading, titleID)

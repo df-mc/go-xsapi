@@ -17,6 +17,7 @@ import (
 	"github.com/df-mc/go-xsapi/v2/presence"
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/social"
+	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
@@ -175,7 +176,7 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, net.ErrClosed
 	}
 	reqBodyClosed = true
-	return c.transport.RoundTrip(req)
+	return c.transport.RoundTrip(req.WithContext(c.nsalContext(req.Context())))
 }
 
 // baseTransport returns the transport of the HTTP client passed via
@@ -201,7 +202,7 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 	if c.closed.Load() {
 		return nil, policy, net.ErrClosed
 	}
-	token, policy, err := c.transport.TokenAndSignature(ctx, u)
+	token, policy, err := c.transport.TokenAndSignature(c.nsalContext(ctx), u)
 	if err != nil {
 		return nil, policy, err
 	}
@@ -220,6 +221,16 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 // both Authorization and Signature are excluded.
 func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
 	return nsal.WithoutAuthHeaders(req, headers...)
+}
+
+func (c *Client) nsalContext(ctx context.Context) context.Context {
+	if client, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && client != nil {
+		return ctx
+	}
+	if c.client == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, xal.HTTPClient, c.client)
 }
 
 // Log returns the [slog.Logger] configured via [ClientConfig.Logger].

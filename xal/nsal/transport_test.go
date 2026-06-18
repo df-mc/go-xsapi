@@ -178,6 +178,7 @@ func authorizationToken(s string) *xsts.Token {
 
 type transportTokenSource struct {
 	called       bool
+	calls        int
 	relyingParty string
 	token        *xsts.Token
 	proofKey     *ecdsa.PrivateKey
@@ -186,6 +187,7 @@ type transportTokenSource struct {
 
 func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {
 	src.called = true
+	src.calls++
 	src.relyingParty = relyingParty
 	if src.err != nil {
 		return nil, src.err

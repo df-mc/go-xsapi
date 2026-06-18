@@ -175,6 +175,61 @@ func TestResolverFallsBackAfterTitleLoadError(t *testing.T) {
 	}
 }
 
+func TestResolverCachesTitleLoadFailureBeforeFallback(t *testing.T) {
+	resetDefaultTitle(t)
+
+	currentErr := errors.New("current title unavailable")
+	src := &transportTokenSource{err: currentErr}
+	resolver := ResolverConfig{TitleIDs: []string{"current", "default"}}.New(src)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return defaultTitleResponse(), nil
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+	u := mustParseURL(t, "https://sessiondirectory.xboxlive.com/handles")
+
+	if _, _, err := resolver.Resolve(ctx, u); err != nil {
+		t.Fatalf("first Resolve: %v", err)
+	}
+	if _, _, err := resolver.Resolve(ctx, u); err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	if got := src.calls; got != 1 {
+		t.Fatalf("current title load attempts = %d, want 1", got)
+	}
+}
+
+func TestResolverRetriesExpiredTitleLoadFailure(t *testing.T) {
+	resetDefaultTitle(t)
+
+	src := &transportTokenSource{
+		token:    authorizationToken("XBL3.0 x=uhs;token"),
+		proofKey: mustGenerateKey(t),
+		err:      errors.New("current title unavailable"),
+	}
+	resolver := ResolverConfig{TitleIDs: []string{"current"}}.New(src)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return titleDataResponse("*.playfabapi.com", "current"), nil
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+	u := mustParseURL(t, "https://20ca2.playfabapi.com/Client/LoginWithXbox")
+
+	if _, _, err := resolver.Resolve(ctx, u); err == nil {
+		t.Fatal("first Resolve returned nil error for failed current title load")
+	}
+	resolver.mu.Lock()
+	failure := resolver.failed["current"]
+	failure.retryTime = time.Now().Add(-time.Second)
+	resolver.failed["current"] = failure
+	resolver.mu.Unlock()
+	src.err = nil
+	if _, _, err := resolver.Resolve(ctx, u); err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	if got := src.calls; got != 2 {
+		t.Fatalf("current title load attempts = %d, want 2", got)
+	}
+}
+
 func TestResolverFallsBackAfterCurrentTitleRequestError(t *testing.T) {
 	resetDefaultTitle(t)
 
