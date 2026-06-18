@@ -1,11 +1,9 @@
 package xsapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,10 +24,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-var (
-	newNSALResolver = nsal.NewResolver
-	dialRTA         = rta.Dial
-)
+var dialRTA = rta.Dial
 
 // NewClient creates a new [Client] using a default [ClientConfig] and a
 // 15-second timeout for the initial login. For more control over the
@@ -43,8 +38,9 @@ func NewClient(src TokenSource) (*Client, error) {
 
 // New creates a new [Client] using the given [TokenSource] and [ClientConfig].
 // The provided context governs the initial login, including
-// requesting XSTS tokens, fetching NSAL data, and, by default, connecting to
-// WebSocket services.
+// requesting XSTS tokens and, by default, connecting to WebSocket services.
+// NSAL title data is resolved lazily when an authenticated request first needs
+// it.
 //
 // New clones the [ClientConfig.HTTPClient] internally so that the original
 // client is never mutated. This means that passing [http.DefaultClient] or any
@@ -89,9 +85,9 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	c.userInfo = xui
 
-	c.resolver, err = newNSALResolver(ctx, token, src.ProofKey())
-	if err != nil {
-		return nil, fmt.Errorf("request NSAL resolver: %w", err)
+	c.transport = &nsal.Transport{
+		Base:     c.baseTransport(),
+		Resolver: nsal.NewResolver(src),
 	}
 
 	if config.RTAMode == RTAEager {
@@ -163,8 +159,8 @@ type Client struct {
 	client *http.Client
 	src    TokenSource
 
-	resolver *nsal.Resolver
-	userInfo xsts.UserInfo
+	transport *nsal.Transport
+	userInfo  xsts.UserInfo
 
 	rtaMu      sync.Mutex
 	rtaDialing chan struct{}
@@ -185,57 +181,24 @@ func (c *Client) HTTPClient() *http.Client {
 	return c.client
 }
 
-// RoundTrip implements [http.RoundTripper]. It resolves an XSTS token and
-// signature policy for the request URL using NSAL (Network Security Allow List),
-// then sets the 'Authorization' and 'Signature' headers before forwarding the request to
-// the underlying transport.
+// RoundTrip implements [http.RoundTripper].
 //
 // RoundTrip always consumes the request body, even on error, as required by
-// the [http.RoundTripper] contract. The request is cloned before any headers
-// are set to avoid mutating the original.
+// the [http.RoundTripper] contract.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
+	var reqBodyClosed bool
 	if req.Body != nil {
-		// The [http.RoundTripper] contract requires the body to be closed
-		// by the caller of RoundTrip, even on error. We handle it here
-		// rather than delegating to the base transport because the body
-		// is buffered for signing before being forwarded.
-		defer req.Body.Close()
+		defer func() {
+			if !reqBodyClosed {
+				_ = req.Body.Close()
+			}
+		}()
 	}
 	if c.closed.Load() {
 		return nil, net.ErrClosed
 	}
-
-	// Propagate the request's context so that XSTS token retrieval
-	// respects any deadlines or cancellations set by the caller.
-	ctx := req.Context()
-	token, policy, err := c.TokenAndSignature(ctx, req.URL)
-	if err != nil {
-		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
-	}
-
-	var (
-		// Clone the request so that the original headers are never mutated,
-		// as required by the [http.RoundTripper] contract.
-		req2 = req.Clone(ctx)
-		// Body bytes buffered for inclusion in the request signature.
-		data []byte
-	)
-	token.SetAuthHeader(req2)
-	// If a body is present, it is buffered in full so that it can be included
-	// in the 'Signature' header. It is then restored on the cloned request.
-	if req.Body != nil {
-		signingBuffer := &bytes.Buffer{}
-		if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
-			signingBuffer.Reset()
-			return nil, fmt.Errorf("clone request body: %w", err)
-		}
-		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
-	}
-	if err := policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
-		return nil, fmt.Errorf("sign request: %w", err)
-	}
-
-	return c.baseTransport().RoundTrip(req2)
+	reqBodyClosed = true
+	return c.transport.RoundTrip(req.WithContext(c.nsalContext(req.Context())))
 }
 
 // baseTransport returns the transport of the HTTP client passed via
@@ -261,16 +224,35 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 	if c.closed.Load() {
 		return nil, policy, net.ErrClosed
 	}
-	endpoint, policy, ok := c.resolver.Match(u)
-	if !ok {
-		return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
-	}
-
-	token, err := c.src.XSTSToken(ctx, endpoint.RelyingParty)
+	token, policy, err := c.transport.TokenAndSignature(c.nsalContext(ctx), u)
 	if err != nil {
-		return nil, policy, fmt.Errorf("request XSTS token: %w", err)
+		return nil, policy, err
 	}
-	return token, policy, nil
+	xstsToken, ok := token.(*xsts.Token)
+	if !ok {
+		return nil, policy, fmt.Errorf("xsapi: unexpected NSAL token type %T", token)
+	}
+	return xstsToken, policy, nil
+}
+
+// WithoutAuthHeaders returns a cloned HTTP request configured to exclude
+// specified authentication headers from being automatically added by
+// [Client.HTTPClient].
+//
+// Header names are matched case-insensitively. If no headers are provided,
+// both Authorization and Signature are excluded.
+func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
+	return nsal.WithoutAuthHeaders(req, headers...)
+}
+
+func (c *Client) nsalContext(ctx context.Context) context.Context {
+	if client, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && client != nil {
+		return ctx
+	}
+	if c.client == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, xal.HTTPClient, c.client)
 }
 
 // Log returns the [slog.Logger] configured via [ClientConfig.Logger].

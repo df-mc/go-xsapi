@@ -23,7 +23,6 @@ func TestSubscribeWithoutRTAFails(t *testing.T) {
 		t.Fatalf("Subscribe error = %v, want %v", err, rta.ErrUnavailable)
 	}
 }
-
 func TestSubscriptionHandlerAllowsNonComparableHandlers(t *testing.T) {
 	calls := make(chan string, 1)
 	handler := nonComparableSocialHandler{
