@@ -175,6 +175,51 @@ func TestResolverFallsBackAfterTitleLoadError(t *testing.T) {
 	}
 }
 
+func TestResolverFallsBackAfterCurrentTitleRequestError(t *testing.T) {
+	resetDefaultTitle(t)
+
+	src := &transportTokenSource{
+		token:    authorizationToken("XBL3.0 x=uhs;token"),
+		proofKey: mustGenerateKey(t),
+	}
+	resolver := ResolverConfig{TitleIDs: []string{"current", "default"}}.New(src)
+	var currentRequested bool
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://title.mgt.xboxlive.com/titles/current/endpoints":
+			currentRequested = true
+			if got := req.Header.Get("Authorization"); got == "" {
+				t.Fatal("current title request missing Authorization header")
+			}
+			if got := req.Header.Get("Signature"); got == "" {
+				t.Fatal("current title request missing Signature header")
+			}
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Status:     "503 Service Unavailable",
+				Body:       http.NoBody,
+			}, nil
+		case "https://title.mgt.xboxlive.com/titles/default/endpoints?type=1":
+			return defaultTitleResponse(), nil
+		default:
+			t.Fatalf("unexpected request URL: %s", req.URL)
+			return nil, nil
+		}
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+
+	endpoint, _, err := resolver.Resolve(ctx, mustParseURL(t, "https://sessiondirectory.xboxlive.com/handles"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if endpoint.RelyingParty != authorizationRelyingParty {
+		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, authorizationRelyingParty)
+	}
+	if !currentRequested {
+		t.Fatal("current title endpoint was not requested")
+	}
+}
+
 func TestResolverLoadsHigherPrecedenceTitleBeforeCachedDefault(t *testing.T) {
 	src := &transportTokenSource{
 		token:    authorizationToken("XBL3.0 x=uhs;token"),
