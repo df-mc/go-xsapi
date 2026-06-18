@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
@@ -95,6 +96,40 @@ func TestClientRoundTripClosesRequestBodyAfterClose(t *testing.T) {
 	}
 }
 
+func TestNSALTokenSourceReusesValidAuthorizationToken(t *testing.T) {
+	cachedToken := testXSTSToken(time.Now().Add(time.Hour))
+	src := nsalTokenSource{
+		TokenSource:        stubTokenSource{},
+		authorizationToken: cachedToken,
+	}
+	token, err := src.Token(context.Background(), "http://xboxlive.com")
+	if err != nil {
+		t.Fatalf("Token returned error: %v", err)
+	}
+	if token != cachedToken {
+		t.Fatal("Token did not reuse valid authorization token")
+	}
+}
+
+func TestNSALTokenSourceRefreshesExpiredAuthorizationToken(t *testing.T) {
+	freshToken := testXSTSToken(time.Now().Add(time.Hour))
+	tokenSource := &recordingTokenSource{token: freshToken}
+	src := nsalTokenSource{
+		TokenSource:        tokenSource,
+		authorizationToken: testXSTSToken(time.Now().Add(-time.Hour)),
+	}
+	token, err := src.Token(context.Background(), "http://xboxlive.com")
+	if err != nil {
+		t.Fatalf("Token returned error: %v", err)
+	}
+	if token != freshToken {
+		t.Fatal("Token did not refresh expired authorization token")
+	}
+	if got := tokenSource.relyingParty.Load(); got != "http://xboxlive.com" {
+		t.Fatalf("XSTSToken relying party = %q, want %q", got, "http://xboxlive.com")
+	}
+}
+
 type stubTokenSource struct{}
 
 func (stubTokenSource) XSTSToken(context.Context, string) (*xsts.Token, error) {
@@ -107,6 +142,34 @@ func (stubTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
 
 func (stubTokenSource) ProofKey() *ecdsa.PrivateKey {
 	return nil
+}
+
+type recordingTokenSource struct {
+	token        *xsts.Token
+	relyingParty atomic.Value
+}
+
+func (src *recordingTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {
+	src.relyingParty.Store(relyingParty)
+	return src.token, nil
+}
+
+func (*recordingTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
+	return nil, errors.New("unexpected device token request")
+}
+
+func (*recordingTokenSource) ProofKey() *ecdsa.PrivateKey {
+	return nil
+}
+
+func testXSTSToken(notAfter time.Time) *xsts.Token {
+	return &xsts.Token{
+		Token:    "token",
+		NotAfter: notAfter,
+		DisplayClaims: xsts.DisplayClaims{
+			UserInfo: []xsts.UserInfo{{}},
+		},
+	}
 }
 
 type zeroReader struct{}

@@ -106,11 +106,11 @@ type TokenSource interface {
 
 type nsalTokenSource struct {
 	TokenSource
-	authorizationToken nsal.Token
+	authorizationToken *xsts.Token
 }
 
 func (src nsalTokenSource) Token(ctx context.Context, relyingParty string) (nsal.Token, error) {
-	if relyingParty == internal.XBLRelyingParty && src.authorizationToken != nil {
+	if relyingParty == internal.XBLRelyingParty && src.authorizationToken.Valid() {
 		return src.authorizationToken, nil
 	}
 	return src.XSTSToken(ctx, relyingParty)
