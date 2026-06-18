@@ -177,6 +177,7 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription, onActivate func
 				} else {
 					c.untrackSubscriptionID(id)
 					sub.deactivate(err)
+					sub.clearInactiveID(id)
 				}
 				return err
 			}
@@ -784,6 +785,11 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 
 		ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 		subscription.opMu.Lock()
+		if !subscription.shouldResubscribe() {
+			subscription.opMu.Unlock()
+			cancel()
+			continue
+		}
 		oldID := subscription.id()
 		err := c.subscribe(ctx, subscription, func(oldID uint32) {
 			c.retrackSubscription(oldID, subscription)

@@ -50,6 +50,37 @@ func TestSubscribeHandlerErrorDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+func TestSubscribeHandlerErrorClearsRolledBackSubscriptionID(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.validateUnsubscribeIDs()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	wantErr := errors.New("bad custom payload")
+	sub := NewSubscription("test-resource", failingSubscribeHandler{err: wantErr})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := conn.SubscribeSubscription(ctx, sub)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Subscribe error = %v, want %v", err, wantErr)
+	}
+	if got := sub.id(); got != 0 {
+		t.Fatalf("subscription ID = %d, want cleared ID", got)
+	}
+	if got := srv.unsubscribeCount.Load(); got != 1 {
+		t.Fatalf("unsubscribe count = %d, want rollback unsubscribe only", got)
+	}
+	if err := conn.Unsubscribe(ctx, sub); err != nil {
+		t.Fatalf("Unsubscribe after rolled-back Subscribe returned error: %v", err)
+	}
+	if got := srv.unsubscribeCount.Load(); got != 1 {
+		t.Fatalf("unsubscribe count = %d, want no extra cleanup unsubscribe", got)
+	}
+}
+
 func TestDialerCompatibility(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -599,6 +630,36 @@ func TestReconnectRetriesInterruptedResubscribe(t *testing.T) {
 	conn.subscriptionsMu.RUnlock()
 	if !tracked {
 		t.Fatal("subscription was not tracked after retried resubscribe")
+	}
+}
+
+func TestResubscribeSkipsSubscriptionDeactivatedAfterSnapshot(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	id := sub.id()
+	conn.untrackSubscription(sub)
+	sub.deactivate(nil)
+	sub.clearInactiveID(id)
+
+	if interrupted := conn.resubscribe([]*Subscription{sub}); interrupted {
+		t.Fatal("resubscribe was interrupted")
+	}
+	if got := srv.subscribeCount.Load(); got != 1 {
+		t.Fatalf("subscribe count = %d, want no resubscribe for inactive snapshot", got)
+	}
+	if sub.Active() {
+		t.Fatal("inactive subscription was reactivated by resubscribe")
 	}
 }
 
