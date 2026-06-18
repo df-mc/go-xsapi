@@ -690,6 +690,47 @@ func TestSubscriptionHandlerClosesSessionsOnSubscriptionLoss(t *testing.T) {
 	}
 }
 
+func TestSubscriptionHandlerUntracksSessionWhenSubscriptionLossCloseFails(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	closeErr := errors.New("close failed")
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, closeErr
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleError(io.ErrUnexpectedEOF)
+
+	select {
+	case <-session.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("session was not locally closed after subscription loss close failure")
+	}
+	c.sessionsMu.RLock()
+	_, tracked := c.sessions[ref.URL().String()]
+	c.sessionsMu.RUnlock()
+	if tracked {
+		t.Fatal("session remained tracked after subscription loss close failure")
+	}
+}
+
 type recordingSessionHandler struct {
 	changes chan<- *Session
 }

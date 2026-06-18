@@ -241,6 +241,9 @@ func (h *subscriptionHandler) HandleError(err error) {
 		go func() {
 			if closeErr := session.Close(); closeErr != nil {
 				session.log.Error("error closing session after subscription loss", "err", closeErr)
+				session.closeMu.Lock()
+				session.closeLocked()
+				session.closeMu.Unlock()
 			}
 		}()
 	}
