@@ -43,6 +43,9 @@ type Conn struct {
 
 	// reconnecting indicates whether the Conn is currently reconnecting to the RTA service.
 	reconnecting atomic.Bool
+	// reconnectRequested records that another reconnect was requested while one
+	// was already running.
+	reconnectRequested atomic.Bool
 	// reconnectDone is a channel that is closed when the reconnect is complete.
 	// It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
@@ -501,9 +504,11 @@ func (c *Conn) reconnect() {
 		return
 	}
 	if !c.reconnecting.CompareAndSwap(false, true) {
+		c.reconnectRequested.Store(true)
 		return
 	}
 	defer c.reconnecting.Store(false)
+	c.reconnectRequested.Store(false)
 
 	c.log.Info("re-establishing WebSocket connection...")
 
@@ -547,6 +552,7 @@ func (c *Conn) reconnect() {
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 		if c.resubscribe(subscriptions) {
+			c.reconnectRequested.Store(false)
 			interruptedAttempts++
 			if interruptedAttempts >= maxReconnectAttempts {
 				err := fmt.Errorf("resubscribe interrupted after %d reconnect attempts", interruptedAttempts)
@@ -556,6 +562,11 @@ func (c *Conn) reconnect() {
 			}
 			_ = conn.Close(websocket.StatusGoingAway, "resubscribe interrupted")
 			c.log.Info("resubscribe interrupted; reconnecting again")
+			continue
+		}
+		if c.reconnectRequested.Swap(false) {
+			_ = conn.Close(websocket.StatusGoingAway, "reconnect requested")
+			c.log.Info("reconnect requested while reconnecting; reconnecting again")
 			continue
 		}
 		return

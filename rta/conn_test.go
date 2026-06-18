@@ -372,6 +372,57 @@ func TestReconnectIncludesSubscribeHandlingCustomPayload(t *testing.T) {
 	}
 }
 
+func TestReconnectRestartsWhenCurrentConnFailsDuringResubscribe(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	handler := newBlockingSubscribeHandler(2)
+	sub := NewSubscription("test-resource", handler)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	reconnectDone := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(reconnectDone)
+	}()
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("resubscribe did not reach subscription handler")
+	}
+
+	if err := conn.currentConn().Close(websocket.StatusGoingAway, "test close"); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	deadline := time.After(time.Second)
+	for !conn.reconnectRequested.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("reconnect was not requested after current connection closed")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(handler.unblock)
+	select {
+	case <-reconnectDone:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not complete")
+	}
+	if got := srv.subscribeCount.Load(); got != 3 {
+		t.Fatalf("subscribe count = %d, want 3", got)
+	}
+	if !sub.Active() {
+		t.Fatal("subscription became inactive after queued reconnect")
+	}
+}
+
 type failingSubscribeHandler struct {
 	NopSubscriptionHandler
 	err error
