@@ -99,7 +99,7 @@ func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, 
 	if r == nil {
 		return endpoint, policy, errors.New("xal/nsal: nil Resolver")
 	}
-	if endpoint, policy, ok := matchTitleData(r.titles(), u); ok {
+	if endpoint, policy, ok := r.Match(u); ok {
 		return endpoint, policy, nil
 	}
 	for _, titleID := range r.titleIDs() {

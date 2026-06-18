@@ -125,7 +125,7 @@ func TestNSALTokenSourceRefreshesExpiredAuthorizationToken(t *testing.T) {
 	if token != freshToken {
 		t.Fatal("Token did not refresh expired authorization token")
 	}
-	if got := tokenSource.relyingParty.Load(); got != "http://xboxlive.com" {
+	if got := tokenSource.relyingParty; got != "http://xboxlive.com" {
 		t.Fatalf("XSTSToken relying party = %q, want %q", got, "http://xboxlive.com")
 	}
 }
@@ -146,11 +146,11 @@ func (stubTokenSource) ProofKey() *ecdsa.PrivateKey {
 
 type recordingTokenSource struct {
 	token        *xsts.Token
-	relyingParty atomic.Value
+	relyingParty string
 }
 
 func (src *recordingTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {
-	src.relyingParty.Store(relyingParty)
+	src.relyingParty = relyingParty
 	return src.token, nil
 }
 
