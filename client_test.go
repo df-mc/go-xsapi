@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -17,16 +18,119 @@ import (
 
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
+	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/social"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
+	"github.com/df-mc/go-xsapi/v2/xal/xasu"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
+	"github.com/google/uuid"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestClientConfigNewKeepsDefaultEagerRTA(t *testing.T) {
+	dialErr := errors.New("dial failed")
+	_, dialCalls := stubClientDependencies(t, dialErr)
+
+	var config ClientConfig
+	_, err := config.New(context.Background(), validTokenSource{})
+	if !errors.Is(err, dialErr) {
+		t.Fatalf("New error = %v, want %v", err, dialErr)
+	}
+	if got := dialCalls.Load(); got != 1 {
+		t.Fatalf("RTA dial calls = %d, want 1", got)
+	}
+}
+
+func TestClientConfigNewLazyRTADoesNotDial(t *testing.T) {
+	_, dialCalls := stubClientDependencies(t, errors.New("dial should be deferred"))
+
+	client, err := (ClientConfig{RTAMode: RTALazy}).New(context.Background(), validTokenSource{})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if got := dialCalls.Load(); got != 0 {
+		t.Fatalf("RTA dial calls = %d, want 0", got)
+	}
+	if client.RTA() != nil {
+		t.Fatal("lazy client has an RTA connection before demand")
+	}
+}
+
+func TestClientConfigNewDisabledRTADoesNotDial(t *testing.T) {
+	_, dialCalls := stubClientDependencies(t, errors.New("dial should be disabled"))
+
+	client, err := (ClientConfig{RTAMode: RTADisabled}).New(context.Background(), validTokenSource{})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if got := dialCalls.Load(); got != 0 {
+		t.Fatalf("RTA dial calls = %d, want 0", got)
+	}
+	if client.RTA() != nil {
+		t.Fatal("disabled client has an RTA connection")
+	}
+}
+
+func TestLazyRTAOperationDialsOnDemand(t *testing.T) {
+	dialErr := errors.New("dial failed")
+	_, dialCalls := stubClientDependencies(t, dialErr)
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, errors.New("unexpected request")
+	})}
+	client, err := (ClientConfig{HTTPClient: httpClient, RTAMode: RTALazy}).New(context.Background(), validTokenSource{})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	_, err = client.MPSD().Join(context.Background(), uuid.New(), mpsd.JoinConfig{})
+	if !errors.Is(err, dialErr) {
+		t.Fatalf("Join error = %v, want %v", err, dialErr)
+	}
+	if got := dialCalls.Load(); got != 1 {
+		t.Fatalf("RTA dial calls = %d, want 1", got)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("HTTP requests = %d, want 0", got)
+	}
+}
+
+func TestDisabledRTAOperationFailsWithoutDialing(t *testing.T) {
+	_, dialCalls := stubClientDependencies(t, errors.New("dial should be disabled"))
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, errors.New("unexpected request")
+	})}
+	client, err := (ClientConfig{HTTPClient: httpClient, RTAMode: RTADisabled}).New(context.Background(), validTokenSource{})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	_, err = client.MPSD().Join(context.Background(), uuid.New(), mpsd.JoinConfig{})
+	if !errors.Is(err, rta.ErrUnavailable) {
+		t.Fatalf("Join error = %v, want %v", err, rta.ErrUnavailable)
+	}
+	if got := dialCalls.Load(); got != 0 {
+		t.Fatalf("RTA dial calls = %d, want 0", got)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("HTTP requests = %d, want 0", got)
+	}
+}
+
+func TestClientConfigNewRejectsInvalidRTAMode(t *testing.T) {
+	_, err := (ClientConfig{RTAMode: RTAMode(-1)}).New(context.Background(), stubTokenSource{})
+	if err == nil {
+		t.Fatal("New returned nil error, want invalid RTA mode error")
+	}
 }
 
 func TestClientCloseContextRetriesAfterSubclientFailure(t *testing.T) {
@@ -231,6 +335,41 @@ func nsalTitleDataResponse(host, relyingParty string) *http.Response {
 		StatusCode: http.StatusOK,
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+type validTokenSource struct{}
+
+func (validTokenSource) XSTSToken(context.Context, string) (*xsts.Token, error) {
+	return &xsts.Token{
+		Token: "token",
+		DisplayClaims: xsts.DisplayClaims{UserInfo: []xsts.UserInfo{{
+			UserInfo: xasu.UserInfo{UserHash: "uhs"},
+			XUID:     "2533274799999999",
+		}}},
+	}, nil
+}
+
+func (validTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
+	return nil, errors.New("unexpected device token request")
+}
+
+func (validTokenSource) ProofKey() *ecdsa.PrivateKey {
+	return nil
+}
+
+func stubClientDependencies(t *testing.T, dialErr error) (*atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	oldDialRTA := dialRTA
+	var resolverCalls atomic.Int32
+	var dialCalls atomic.Int32
+	dialRTA = func(context.Context, *http.Client, *slog.Logger) (*rta.Conn, error) {
+		dialCalls.Add(1)
+		return nil, dialErr
+	}
+	t.Cleanup(func() {
+		dialRTA = oldDialRTA
+	})
+	return &resolverCalls, &dialCalls
 }
 
 type zeroReader struct{}

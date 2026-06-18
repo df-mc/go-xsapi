@@ -16,13 +16,25 @@ import (
 
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+	return NewWithRTASubscriber(client, internal.Subscriber(conn), internal.Unsubscriber(conn), userInfo, log)
+}
+
+// NewWithRTASubscriber returns a new [Client] using the provided components and
+// RTA subscription transport.
+func NewWithRTASubscriber(client *http.Client, subscriber RTASubscriber, unsubscriber RTAUnsubscriber, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
+	if subscriber == nil {
+		subscriber = internal.Subscriber(nil)
+	}
+	if unsubscriber == nil {
+		unsubscriber = internal.Unsubscriber(nil)
+	}
 	c := &Client{
 		client:       client,
-		subscriber:   internal.Subscriber(conn),
-		unsubscriber: internal.Unsubscriber(conn),
+		subscriber:   subscriber,
+		unsubscriber: unsubscriber,
 		userInfo:     userInfo,
 		log:          log,
 
@@ -35,11 +47,23 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	return c
 }
 
+// RTASubscriber is the part of an RTA connection needed to create MPSD
+// subscriptions.
+type RTASubscriber interface {
+	Subscribe(context.Context, *rta.Subscription) error
+}
+
+// RTAUnsubscriber is the part of an RTA connection needed to remove MPSD
+// subscriptions.
+type RTAUnsubscriber interface {
+	Unsubscribe(context.Context, *rta.Subscription) error
+}
+
 // Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
 type Client struct {
 	client       *http.Client
-	subscriber   internal.RTASubscriber
-	unsubscriber internal.RTAUnsubscriber
+	subscriber   RTASubscriber
+	unsubscriber RTAUnsubscriber
 	userInfo     xsts.UserInfo
 	log          *slog.Logger
 
