@@ -142,27 +142,37 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
-	if err := c.wait(ctx); err != nil {
-		return err
-	}
-	sub.opMu.Lock()
-	if !sub.Active() {
+	for {
+		if err := c.wait(ctx); err != nil {
+			return err
+		}
+		sub.opMu.Lock()
+		if !sub.Active() {
+			sub.opMu.Unlock()
+			return nil
+		}
+		sub.setUnsubscribing(true)
+		err := c.unsubscribe(ctx, sub.ID())
+		if err == errConnectionInterrupted {
+			sub.setUnsubscribing(false)
+			sub.opMu.Unlock()
+			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			sub.setUnsubscribing(false)
+			sub.opMu.Unlock()
+			return err
+		}
+		c.untrackSubscription(sub)
+		// Notify that the subscription has been unsubscribed so the service
+		// might be able to clean up resources tied to this subscription.
+		sub.deactivate(ErrUnsubscribed)
 		sub.opMu.Unlock()
 		return nil
 	}
-	sub.setUnsubscribing(true)
-	err := c.unsubscribe(ctx, sub.ID())
-	if err != nil && !errors.Is(err, errConnectionInterrupted) {
-		sub.setUnsubscribing(false)
-		sub.opMu.Unlock()
-		return err
-	}
-	c.untrackSubscription(sub)
-	// Notify that the subscription has been unsubscribed so the service
-	// might be able to clean up resources tied to this subscription.
-	sub.deactivate(ErrUnsubscribed)
-	sub.opMu.Unlock()
-	return nil
 }
 
 // ErrUnsubscribed is an error notified by [SubscriptionHandler.HandleError] when

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/df-mc/go-xsapi/v2/rta"
 )
 
 func TestSubscriptionHandlerAllowsNonComparableHandlers(t *testing.T) {
@@ -35,6 +37,29 @@ func TestSubscriptionHandlerAllowsNonComparableHandlers(t *testing.T) {
 	}
 }
 
+func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
+	calls := make(chan string, 1)
+	handler := nonComparableSocialHandler{
+		calls: calls,
+		data:  []string{"non-comparable"},
+	}
+	c := &Client{
+		subscriptionHandlers: []SubscriptionHandler{handler},
+	}
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleError(rta.ErrUnsubscribed)
+
+	select {
+	case got := <-calls:
+		t.Fatalf("handler call = %q, want none", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 type nonComparableSocialHandler struct {
 	calls chan<- string
 	data  []string
@@ -46,4 +71,6 @@ func (h nonComparableSocialHandler) HandleSocialNotification(typ string, xuids [
 
 func (h nonComparableSocialHandler) HandleIncomingFriendRequestCountChange(int) {}
 
-func (h nonComparableSocialHandler) HandleSubscriptionLost() {}
+func (h nonComparableSocialHandler) HandleSubscriptionLost() {
+	h.calls <- "lost"
+}

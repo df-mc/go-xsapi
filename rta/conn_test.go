@@ -109,6 +109,38 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeRetriesInterruptedResponse(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.closeUnsubscribeResponse()
+	if err := conn.Unsubscribe(ctx, sub); err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	if got := srv.unsubscribeCount.Load(); got != 2 {
+		t.Fatalf("unsubscribe count = %d, want 2", got)
+	}
+	if sub.Active() {
+		t.Fatal("subscription is still active after retried unsubscribe")
+	}
+	conn.subscriptionsMu.RLock()
+	_, tracked := conn.subscriptions[sub.ID()]
+	conn.subscriptionsMu.RUnlock()
+	if tracked {
+		t.Fatal("subscription is still tracked after retried unsubscribe")
+	}
+}
+
 func TestConcurrentSubscribeCoalescesSingleHandshake(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -483,7 +515,7 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		case typeUnsubscribe:
 			s.unsubscribeCount.Add(1)
-			if s.closeUnsubscribe.Load() {
+			if s.closeUnsubscribe.Swap(false) {
 				_ = conn.Close(websocket.StatusGoingAway, "test close")
 				return
 			}

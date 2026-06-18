@@ -106,6 +106,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 }
 
 func (h *subscriptionHandler) HandleError(err error) {
+	if errors.Is(err, rta.ErrUnsubscribed) {
+		return
+	}
 	h.log.Error("subscription lost", "err", err)
 
 	for _, handler := range h.handlers() {
