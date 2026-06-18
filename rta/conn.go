@@ -102,8 +102,10 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 					}
 					continue
 				}
-				sub.opMu.Unlock()
-				return err
+				if !unexpectedStatusIs(err, StatusUnknownResource) {
+					sub.opMu.Unlock()
+					return err
+				}
 			}
 			c.untrackSubscriptionID(id)
 			sub.deactivate(nil)
@@ -250,6 +252,11 @@ func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
 		return unexpectedStatusCode(h.status, h.payload)
 	}
 	return nil
+}
+
+func unexpectedStatusIs(err error, code int32) bool {
+	var statusErr *UnexpectedStatusError
+	return errors.As(err, &statusErr) && statusErr.Code == code
 }
 
 // call sends a sequenced message to the server and blocks using the given

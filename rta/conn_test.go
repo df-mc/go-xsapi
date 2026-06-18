@@ -173,6 +173,38 @@ func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
 	}
 }
 
+func TestSubscribeHandlerErrorWithInterruptedCleanupRetriesAfterReconnect(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.validateUnsubscribeIDs()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	wantErr := errors.New("bad custom payload")
+	handler := &transientSubscribeHandler{err: wantErr}
+	sub := NewSubscription("test-resource", handler)
+	srv.closeUnsubscribeResponse()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := conn.SubscribeSubscription(ctx, sub)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Subscribe error = %v, want %v", err, wantErr)
+	}
+
+	handler.err = nil
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+		t.Fatalf("retry Subscribe returned error: %v", err)
+	}
+	if got := srv.subscribeCount.Load(); got != 2 {
+		t.Fatalf("subscribe count = %d, want 2", got)
+	}
+	if !sub.ready() {
+		t.Fatal("subscription was not ready after retry on new connection")
+	}
+}
+
 func TestSubscribeHandlerErrorWithRollbackFailurePreservesTrackedSubscription(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()

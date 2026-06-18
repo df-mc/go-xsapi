@@ -69,6 +69,63 @@ func TestSubscriptionHandlerStoresValidConnectionID(t *testing.T) {
 	}
 }
 
+func TestSubscriptionHandlerIgnoresClosedSessionDuringSubscribe(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	closedRef := ref
+	closedRef.Name = "CLOSED"
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	active := &Session{
+		client: c,
+		ref:    ref,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	closed := &Session{
+		client: c,
+		ref:    closedRef,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	close(closed.closed)
+	c.sessions[active.ref.URL().String()] = active
+	c.sessions[closed.ref.URL().String()] = closed
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	id := uuid.New()
+
+	if err := h.HandleSubscribe(json.RawMessage(`{"ConnectionId":"` + id.String() + `"}`)); err != nil {
+		t.Fatalf("HandleSubscribe returned error: %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("session update requests = %d, want 1", got)
+	}
+	select {
+	case <-active.Context().Done():
+		t.Fatal("active session was closed")
+	default:
+	}
+}
+
 func TestSubscriptionHandlerReturnsSessionConnectionUpdateError(t *testing.T) {
 	wantErr := errors.New("update failed")
 	ref := SessionReference{

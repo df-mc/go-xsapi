@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -124,6 +125,9 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 				},
 			}, nil)
 			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
 				// TODO: Use a background context so we can propagate the error to the caller.
 				session.log.Error("error updating connection ID", "err", err)
 				err = fmt.Errorf("update session %s connection ID: %w", session.Reference().URL(), err)
