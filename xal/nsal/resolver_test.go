@@ -2,6 +2,7 @@ package nsal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -131,18 +132,7 @@ func TestResolverDefaultTitleLoadBypassesNSALTransport(t *testing.T) {
 			if got := req.Header.Get("Signature"); got != "" {
 				t.Fatalf("Signature = %q, want empty", got)
 			}
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body: io.NopCloser(strings.NewReader(`{
-					"EndPoints": [{
-						"Protocol": "https",
-						"Host": "*.xboxlive.com",
-						"HostType": "wildcard",
-						"RelyingParty": "http://xboxlive.com",
-						"TokenType": "JWT"
-					}]
-				}`)),
-			}, nil
+			return defaultTitleResponse(), nil
 		}),
 		Resolver: resolver,
 	}}
@@ -158,6 +148,29 @@ func TestResolverDefaultTitleLoadBypassesNSALTransport(t *testing.T) {
 	}
 	if src.called {
 		t.Fatal("token source was called while loading default title data")
+	}
+}
+
+func TestResolverFallsBackAfterTitleLoadError(t *testing.T) {
+	resetDefaultTitle(t)
+
+	currentErr := errors.New("current title unavailable")
+	src := &transportTokenSource{err: currentErr}
+	resolver := ResolverConfig{TitleIDs: []string{"current", "default"}}.New(src)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return defaultTitleResponse(), nil
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+
+	endpoint, _, err := resolver.Resolve(ctx, mustParseURL(t, "https://sessiondirectory.xboxlive.com/handles"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if endpoint.RelyingParty != authorizationRelyingParty {
+		t.Fatalf("RelyingParty = %q, want %q", endpoint.RelyingParty, authorizationRelyingParty)
+	}
+	if !src.called {
+		t.Fatal("token source was not called for current title data")
 	}
 }
 
@@ -181,4 +194,19 @@ func resetDefaultTitle(t *testing.T) {
 		defaultTitle = previous
 		defaultTitleMu.Unlock()
 	})
+}
+
+func defaultTitleResponse() *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(`{
+			"EndPoints": [{
+				"Protocol": "https",
+				"Host": "*.xboxlive.com",
+				"HostType": "wildcard",
+				"RelyingParty": "http://xboxlive.com",
+				"TokenType": "JWT"
+			}]
+		}`)),
+	}
 }

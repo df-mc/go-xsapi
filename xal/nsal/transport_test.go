@@ -168,11 +168,15 @@ type transportTokenSource struct {
 	relyingParty string
 	token        Token
 	proofKey     *ecdsa.PrivateKey
+	err          error
 }
 
 func (src *transportTokenSource) Token(_ context.Context, relyingParty string) (Token, error) {
 	src.called = true
 	src.relyingParty = relyingParty
+	if src.err != nil {
+		return nil, src.err
+	}
 	return src.token, nil
 }
 

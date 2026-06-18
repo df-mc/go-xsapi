@@ -94,14 +94,19 @@ func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, 
 	if endpoint, policy, ok := matchTitleData(r.titles(), u); ok {
 		return endpoint, policy, nil
 	}
+	var errs []error
 	for _, titleID := range r.conf.TitleIDs {
 		title, err := r.title(ctx, titleID)
 		if err != nil {
-			return endpoint, policy, err
+			errs = append(errs, fmt.Errorf("load title data for %q: %w", titleID, err))
+			continue
 		}
 		if endpoint, policy, ok := title.Match(u); ok {
 			return endpoint, policy, nil
 		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return endpoint, policy, fmt.Errorf("no endpoint was found for %s: %w", u, err)
 	}
 	return endpoint, policy, fmt.Errorf("no endpoint was found for %s", u)
 }
