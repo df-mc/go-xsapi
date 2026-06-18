@@ -423,6 +423,41 @@ func TestReconnectRestartsWhenCurrentConnFailsDuringResubscribe(t *testing.T) {
 	}
 }
 
+func TestReconnectClosesPreviousCurrentConn(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if got := srv.activeConns.Load(); got != 1 {
+		t.Fatalf("active connections = %d, want 1", got)
+	}
+
+	oldConn := conn.currentConn()
+	conn.reconnect()
+	if conn.currentConn() == oldConn {
+		t.Fatal("reconnect did not replace current connection")
+	}
+	deadline := time.After(time.Second)
+	for srv.activeConns.Load() != 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("active connections = %d, want 1", srv.activeConns.Load())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if got := srv.subscribeCount.Load(); got != 2 {
+		t.Fatalf("subscribe count = %d, want 2", got)
+	}
+}
+
 type failingSubscribeHandler struct {
 	NopSubscriptionHandler
 	err error
@@ -464,6 +499,7 @@ type connTestServer struct {
 	closeSubscribeID  atomic.Uint32
 	closeSubscribeMin atomic.Uint32
 	closeUnsubscribe  atomic.Bool
+	activeConns       atomic.Int32
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
@@ -523,7 +559,9 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	s.activeConns.Add(1)
 	defer func() {
+		s.activeConns.Add(-1)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
 

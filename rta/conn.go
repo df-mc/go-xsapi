@@ -457,6 +457,19 @@ func (c *Conn) currentConn() *websocket.Conn {
 	return c.conn
 }
 
+// replaceConn publishes conn as the current WebSocket and retires the previous
+// current connection so its read loop cannot keep dispatching stale traffic.
+func (c *Conn) replaceConn(conn *websocket.Conn) {
+	c.connMu.Lock()
+	old := c.conn
+	c.conn = conn
+	c.connMu.Unlock()
+	if old != nil && old != conn {
+		_ = old.Close(websocket.StatusGoingAway, "reconnecting")
+		c.drainExpected(old)
+	}
+}
+
 // isCurrentConn reports whether conn is still the active WebSocket connection.
 func (c *Conn) isCurrentConn(conn *websocket.Conn) bool {
 	c.connMu.RLock()
@@ -545,9 +558,7 @@ func (c *Conn) reconnect() {
 		}
 		c.subscriptionsMu.Unlock()
 
-		c.connMu.Lock()
-		c.conn = conn
-		c.connMu.Unlock()
+		c.replaceConn(conn)
 		go c.read(conn)
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
