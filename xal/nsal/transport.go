@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
 var _ http.RoundTripper = (*Transport)(nil)
@@ -81,7 +82,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
-func (t *Transport) TokenAndSignature(ctx context.Context, u *url.URL) (_ Token, policy SignaturePolicy, _ error) {
+func (t *Transport) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, _ error) {
 	if t == nil {
 		return nil, policy, errors.New("xal/nsal: nil Transport")
 	}

@@ -229,11 +229,7 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 	if err != nil {
 		return nil, policy, err
 	}
-	xstsToken, ok := token.(*xsts.Token)
-	if !ok {
-		return nil, policy, fmt.Errorf("xsapi: unexpected NSAL token type %T", token)
-	}
-	return xstsToken, policy, nil
+	return token, policy, nil
 }
 
 // WithoutAuthHeaders returns a cloned HTTP request configured to exclude
