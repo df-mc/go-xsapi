@@ -3,6 +3,7 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -19,18 +20,25 @@ import (
 // notifications for changes in the session.
 func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 	if c.subscription.Active() {
-		if data := c.subscriptionData.Load(); data != nil {
-			// If the subscription was already made with RTA, return the cached
-			// subscription along with its decoded payload.
-			return data.ConnectionID, nil
-		}
+		// If the subscription was already made with RTA, return the cached
+		// subscription along with its decoded payload.
+		return c.subscriptionConnectionID()
 	}
 	if err = c.rta.Subscribe(ctx, c.subscription); err != nil {
 		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	// If an error has occurred while decoding the subscription data, a method call to [rta.Conn.Subscribe]
-	// would return an error so it is guaranteed that the subscription data is non-nil.
-	return c.subscriptionData.Load().ConnectionID, nil
+	return c.subscriptionConnectionID()
+}
+
+func (c *Client) subscriptionConnectionID() (uuid.UUID, error) {
+	data := c.subscriptionData.Load()
+	if data == nil {
+		return uuid.Nil, errors.New("mpsd: missing RTA subscription data")
+	}
+	if data.ConnectionID == uuid.Nil {
+		return uuid.Nil, errors.New("mpsd: missing RTA connection ID")
+	}
+	return data.ConnectionID, nil
 }
 
 // resourceURI is the resource URI used to subscribe with RTA (Real-Time Activity) Services
@@ -90,6 +98,9 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	if err := json.Unmarshal(custom, &data); err != nil {
 		// If we return this error here, the Subscribe() call on rta.Conn will fail.
 		return fmt.Errorf("parse subscription data: %w", err)
+	}
+	if data.ConnectionID == uuid.Nil {
+		return errors.New("missing RTA connection ID in subscription data")
 	}
 	h.subscriptionData.Store(&data)
 

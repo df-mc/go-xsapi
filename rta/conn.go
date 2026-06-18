@@ -70,9 +70,14 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 			sub.opMu.Unlock()
 			return nil
 		}
+		c.subscriptionsMu.Lock()
 		err := c.subscribe(ctx, sub)
-		sub.opMu.Unlock()
+		if err == nil {
+			c.subscriptions[sub.ID()] = sub
+		}
+		c.subscriptionsMu.Unlock()
 		if err == errConnectionInterrupted {
+			sub.opMu.Unlock()
 			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
 				return err
 			}
@@ -80,9 +85,10 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 		}
 		if err != nil {
 			sub.deactivate(err)
+			sub.opMu.Unlock()
 			return err
 		}
-		c.trackSubscription(sub)
+		sub.opMu.Unlock()
 		return nil
 	}
 }
@@ -546,8 +552,8 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 			defer cancel()
 			subscription.opMu.Lock()
 			err := c.subscribe(ctx, subscription)
-			subscription.opMu.Unlock()
 			if err != nil {
+				subscription.opMu.Unlock()
 				if err == errConnectionInterrupted {
 					c.trackSubscription(subscription)
 					interruptedSubscription.Store(true)
@@ -560,6 +566,7 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 			}
 
 			c.trackSubscription(subscription)
+			subscription.opMu.Unlock()
 			successCount.Add(1)
 
 			c.log.Debug("resubscribed", slog.Group("subscription",

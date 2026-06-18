@@ -283,6 +283,62 @@ func TestSubscribeCanUseReconnectedConnDuringResubscribe(t *testing.T) {
 	}
 }
 
+func TestReconnectIncludesSubscribeHandlingCustomPayload(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	handler := newBlockingSubscribeHandler(1)
+	sub := NewSubscription("test-resource", handler)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- conn.Subscribe(ctx, sub)
+	}()
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe did not reach subscription handler")
+	}
+
+	reconnectDone := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(reconnectDone)
+	}()
+
+	close(handler.unblock)
+	select {
+	case err := <-subscribeDone:
+		if err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe did not complete")
+	}
+	select {
+	case <-reconnectDone:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not complete")
+	}
+	if got := srv.subscribeCount.Load(); got != 2 {
+		t.Fatalf("subscribe count = %d, want 2", got)
+	}
+	if !sub.Active() {
+		t.Fatal("subscription became inactive after reconnect")
+	}
+	conn.subscriptionsMu.RLock()
+	_, tracked := conn.subscriptions[sub.ID()]
+	conn.subscriptionsMu.RUnlock()
+	if !tracked {
+		t.Fatal("subscription was not tracked after reconnect")
+	}
+}
+
 type failingSubscribeHandler struct {
 	NopSubscriptionHandler
 	err error
