@@ -87,12 +87,9 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 			sub.opMu.Unlock()
 			return nil
 		}
-		c.subscriptionsMu.Lock()
-		err := c.subscribe(ctx, sub, nil)
-		if err == nil {
-			c.subscriptions[sub.id()] = sub
-		}
-		c.subscriptionsMu.Unlock()
+		err := c.subscribe(ctx, sub, func(oldID uint32) {
+			c.retrackSubscription(oldID, sub)
+		})
 		if err == errConnectionInterrupted {
 			sub.opMu.Unlock()
 			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
@@ -101,6 +98,7 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 			continue
 		}
 		if err != nil {
+			c.untrackSubscriptionID(sub.id())
 			sub.deactivate(err)
 			sub.opMu.Unlock()
 			return err
@@ -174,7 +172,9 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 				if err := c.unsubscribe(ctx, id); err != nil {
 					return err
 				}
-				c.untrackSubscriptionID(id)
+				if tracked := c.untrackSubscriptionID(id); tracked != nil {
+					tracked.deactivate(ErrUnsubscribed)
+				}
 			}
 			return nil
 		}
@@ -478,10 +478,12 @@ func (c *Conn) untrackSubscription(sub *Subscription) {
 	c.untrackSubscriptionID(sub.id())
 }
 
-func (c *Conn) untrackSubscriptionID(id uint32) {
+func (c *Conn) untrackSubscriptionID(id uint32) *Subscription {
 	c.subscriptionsMu.Lock()
+	sub := c.subscriptions[id]
 	delete(c.subscriptions, id)
 	c.subscriptionsMu.Unlock()
+	return sub
 }
 
 func (c *Conn) retrackSubscription(oldID uint32, sub *Subscription) {

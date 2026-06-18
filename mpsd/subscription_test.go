@@ -2,12 +2,14 @@ package mpsd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,6 +99,99 @@ func TestSubscriptionHandlerReturnsSessionConnectionUpdateError(t *testing.T) {
 	err := h.HandleSubscribe(json.RawMessage(`{"ConnectionId":"` + id.String() + `"}`))
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("HandleSubscribe error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestSubscriptionHandlerResyncWaitsForConnectionUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	syncStarted := make(chan struct{}, 1)
+	var updateOnce sync.Once
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodPut:
+			updateOnce.Do(func() { close(updateStarted) })
+			<-releaseUpdate
+
+			header := make(http.Header)
+			header.Set("ETag", `"updated-etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+				Header:     header,
+				Request:    req,
+			}, nil
+		case http.MethodGet:
+			syncStarted <- struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusNotModified,
+				Status:     http.StatusText(http.StatusNotModified),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("request method = %s, want PUT or GET", req.Method)
+			return nil, nil
+		}
+	})}
+
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		etag:   `"old-etag"`,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := session.update(context.Background(), SessionDescription{}, nil)
+		updateDone <- err
+	}()
+	<-updateStarted
+
+	resyncDone := make(chan struct{})
+	go func() {
+		h.HandleResync()
+		close(resyncDone)
+	}()
+
+	select {
+	case <-syncStarted:
+		t.Fatal("HandleResync started Sync while connection update was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseUpdate)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("update returned error: %v", err)
+	}
+	select {
+	case <-resyncDone:
+	case <-time.After(time.Second):
+		t.Fatal("HandleResync did not finish after update finished")
+	}
+	select {
+	case <-syncStarted:
+	case <-time.After(time.Second):
+		t.Fatal("HandleResync did not sync session after update finished")
 	}
 }
 

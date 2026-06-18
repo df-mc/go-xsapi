@@ -188,6 +188,9 @@ func TestUnsubscribeIDOnlySubscriptionCompatibility(t *testing.T) {
 	if got := srv.unsubscribeCount.Load(); got != 1 {
 		t.Fatalf("unsubscribe count = %d, want 1", got)
 	}
+	if sub.Active() {
+		t.Fatal("original subscription is still active after ID-only unsubscribe")
+	}
 }
 
 func TestUnsubscribeInterruptedResponseCompletesLocally(t *testing.T) {
@@ -535,6 +538,49 @@ func TestReconnectIncludesSubscribeHandlingCustomPayload(t *testing.T) {
 	conn.subscriptionsMu.RUnlock()
 	if !tracked {
 		t.Fatal("subscription was not tracked after reconnect")
+	}
+}
+
+func TestSubscribeRoutesEventsBeforeSubscribeHandlerReturns(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.sendEventAfterSubscribe(1)
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	handler := newBlockingEventHandler(1)
+	sub := NewSubscription("test-resource", handler)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- conn.SubscribeSubscription(ctx, sub)
+	}()
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe did not reach subscription handler")
+	}
+
+	close(srv.sendSubscribeEvent)
+	select {
+	case got := <-handler.events:
+		if string(got) != `{"event":true}` {
+			t.Fatalf("event payload = %s, want {\"event\":true}", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event was not routed while subscribe handler was blocked")
+	}
+	close(handler.unblock)
+	select {
+	case err := <-subscribeDone:
+		if err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe did not complete")
 	}
 }
 
