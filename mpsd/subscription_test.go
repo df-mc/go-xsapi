@@ -352,6 +352,87 @@ func TestCreateSessionReconcilesCurrentSubscriptionConnection(t *testing.T) {
 	}
 }
 
+func TestCreateSessionUntracksSessionWhenReconcileAndCleanupFail(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	currentConnectionID := uuid.New()
+	reconcileErr := errors.New("reconcile failed")
+	closeErr := errors.New("close failed")
+	var activityRequests atomic.Int32
+	var sessionUpdates atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodPost:
+			activityRequests.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		case http.MethodPut:
+			if sessionUpdates.Add(1) == 1 {
+				return nil, reconcileErr
+			}
+			return nil, closeErr
+		default:
+			t.Fatalf("request method = %s, want POST or PUT", req.Method)
+			return nil, nil
+		}
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.subscriptionData.Store(&subscriptionData{ConnectionID: currentConnectionID})
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(SessionDescription{
+		Members: map[string]*MemberDescription{
+			"me": {
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{Active: true},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusCreated,
+		Status:     http.StatusText(http.StatusCreated),
+		Body:       io.NopCloser(&body),
+		Header:     make(http.Header),
+	}
+
+	session, err := c.createSession(context.Background(), ref, resp)
+	if session != nil {
+		t.Fatalf("createSession session = %v, want nil", session)
+	}
+	if !errors.Is(err, reconcileErr) {
+		t.Fatalf("createSession error = %v, want %v", err, reconcileErr)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("createSession error = %v, want joined close error %v", err, closeErr)
+	}
+	if got := activityRequests.Load(); got != 1 {
+		t.Fatalf("activity requests = %d, want 1", got)
+	}
+	if got := sessionUpdates.Load(); got != 2 {
+		t.Fatalf("session update requests = %d, want 2", got)
+	}
+	c.sessionsMu.RLock()
+	_, tracked := c.sessions[ref.URL().String()]
+	c.sessionsMu.RUnlock()
+	if tracked {
+		t.Fatal("session remained tracked after reconcile and cleanup failed")
+	}
+}
+
 func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
@@ -394,6 +475,60 @@ func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("close requests = %d, want 0", got)
+	}
+}
+
+func TestSubscriptionHandlerClosesSessionsOnSubscriptionLoss(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if req.Method != http.MethodPut {
+			t.Fatalf("request method = %s, want PUT", req.Method)
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Status:     http.StatusText(http.StatusNoContent),
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleError(io.ErrUnexpectedEOF)
+
+	select {
+	case <-session.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("session was not closed after subscription loss")
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("close requests = %d, want 1", got)
+	}
+	c.sessionsMu.RLock()
+	_, tracked := c.sessions[ref.URL().String()]
+	c.sessionsMu.RUnlock()
+	if tracked {
+		t.Fatal("session remained tracked after subscription loss close")
 	}
 }
 

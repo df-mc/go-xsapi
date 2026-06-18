@@ -60,6 +60,32 @@ func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 	}
 }
 
+func TestSubscriptionHandlerNotifiesSubscriptionLost(t *testing.T) {
+	calls := make(chan string, 1)
+	handler := nonComparableSocialHandler{
+		calls: calls,
+		data:  []string{"non-comparable"},
+	}
+	c := &Client{
+		subscriptionHandlers: []SubscriptionHandler{handler},
+	}
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleError(io.ErrUnexpectedEOF)
+
+	select {
+	case got := <-calls:
+		if got != "lost" {
+			t.Fatalf("handler call = %q, want lost", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscription lost handler was not called")
+	}
+}
+
 func TestAddSubscriptionHandlerDeduplicatesComparableHandlers(t *testing.T) {
 	handler := &countingSocialHandler{}
 	c := &Client{}
