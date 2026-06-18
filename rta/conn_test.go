@@ -363,6 +363,57 @@ func TestSubscribeWaitsForReconnectBeforeActiveShortcut(t *testing.T) {
 	}
 }
 
+func TestSubscribeWaitsWhenReconnectDoneNotYetPublished(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.SubscribeSubscription(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	conn.reconnecting.Store(true)
+	callDone := make(chan error, 1)
+	go func() {
+		callDone <- conn.SubscribeSubscription(ctx, sub)
+	}()
+
+	select {
+	case <-callDone:
+		t.Fatal("Subscribe returned while reconnecting was true and reconnectDone was nil")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	done := make(chan struct{})
+	conn.reconnectMu.Lock()
+	conn.reconnectDone = done
+	conn.reconnectMu.Unlock()
+	select {
+	case <-callDone:
+		t.Fatal("Subscribe returned before reconnectDone closed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(done)
+	conn.reconnecting.Store(false)
+	conn.reconnectMu.Lock()
+	conn.reconnectDone = nil
+	conn.reconnectMu.Unlock()
+	select {
+	case err := <-callDone:
+		if err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Subscribe did not return after reconnectDone closed")
+	}
+}
+
 func TestReconnectIncludesSubscribeHandlingCustomPayload(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()

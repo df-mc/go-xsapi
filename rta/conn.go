@@ -417,20 +417,31 @@ func (c *Conn) write(conn *websocket.Conn, typ uint32, payload []any) error {
 
 // wait blocks until any in-progress reconnect attempt has finished.
 func (c *Conn) wait(ctx context.Context) error {
-	c.reconnectMu.RLock()
-	done := c.reconnectDone
-	c.reconnectMu.RUnlock()
+	for {
+		c.reconnectMu.RLock()
+		done := c.reconnectDone
+		c.reconnectMu.RUnlock()
 
-	if done == nil {
-		return nil
-	}
-	select {
-	case <-done:
-		return context.Cause(c.ctx) // nil unless the Conn was closed
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-c.ctx.Done():
-		return context.Cause(c.ctx)
+		if done != nil {
+			select {
+			case <-done:
+				return context.Cause(c.ctx) // nil unless the Conn was closed
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-c.ctx.Done():
+				return context.Cause(c.ctx)
+			}
+		}
+		if !c.reconnecting.Load() {
+			return nil
+		}
+		select {
+		case <-time.After(time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.ctx.Done():
+			return context.Cause(c.ctx)
+		}
 	}
 }
 
