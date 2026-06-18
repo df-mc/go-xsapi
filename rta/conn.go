@@ -640,16 +640,18 @@ func (c *Conn) read(conn *websocket.Conn) {
 	for {
 		var payload []json.RawMessage
 		if err := wsjson.Read(context.Background(), conn, &payload); err != nil {
-			c.drainExpected(conn)
 			if !c.isCurrentConn(conn) {
+				c.drainExpected(conn)
 				return
 			}
 			if c.ctx.Err() != nil {
 				// Conn was closed by the user. Do not reconnect.
+				c.drainExpected(conn)
 				return
 			}
 			c.log.Error("error reading from WebSocket connection", slog.Any("error", err))
 			c.requestReconnect()
+			c.drainExpected(conn)
 			return
 		}
 		typ, err := readHeader(payload)
