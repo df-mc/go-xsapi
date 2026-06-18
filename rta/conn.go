@@ -117,7 +117,7 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 		}
 		custom := slices.Clone(h.payload[1])
 		sub.activate(id, custom)
-		if err := sub.handleSubscribe(custom); err != nil {
+		if err := sub.handler().HandleSubscribe(custom); err != nil {
 			// This resource has failed to understand this subscription.
 			if err2 := c.unsubscribe(ctx, id); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
@@ -316,7 +316,7 @@ func (s *Subscription) deactivate(cause error) {
 	s.active, s.unsubscribing = false, false
 	s.mu.Unlock()
 	if active && cause != nil {
-		s.handleError(cause)
+		go s.handler().HandleError(cause)
 	}
 }
 
@@ -346,25 +346,12 @@ type SubscriptionHandler interface {
 	// For example, in Social API, an event is received when a user adds or
 	// removes the caller.
 	HandleEvent(custom json.RawMessage)
-}
 
-// SubscribeHandler is an optional extension interface for handlers that need
-// to process the custom payload returned by a successful subscribe handshake.
-type SubscribeHandler interface {
 	HandleSubscribe(custom json.RawMessage) error
-}
-
-// ResyncHandler is an optional extension interface for handlers that need to
-// react to RTA resync messages.
-type ResyncHandler interface {
 	// HandleResync is called when a Resync message is received from the RTA service
 	// and the resource targeted by the Subscription may have been changed.
 	HandleResync()
-}
 
-// ErrorHandler is an optional extension interface for handlers that need to
-// observe unrecoverable subscription errors.
-type ErrorHandler interface {
 	// HandleError is called when an unrecoverable error has occurred for this subscription.
 	// The caller may need to resubscribe in order to receive updates for the resource.
 	HandleError(err error)
@@ -377,29 +364,6 @@ func (NopSubscriptionHandler) HandleSubscribe(json.RawMessage) error { return ni
 func (NopSubscriptionHandler) HandleEvent(json.RawMessage)           {}
 func (NopSubscriptionHandler) HandleResync()                         {}
 func (NopSubscriptionHandler) HandleError(error)                     {}
-
-func (s *Subscription) handleSubscribe(custom json.RawMessage) error {
-	if h, ok := s.handler().(SubscribeHandler); ok {
-		return h.HandleSubscribe(custom)
-	}
-	return nil
-}
-
-func (s *Subscription) handleEvent(custom json.RawMessage) {
-	s.handler().HandleEvent(custom)
-}
-
-func (s *Subscription) handleResync() {
-	if h, ok := s.handler().(ResyncHandler); ok {
-		h.HandleResync()
-	}
-}
-
-func (s *Subscription) handleError(err error) {
-	if h, ok := s.handler().(ErrorHandler); ok {
-		go h.HandleError(err)
-	}
-}
 
 // write sends a JSON array composed of the given type and payload over the
 // WebSocket connection. A background context is used intentionally, because
@@ -687,7 +651,7 @@ func (c *Conn) handleMessage(conn *websocket.Conn, typ uint32, payload []json.Ra
 		sub, ok := c.subscriptions[subscriptionID]
 		c.subscriptionsMu.RUnlock()
 		if ok && sub.Active() {
-			go sub.handleEvent(payload[1])
+			go sub.handler().HandleEvent(payload[1])
 		}
 		c.log.Debug("received event", slog.Group("message", "type", typ, "custom", payload[0]))
 		return nil
@@ -696,7 +660,7 @@ func (c *Conn) handleMessage(conn *websocket.Conn, typ uint32, payload []json.Ra
 		c.subscriptionsMu.RLock()
 		for _, subscription := range c.subscriptions {
 			if subscription.Active() {
-				go subscription.handleResync()
+				go subscription.handler().HandleResync()
 			}
 		}
 		c.subscriptionsMu.RUnlock()
