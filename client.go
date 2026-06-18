@@ -1,17 +1,13 @@
 package xsapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,7 +36,8 @@ func NewClient(src TokenSource) (*Client, error) {
 
 // New creates a new [Client] using the given [TokenSource] and [ClientConfig].
 // The provided context governs the initial login, including
-// requesting XSTS tokens, fetching NSAL data, and connecting to WebSocket services.
+// requesting XSTS tokens and connecting to WebSocket services. NSAL title data
+// is resolved lazily when an authenticated request first needs it.
 //
 // New clones the [ClientConfig.HTTPClient] internally so that the original
 // client is never mutated. This means that passing [http.DefaultClient] or any
@@ -80,19 +77,9 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	c.userInfo = xui
 
-	// NSAL (Network Security Allow List) provides two kinds of title data:
-	//  - Default data covering *.xboxlive.com endpoints
-	//  - Title-scoped data for title-specific endpoints such as PlayFab
-	//
-	// Title-scoped data takes priority over default data when resolving the
-	// relying party for an XSTS token. Default data is used as the fallback.
-	c.defaultTitle, err = nsal.Default(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("request NSAL default title data: %w", err)
-	}
-	c.currentTitle, err = nsal.Current(ctx, token, src.ProofKey())
-	if err != nil {
-		return nil, fmt.Errorf("request NSAL title data for current authenticated title: %w", err)
+	c.transport = &nsal.Transport{
+		Base:     c.baseTransport(),
+		Resolver: nsal.NewResolver(src),
 	}
 
 	// Connect to RTA services.
@@ -138,8 +125,8 @@ type Client struct {
 	client *http.Client
 	src    TokenSource
 
-	defaultTitle, currentTitle *nsal.TitleData
-	userInfo                   xsts.UserInfo
+	transport *nsal.Transport
+	userInfo  xsts.UserInfo
 
 	rta      *rta.Conn
 	mpsd     *mpsd.Client
@@ -157,14 +144,10 @@ func (c *Client) HTTPClient() *http.Client {
 	return c.client
 }
 
-// RoundTrip implements [http.RoundTripper]. It resolves an XSTS token and
-// signature policy for the request URL using NSAL (Network Security Allow List),
-// then sets the 'Authorization' and 'Signature' headers before forwarding the request to
-// the underlying transport.
+// RoundTrip implements [http.RoundTripper].
 //
 // RoundTrip always consumes the request body, even on error, as required by
-// the [http.RoundTripper] contract. The request is cloned before any headers
-// are set to avoid mutating the original.
+// the [http.RoundTripper] contract.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 	var reqBodyClosed bool
 	if req.Body != nil {
@@ -177,51 +160,8 @@ func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
 	if c.closed.Load() {
 		return nil, net.ErrClosed
 	}
-
-	// If the 'Authorization' header is already present on the request, skip requesting a new XSTS token.
-	if req.Header.Get("Authorization") != "" {
-		reqBodyClosed = true
-		return c.baseTransport().RoundTrip(req)
-	}
-
-	// Propagate the request's context so that XSTS token retrieval
-	// respects any deadlines or cancellations set by the caller.
-	ctx := req.Context()
-	exclusion, _ := ctx.Value(headerExclusion{}).(headerExclusionSet)
-	if exclusion.authorization() {
-		reqBodyClosed = true
-		return c.baseTransport().RoundTrip(req)
-	}
-
-	token, policy, err := c.TokenAndSignature(ctx, req.URL)
-	if err != nil {
-		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
-	}
-
-	// Clone the request so that the original headers are never mutated,
-	// as required by the [http.RoundTripper] contract.
-	req2 := req.Clone(ctx)
-	token.SetAuthHeader(req2)
-
-	// Generate a signature unless the request has opted out via WithoutAuthHeaders.
-	if req2.Header.Get("Signature") == "" && !exclusion.signature() {
-		// If a body is present, it is buffered in full so that it can be included
-		// in the 'Signature' header. It is then restored on the cloned request.
-		var data []byte
-		if req.Body != nil {
-			signingBuffer := &bytes.Buffer{}
-			if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
-				signingBuffer.Reset()
-				return nil, fmt.Errorf("clone request body: %w", err)
-			}
-			data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
-		}
-		if err := policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
-			return nil, fmt.Errorf("sign request: %w", err)
-		}
-	}
-
-	return c.baseTransport().RoundTrip(req2)
+	reqBodyClosed = true
+	return c.transport.RoundTrip(req.WithContext(c.nsalContext(req.Context())))
 }
 
 // baseTransport returns the transport of the HTTP client passed via
@@ -247,22 +187,35 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 	if c.closed.Load() {
 		return nil, policy, net.ErrClosed
 	}
-	// Title-scoped data is checked first. Default data is only consulted as a
-	// fallback because it can contain duplicate entries for the same endpoint
-	// (e.g. *.playfabapi.com may appear in both title-scoped and default data).
-	endpoint, policy, ok := c.currentTitle.Match(u)
-	if !ok {
-		endpoint, policy, ok = c.defaultTitle.Match(u)
-		if !ok {
-			return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
-		}
-	}
-
-	token, err := c.src.XSTSToken(ctx, endpoint.RelyingParty)
+	token, policy, err := c.transport.TokenAndSignature(c.nsalContext(ctx), u)
 	if err != nil {
-		return nil, policy, fmt.Errorf("request XSTS token: %w", err)
+		return nil, policy, err
 	}
-	return token, policy, nil
+	xstsToken, ok := token.(*xsts.Token)
+	if !ok {
+		return nil, policy, fmt.Errorf("xsapi: unexpected NSAL token type %T", token)
+	}
+	return xstsToken, policy, nil
+}
+
+// WithoutAuthHeaders returns a cloned HTTP request configured to exclude
+// specified authentication headers from being automatically added by
+// [Client.HTTPClient].
+//
+// Header names are matched case-insensitively. If no headers are provided,
+// both Authorization and Signature are excluded.
+func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
+	return nsal.WithoutAuthHeaders(req, headers...)
+}
+
+func (c *Client) nsalContext(ctx context.Context) context.Context {
+	if client, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && client != nil {
+		return ctx
+	}
+	if c.client == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, xal.HTTPClient, c.client)
 }
 
 // Log returns the [slog.Logger] configured via [ClientConfig.Logger].
@@ -359,43 +312,4 @@ func AcceptLanguage(tags []language.Tag) internal.RequestOption {
 // with the given name and value on outgoing requests.
 func RequestHeader(key, value string) internal.RequestOption {
 	return internal.RequestHeader(key, value)
-}
-
-// WithoutAuthHeaders returns a cloned HTTP request configured to exclude
-// specified authentication headers from being automatically added by the
-// XSAPI client. This is useful when certain authentication headers should
-// not be set on outgoing requests.
-//
-// Header names are matched case-insensitively.
-func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
-	if len(headers) == 0 {
-		headers = []string{"Authorization", "Signature"}
-	}
-	return req.Clone(context.WithValue(req.Context(), headerExclusion{}, headerExclusionSet(headers)))
-}
-
-// headerExclusion is a context key that stores which authentication headers
-// should be excluded from automatic generation by the XSAPI client.
-type headerExclusion struct{}
-
-// headerExclusionSet represents a list of header names to exclude from
-// automatic authentication header generation. Header names are case-insensitive.
-type headerExclusionSet []string
-
-// contains reports whether the given header name is in the exclusion set.
-// The comparison is case-insensitive.
-func (s headerExclusionSet) contains(header string) bool {
-	return slices.ContainsFunc(s, func(s string) bool {
-		return strings.EqualFold(s, header)
-	})
-}
-
-// authorization reports whether the 'Authorization' header is excluded.
-func (s headerExclusionSet) authorization() bool {
-	return s.contains("Authorization")
-}
-
-// signature reports whether the 'Signature' header is excluded.
-func (s headerExclusionSet) signature() bool {
-	return s.contains("Signature")
 }

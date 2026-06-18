@@ -3,16 +3,22 @@ package xsapi
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
 	"github.com/df-mc/go-xsapi/v2/social"
+	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
@@ -95,6 +101,70 @@ func TestClientRoundTripClosesRequestBodyAfterClose(t *testing.T) {
 	}
 }
 
+func TestClientRoundTripUsesConfiguredHTTPClientForLazyNSAL(t *testing.T) {
+	originalDefaultTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("http.DefaultClient should not be used for lazy NSAL resolution")
+		return nil, nil
+	})
+	t.Cleanup(func() {
+		http.DefaultTransport = originalDefaultTransport
+	})
+
+	key := mustGenerateECDSAKey(t)
+	src := &recordingTokenSource{token: testXSTSToken(time.Now().Add(time.Hour)), proofKey: key}
+	var titleRequested, finalRequested bool
+	configuredClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://title.mgt.xboxlive.com/titles/current/endpoints":
+			titleRequested = true
+			if got := req.Header.Get("Authorization"); got == "" {
+				t.Fatal("current title request missing Authorization header")
+			}
+			if got := req.Header.Get("Signature"); got == "" {
+				t.Fatal("current title request missing Signature header")
+			}
+			return nsalTitleDataResponse("*.playfabapi.com", "https://playfabapi.com"), nil
+		case "https://20ca2.playfabapi.com/Client/LoginWithXbox":
+			finalRequested = true
+			if got := req.Header.Get("Authorization"); got == "" {
+				t.Fatal("final request missing Authorization header")
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		default:
+			t.Fatalf("unexpected request URL: %s", req.URL)
+			return nil, nil
+		}
+	})}
+	client := &Client{
+		config: ClientConfig{HTTPClient: configuredClient},
+		src:    src,
+	}
+	client.client = new(http.Client)
+	*client.client = *configuredClient
+	client.client.Transport = client
+	client.transport = &nsal.Transport{
+		Base:     client.baseTransport(),
+		Resolver: nsal.NewResolver(src),
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "https://20ca2.playfabapi.com/Client/LoginWithXbox", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	_ = resp.Body.Close()
+	if !titleRequested {
+		t.Fatal("current title endpoint was not requested")
+	}
+	if !finalRequested {
+		t.Fatal("final request was not sent")
+	}
+}
+
 type stubTokenSource struct{}
 
 func (stubTokenSource) XSTSToken(context.Context, string) (*xsts.Token, error) {
@@ -107,6 +177,60 @@ func (stubTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
 
 func (stubTokenSource) ProofKey() *ecdsa.PrivateKey {
 	return nil
+}
+
+type recordingTokenSource struct {
+	token        *xsts.Token
+	relyingParty string
+	proofKey     *ecdsa.PrivateKey
+}
+
+func (src *recordingTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {
+	src.relyingParty = relyingParty
+	return src.token, nil
+}
+
+func (*recordingTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
+	return nil, errors.New("unexpected device token request")
+}
+
+func (src *recordingTokenSource) ProofKey() *ecdsa.PrivateKey {
+	return src.proofKey
+}
+
+func testXSTSToken(notAfter time.Time) *xsts.Token {
+	return &xsts.Token{
+		Token:    "token",
+		NotAfter: notAfter,
+		DisplayClaims: xsts.DisplayClaims{
+			UserInfo: []xsts.UserInfo{{}},
+		},
+	}
+}
+
+func mustGenerateECDSAKey(t *testing.T) *ecdsa.PrivateKey {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return key
+}
+
+func nsalTitleDataResponse(host, relyingParty string) *http.Response {
+	body := fmt.Sprintf(`{
+		"EndPoints": [{
+			"Protocol": "https",
+			"Host": %q,
+			"HostType": "wildcard",
+			"RelyingParty": %q,
+			"TokenType": "JWT"
+		}]
+	}`, host, relyingParty)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
 }
 
 type zeroReader struct{}

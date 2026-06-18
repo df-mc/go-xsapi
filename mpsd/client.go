@@ -20,10 +20,11 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 		log = slog.Default()
 	}
 	c := &Client{
-		client:   client,
-		rta:      conn,
-		userInfo: userInfo,
-		log:      log,
+		client:       client,
+		subscriber:   internal.Subscriber(conn),
+		unsubscriber: internal.Unsubscriber(conn),
+		userInfo:     userInfo,
+		log:          log,
 
 		sessions: make(map[string]*Session),
 	}
@@ -36,10 +37,11 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 
 // Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
 type Client struct {
-	client   *http.Client
-	rta      *rta.Conn
-	userInfo xsts.UserInfo
-	log      *slog.Logger
+	client       *http.Client
+	subscriber   internal.RTASubscriber
+	unsubscriber internal.RTAUnsubscriber
+	userInfo     xsts.UserInfo
+	log          *slog.Logger
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.
@@ -86,7 +88,7 @@ func (c *Client) Close() error {
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
 	if c.subscription.Active() {
-		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
+		if err := c.unsubscriber.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
 	}

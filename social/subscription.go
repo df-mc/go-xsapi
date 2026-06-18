@@ -27,7 +27,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 	}
 
 	if !c.subscription.Active() {
-		if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
+		if err := c.subscriber.Subscribe(ctx, c.subscription); err != nil {
 			return err
 		}
 	}

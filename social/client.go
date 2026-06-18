@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
@@ -18,10 +19,11 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 		log = slog.Default()
 	}
 	c := &Client{
-		client:   client,
-		rta:      conn,
-		userInfo: userInfo,
-		log:      log,
+		client:       client,
+		subscriber:   internal.Subscriber(conn),
+		unsubscriber: internal.Unsubscriber(conn),
+		userInfo:     userInfo,
+		log:          log,
 	}
 	c.subscription = rta.NewSubscription(socialEndpoint.JoinPath(
 		"users",
@@ -39,10 +41,11 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 //   - social.xboxlive.com for relationship management, such as adding or removing friends.
 //   - peoplehub.xboxlive.com for querying user profiles.
 type Client struct {
-	client   *http.Client
-	rta      *rta.Conn
-	userInfo xsts.UserInfo
-	log      *slog.Logger
+	client       *http.Client
+	subscriber   internal.RTASubscriber
+	unsubscriber internal.RTAUnsubscriber
+	userInfo     xsts.UserInfo
+	log          *slog.Logger
 
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
@@ -71,7 +74,7 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	defer c.subscriptionMu.Unlock()
 
 	if c.subscription.Active() {
-		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
+		if err := c.unsubscriber.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err)
 		}
 	}
