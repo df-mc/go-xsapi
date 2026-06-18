@@ -25,7 +25,7 @@ func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 			return data.ConnectionID, nil
 		}
 	}
-	if err = c.rta.SubscribeWith(ctx, c.subscription); err != nil {
+	if err = c.rta.Subscribe(ctx, c.subscription); err != nil {
 		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
 	// If an error has occurred while decoding the subscription data, a method call to [rta.Conn.SubscribeWith]

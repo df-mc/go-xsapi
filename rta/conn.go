@@ -57,21 +57,10 @@ type Conn struct {
 	cancel context.CancelCauseFunc
 }
 
-// Subscribe attempts to subscribe to the specific resource URI, with the
-// [context.Context] to be used during the handshake. A Subscription may be
-// returned, which contains an ID and Custom data as the result of handshake.
-func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
-	sub := NewSubscription(resourceURI, nil)
-	if err := c.SubscribeWith(ctx, sub); err != nil {
-		return nil, err
-	}
-	return sub, nil
-}
-
-// SubscribeWith attempts to subscribe using a caller-owned Subscription. It is
+// Subscribe attempts to subscribe using a caller-owned Subscription. It is
 // useful for services that need to preserve the same subscription object across
 // reconnects.
-func (c *Conn) SubscribeWith(ctx context.Context, sub *Subscription) error {
+func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
@@ -130,7 +119,7 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 		sub.activate(id, custom)
 		if err := sub.handleSubscribe(custom); err != nil {
 			// This resource has failed to understand this subscription.
-			if err2 := c.unsubscribeID(ctx, id); err2 != nil {
+			if err2 := c.unsubscribe(ctx, id); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
 			}
 			return err
@@ -156,8 +145,8 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		return nil
 	}
 	sub.setUnsubscribing(true)
-	err := c.unsubscribeID(ctx, sub.ID())
-	if err != nil && err != errConnectionInterrupted {
+	err := c.unsubscribe(ctx, sub.ID())
+	if err != nil && !errors.Is(err, errConnectionInterrupted) {
 		sub.setUnsubscribing(false)
 		sub.opMu.Unlock()
 		return err
@@ -174,7 +163,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 // the RTA subscription is unsubscribed by the user.
 var ErrUnsubscribed = errors.New("rta: subscription removed from RTA connection")
 
-func (c *Conn) unsubscribeID(ctx context.Context, id uint32) error {
+func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
 	h, err := c.call(ctx, operationUnsubscribe, []any{id})
 	if err != nil {
 		return err

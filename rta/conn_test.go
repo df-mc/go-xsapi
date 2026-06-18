@@ -34,7 +34,7 @@ func TestSubscribeHandlerErrorDoesNotDeadlock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- conn.SubscribeWith(ctx, sub)
+		done <- conn.Subscribe(ctx, sub)
 	}()
 
 	select {
@@ -63,7 +63,7 @@ func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := conn.SubscribeWith(ctx, sub)
+	err := conn.Subscribe(ctx, sub)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("SubscribeWith error = %v, want %v", err, wantErr)
 	}
@@ -82,7 +82,7 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := conn.SubscribeWith(ctx, sub); err != nil {
+	if err := conn.Subscribe(ctx, sub); err != nil {
 		t.Fatalf("SubscribeWith returned error: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestConcurrentSubscribeWithCoalescesSingleHandshake(t *testing.T) {
 	errs := make(chan error, 16)
 	for range 16 {
 		wg.Go(func() {
-			errs <- conn.SubscribeWith(ctx, sub)
+			errs <- conn.Subscribe(ctx, sub)
 		})
 	}
 	wg.Wait()
@@ -149,7 +149,7 @@ func TestReconnectRetriesInterruptedResubscribe(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.SubscribeWith(ctx, sub); err != nil {
+	if err := conn.Subscribe(ctx, sub); err != nil {
 		t.Fatalf("SubscribeWith returned error: %v", err)
 	}
 
@@ -189,7 +189,7 @@ func TestReconnectClosesAfterPersistentInterruptedResubscribe(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.SubscribeWith(ctx, sub); err != nil {
+	if err := conn.Subscribe(ctx, sub); err != nil {
 		t.Fatalf("SubscribeWith returned error: %v", err)
 	}
 
@@ -216,24 +216,6 @@ func TestReconnectClosesAfterPersistentInterruptedResubscribe(t *testing.T) {
 	}
 }
 
-func TestSubscribeResourceURICompatibility(t *testing.T) {
-	srv := newConnTestServer(t)
-	defer srv.Close()
-
-	conn := srv.Dial(t)
-	defer conn.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	sub, err := conn.Subscribe(ctx, "test-resource")
-	if err != nil {
-		t.Fatalf("Subscribe returned error: %v", err)
-	}
-	if sub == nil || !sub.Active() {
-		t.Fatal("Subscribe returned inactive subscription")
-	}
-}
-
 func TestZeroValueSubscriptionUsesNopHandler(t *testing.T) {
 	var sub Subscription
 
@@ -255,7 +237,7 @@ func TestReconnectWaitsForResubscribe(t *testing.T) {
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := conn.SubscribeWith(ctx, sub); err != nil {
+	if err := conn.Subscribe(ctx, sub); err != nil {
 		t.Fatalf("SubscribeWith returned error: %v", err)
 	}
 
@@ -271,7 +253,7 @@ func TestReconnectWaitsForResubscribe(t *testing.T) {
 
 	callDone := make(chan error, 1)
 	go func() {
-		callDone <- conn.SubscribeWith(ctx, sub)
+		callDone <- conn.Subscribe(ctx, sub)
 	}()
 
 	select {
