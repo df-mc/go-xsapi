@@ -126,7 +126,7 @@ func TestSubscriptionHandlerIgnoresClosedSessionDuringSubscribe(t *testing.T) {
 	}
 }
 
-func TestSubscriptionHandlerReturnsSessionConnectionUpdateError(t *testing.T) {
+func TestSubscriptionHandlerClosesSessionOnConnectionUpdateError(t *testing.T) {
 	wantErr := errors.New("update failed")
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
@@ -153,9 +153,103 @@ func TestSubscriptionHandlerReturnsSessionConnectionUpdateError(t *testing.T) {
 	}
 	id := uuid.New()
 
-	err := h.HandleSubscribe(json.RawMessage(`{"ConnectionId":"` + id.String() + `"}`))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("HandleSubscribe error = %v, want %v", err, wantErr)
+	if err := h.HandleSubscribe(json.RawMessage(`{"ConnectionId":"` + id.String() + `"}`)); err != nil {
+		t.Fatalf("HandleSubscribe returned error: %v", err)
+	}
+	select {
+	case <-session.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("session was not closed after connection update failure")
+	}
+	got, err := c.subscriptionConnectionID()
+	if err != nil {
+		t.Fatalf("subscriptionConnectionID returned error: %v", err)
+	}
+	if got != id {
+		t.Fatalf("connection ID = %v, want %v", got, id)
+	}
+}
+
+func TestSubscriptionHandlerEventWaitsForConnectionUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	syncStarted := make(chan struct{}, 1)
+	var updateOnce sync.Once
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodPut:
+			updateOnce.Do(func() { close(updateStarted) })
+			<-releaseUpdate
+
+			header := make(http.Header)
+			header.Set("ETag", `"updated-etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+				Header:     header,
+				Request:    req,
+			}, nil
+		case http.MethodGet:
+			syncStarted <- struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusNotModified,
+				Status:     http.StatusText(http.StatusNotModified),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("request method = %s, want PUT or GET", req.Method)
+			return nil, nil
+		}
+	})}
+
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		etag:   `"old-etag"`,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- h.HandleSubscribe(json.RawMessage(`{"ConnectionId":"` + uuid.NewString() + `"}`))
+	}()
+	<-updateStarted
+
+	h.HandleEvent(subscriptionEventPayload(t, ref))
+
+	select {
+	case <-syncStarted:
+		t.Fatal("HandleEvent started Sync while connection update was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseUpdate)
+	if err := <-subscribeDone; err != nil {
+		t.Fatalf("HandleSubscribe returned error: %v", err)
+	}
+	select {
+	case <-syncStarted:
+	case <-time.After(time.Second):
+		t.Fatal("HandleEvent did not sync session after update finished")
 	}
 }
 
@@ -602,4 +696,19 @@ type recordingSessionHandler struct {
 
 func (h recordingSessionHandler) HandleSessionChange(session *Session) {
 	h.changes <- session
+}
+
+func subscriptionEventPayload(t *testing.T, ref SessionReference) json.RawMessage {
+	t.Helper()
+	payload, err := json.Marshal(subscriptionEvent{
+		ShoulderTaps: []shoulderTap{{
+			Resource:     ref.ServiceConfigID.String() + "~" + ref.TemplateName + "~" + ref.Name,
+			ChangeNumber: 1,
+			Branch:       uuid.New(),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }

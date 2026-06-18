@@ -84,12 +84,16 @@ type subscriptionData struct {
 // in order to synchronize the session properties with the latest state.
 type subscriptionHandler struct {
 	*Client
-	log *slog.Logger
+	log         *slog.Logger
+	reconcileMu sync.RWMutex
 
 	rta.NopSubscriptionHandler
 }
 
 func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
+	h.reconcileMu.Lock()
+	defer h.reconcileMu.Unlock()
+
 	// The custom data includes a connection ID which can be used for the
 	// Connection field in the member constants for receiving notifications for
 	// the changes to its participating multiplayer session.
@@ -106,7 +110,6 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	h.log.Debug("received subscription data", "connectionID", data.ConnectionID)
 
 	sessions := h.sessionSnapshot()
-	errs := make(chan error, len(sessions))
 	var wg sync.WaitGroup
 	for _, session := range sessions {
 		wg.Go(func() {
@@ -128,14 +131,13 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 				if errors.Is(err, net.ErrClosed) {
 					return
 				}
-				// TODO: Use a background context so we can propagate the error to the caller.
 				session.log.Error("error updating connection ID", "err", err)
-				err = fmt.Errorf("update session %s connection ID: %w", session.Reference().URL(), err)
 				if closeErr := session.Close(); closeErr != nil {
 					session.log.Error("error closing session after connection ID update failure", "err", closeErr)
-					err = errors.Join(err, fmt.Errorf("close session after connection ID update failure: %w", closeErr))
+					session.closeMu.Lock()
+					session.closeLocked()
+					session.closeMu.Unlock()
 				}
-				errs <- err
 				return
 			}
 			if deleted {
@@ -145,12 +147,7 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 	}
 
 	wg.Wait()
-	close(errs)
-	var err error
-	for sessionErr := range errs {
-		err = errors.Join(err, sessionErr)
-	}
-	return err
+	return nil
 }
 
 // HandleEvent handles an event received over the RTA subscription associated
@@ -192,6 +189,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return reference.Equal(session.Reference())
 		}) {
 			go func() {
+				h.reconcileMu.RLock()
+				defer h.reconcileMu.RUnlock()
+
 				ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 				defer cancel()
 
@@ -212,6 +212,9 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 }
 
 func (h *subscriptionHandler) HandleResync() {
+	h.reconcileMu.RLock()
+	defer h.reconcileMu.RUnlock()
+
 	sessions := h.sessionSnapshot()
 	var wg sync.WaitGroup
 	for _, session := range sessions {
