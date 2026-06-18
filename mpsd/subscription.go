@@ -22,7 +22,9 @@ func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 	if c.subscription.Active() {
 		// If the subscription was already made with RTA, return the cached
 		// subscription along with its decoded payload.
-		return c.subscriptionConnectionID()
+		if connectionID, err := c.subscriptionConnectionID(); err == nil {
+			return connectionID, nil
+		}
 	}
 	if err = c.rta.Subscribe(ctx, c.subscription); err != nil {
 		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
@@ -216,6 +218,9 @@ func (h *subscriptionHandler) HandleResync() {
 }
 
 func (h *subscriptionHandler) HandleError(err error) {
+	if errors.Is(err, rta.ErrUnsubscribed) {
+		return
+	}
 	for _, session := range h.sessionSnapshot() {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)

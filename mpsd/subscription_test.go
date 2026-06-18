@@ -1,12 +1,17 @@
 package mpsd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/google/uuid"
 )
 
@@ -58,5 +63,50 @@ func TestSubscriptionHandlerStoresValidConnectionID(t *testing.T) {
 	}
 	if got != id {
 		t.Fatalf("connection ID = %v, want %v", got, id)
+	}
+}
+
+func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleError(rta.ErrUnsubscribed)
+
+	select {
+	case <-session.Context().Done():
+		t.Fatal("session was closed after intentional RTA unsubscribe")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("close requests = %d, want 0", got)
 	}
 }
