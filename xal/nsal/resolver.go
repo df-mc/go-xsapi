@@ -143,60 +143,62 @@ func (r *Resolver) title(ctx context.Context, titleID string) (*TitleData, error
 	if titleID == "" {
 		return nil, errors.New("xal/nsal: empty title ID")
 	}
-	r.mu.Lock()
-	if title, ok := r.cached[titleID]; ok {
+	for {
+		r.mu.Lock()
+		if title, ok := r.cached[titleID]; ok {
+			r.mu.Unlock()
+			return title, nil
+		}
+		if failure, ok := r.failed[titleID]; ok {
+			if time.Now().Before(failure.retryTime) {
+				r.mu.Unlock()
+				return nil, failure.err
+			}
+			delete(r.failed, titleID)
+		}
+		if req, ok := r.loading[titleID]; ok {
+			r.mu.Unlock()
+			select {
+			case <-req.done:
+				if req.err != nil {
+					if titleLoadCanceled(req.err) {
+						if err := ctx.Err(); err != nil {
+							return nil, err
+						}
+						continue
+					}
+					return nil, req.err
+				}
+				return req.title, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		req := &titleRequest{done: make(chan struct{})}
+		r.loading[titleID] = req
 		r.mu.Unlock()
+
+		title, err := r.loadTitle(ctx, titleID)
+
+		r.mu.Lock()
+		if err == nil {
+			r.cached[titleID] = title
+			delete(r.failed, titleID)
+		} else if !titleLoadCanceled(err) {
+			r.failed[titleID] = titleFailure{
+				err:       err,
+				retryTime: time.Now().Add(titleLoadFailureCacheDuration),
+			}
+		}
+		req.title, req.err = title, err
+		delete(r.loading, titleID)
+		close(req.done)
+		r.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		return title, nil
 	}
-	if failure, ok := r.failed[titleID]; ok {
-		if time.Now().Before(failure.retryTime) {
-			r.mu.Unlock()
-			return nil, failure.err
-		}
-		delete(r.failed, titleID)
-	}
-	if req, ok := r.loading[titleID]; ok {
-		r.mu.Unlock()
-		select {
-		case <-req.done:
-			if req.err != nil {
-				if titleLoadCanceled(req.err) {
-					if err := ctx.Err(); err != nil {
-						return nil, err
-					}
-					return r.title(ctx, titleID)
-				}
-				return nil, req.err
-			}
-			return req.title, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	req := &titleRequest{done: make(chan struct{})}
-	r.loading[titleID] = req
-	r.mu.Unlock()
-
-	title, err := r.loadTitle(ctx, titleID)
-
-	r.mu.Lock()
-	if err == nil {
-		r.cached[titleID] = title
-		delete(r.failed, titleID)
-	} else if !titleLoadCanceled(err) {
-		r.failed[titleID] = titleFailure{
-			err:       err,
-			retryTime: time.Now().Add(titleLoadFailureCacheDuration),
-		}
-	}
-	req.title, req.err = title, err
-	delete(r.loading, titleID)
-	close(req.done)
-	r.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return title, nil
 }
 
 // loadTitle requests title data for titleID. "default" uses the public default
