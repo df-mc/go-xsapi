@@ -64,9 +64,6 @@ func (e *ResponseError) Error() string {
 
 // Is implements errors.Is matching for Social API error categories.
 func (e *ResponseError) Is(target error) bool {
-	if e == nil {
-		return false
-	}
 	switch target {
 	case ErrRateLimited:
 		return e.StatusCode == http.StatusTooManyRequests
