@@ -104,6 +104,20 @@ func (c *Client) Friends(ctx context.Context, opts ...internal.RequestOption) ([
 	return c.users(ctx, "me", "friends", nil, opts)
 }
 
+// Followers returns users who follow the caller. Unlike [Client.Friends], this
+// includes one-way relationships that may not have been accepted as mutual
+// friends.
+func (c *Client) Followers(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
+	return c.users(ctx, "me", "followers", nil, opts)
+}
+
+// Following returns users the caller follows. Unlike [Client.Friends], this
+// includes one-way relationships that may not have been accepted as mutual
+// friends.
+func (c *Client) Following(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
+	return c.users(ctx, "me", "social", nil, opts)
+}
+
 // FriendsOf returns the friend list of the user identified by the given XUID.
 // This can be used to retrieve the friend list of any user, not just the caller.
 // See [Client.Friends] for details on how Xbox Live friend relationships work.
