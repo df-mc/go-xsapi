@@ -193,6 +193,8 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 	return s, nil
 }
 
+// reconcileSessionConnection updates s to use the Client's current RTA
+// connection ID while ordered against subscription reconnect refreshes.
 func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) error {
 	if c.subscriptionHandler != nil {
 		c.subscriptionHandler.reconcileMu.Lock()
@@ -206,6 +208,8 @@ func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) err
 	return reconcileSessionConnection(ctx, s, connectionID)
 }
 
+// reconcileSessionConnection updates s to advertise connectionID for the local
+// member, marking the Session deleted if MPSD reports it was removed.
 func reconcileSessionConnection(ctx context.Context, s *Session, connectionID uuid.UUID) error {
 	if member, ok := s.Member("me"); ok && member.Properties != nil && member.Properties.System != nil {
 		if system := member.Properties.System; system.Active && system.Connection == connectionID {

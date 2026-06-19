@@ -29,6 +29,8 @@ func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 	return c.subscriptionConnectionID()
 }
 
+// subscriptionConnectionID returns the latest RTA connection ID delivered in
+// the subscription custom data.
 func (c *Client) subscriptionConnectionID() (uuid.UUID, error) {
 	data := c.subscriptionData.Load()
 	if data == nil {
