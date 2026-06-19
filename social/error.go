@@ -40,6 +40,7 @@ type ResponseError struct {
 	RetryAfter time.Duration
 }
 
+// Error formats the Social API response failure for logs and returned errors.
 func (e *ResponseError) Error() string {
 	prefix := ""
 	if e.Method != "" && e.URL != "" {
@@ -57,7 +58,9 @@ func (e *ResponseError) Error() string {
 	return fmt.Sprintf("%sxsapi/social: request failed: status=%d", prefix, e.StatusCode)
 }
 
-// RetryDelay returns the server-requested delay before retrying.
+// RetryDelay returns the server-requested delay before retrying. It is
+// equivalent to RetryAfter and is provided for callers that use a small retry
+// interface with errors.As.
 func (e *ResponseError) RetryDelay() time.Duration {
 	if e == nil {
 		return 0
@@ -74,7 +77,8 @@ func (e *ResponseError) XboxSocialCode() int {
 }
 
 // FriendErrorKind returns the best-known classification for the Xbox social
-// service error code.
+// service error code. Unknown or unclassified codes return
+// FriendErrorKindUnknown.
 func (e *ResponseError) FriendErrorKind() string {
 	if e == nil {
 		return FriendErrorKindUnknown
