@@ -162,10 +162,7 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 	if err := s.writeActivity(ctx); err != nil {
 		err = fmt.Errorf("write activity handle: %w", err)
 		if err2 := s.Close(); err2 != nil {
-			err = errors.Join(
-				err,
-				fmt.Errorf("close session: %w", err2),
-			)
+			err = errors.Join(err, fmt.Errorf("close session: %w", err2))
 		}
 		return nil, err
 	}
@@ -179,10 +176,7 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 	if err := c.reconcileSessionConnection(ctx, s); err != nil {
 		err = fmt.Errorf("update session %s connection ID: %w", s.Reference().URL(), err)
 		if err2 := s.Close(); err2 != nil {
-			err = errors.Join(
-				err,
-				fmt.Errorf("close session: %w", err2),
-			)
+			err = errors.Join(err, fmt.Errorf("close session: %w", err2))
 			s.closeMu.Lock()
 			s.closeLocked()
 			s.closeMu.Unlock()
