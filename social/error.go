@@ -11,8 +11,6 @@ import (
 )
 
 const (
-	// Observed Social REST response body codes. These are not xsapi HRESULT
-	// values and are not documented in the GDK headers.
 	socialCodeFriendListFull    = 1028 // Observed when the People list limit would be exceeded.
 	socialCodeRestricted        = 1011 // Observed for forbidden relationship operations.
 	socialCodeRestrictedPrivacy = 1049 // Observed for target-user privacy restrictions.
