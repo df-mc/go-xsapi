@@ -105,6 +105,54 @@ func TestAddFriendReturnsFriendListFull(t *testing.T) {
 	}
 }
 
+func TestRelationshipMethodsAcceptCreated(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		query      string
+		callClient func(*Client) error
+	}{
+		{
+			name:   "add friend",
+			method: http.MethodPut,
+			path:   "/users/me/people/friends/v2/xuid(123)",
+			callClient: func(client *Client) error {
+				return client.AddFriend(context.Background(), "123")
+			},
+		},
+		{
+			name:   "remove friend",
+			method: http.MethodDelete,
+			path:   "/users/me/people/friends/v2/xuid(123)",
+			query:  "friends",
+			callClient: func(client *Client) error {
+				return client.RemoveFriend(context.Background(), "123")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != tt.method {
+					t.Fatalf("Method = %q, want %s", req.Method, tt.method)
+				}
+				if req.URL.Path != tt.path {
+					t.Fatalf("Path = %q, want %q", req.URL.Path, tt.path)
+				}
+				if got := req.URL.Query().Get("deleteRelationships"); got != tt.query {
+					t.Fatalf("deleteRelationships = %q, want %q", got, tt.query)
+				}
+				return response(req, http.StatusCreated, ""), nil
+			})}, nil, xsts.UserInfo{}, nil)
+
+			if err := tt.callClient(client); err != nil {
+				t.Fatalf("relationship call returned error: %v", err)
+			}
+		})
+	}
+}
+
 func TestResponseErrorMatchesCategories(t *testing.T) {
 	tests := []struct {
 		name   string

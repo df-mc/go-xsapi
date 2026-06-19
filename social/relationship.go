@@ -47,8 +47,7 @@ func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.Re
 		"xuid("+xuid+")",
 	).String()
 
-	// Expected status code: 200 OK
-	return c.doRelationship(ctx, http.MethodPut, requestURL, opts, http.StatusOK)
+	return c.doRelationship(ctx, http.MethodPut, requestURL, opts, http.StatusOK, http.StatusCreated)
 }
 
 // RemoveFriend deletes the friend relationship with the user identified by XUID.
@@ -74,8 +73,7 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 	q.Set("deleteRelationships", relationships)
 	requestURL.RawQuery = q.Encode()
 
-	// This request is a DELETE call but returns 200 OK instead of 204 No Content.
-	return c.doRelationship(ctx, http.MethodDelete, requestURL.String(), opts, http.StatusOK)
+	return c.doRelationship(ctx, http.MethodDelete, requestURL.String(), opts, http.StatusOK, http.StatusCreated)
 }
 
 // doRelationship sends a relationship mutation request and converts non-success
