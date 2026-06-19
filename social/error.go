@@ -21,6 +21,18 @@ const (
 	FriendErrorKindRestricted = "restricted"
 )
 
+var (
+	// ErrRateLimited matches Social API responses that indicate the caller
+	// should wait before retrying.
+	ErrRateLimited = errors.New("xsapi/social: rate limited")
+	// ErrFriendListFull matches known Social API responses for friend-list
+	// limit failures.
+	ErrFriendListFull = errors.New("xsapi/social: friend list full")
+	// ErrFriendRestricted matches known Social API responses for privacy,
+	// enforcement, or relationship restrictions.
+	ErrFriendRestricted = errors.New("xsapi/social: friend restricted")
+)
+
 // ResponseError carries error details returned by the Xbox Live Social and
 // PeopleHub APIs.
 type ResponseError struct {
@@ -58,6 +70,24 @@ func (e *ResponseError) Error() string {
 	return fmt.Sprintf("%sxsapi/social: request failed: status=%d", prefix, e.StatusCode)
 }
 
+// Is reports whether e matches a Social API error category such as
+// ErrRateLimited, ErrFriendListFull, or ErrFriendRestricted.
+func (e *ResponseError) Is(target error) bool {
+	if e == nil {
+		return false
+	}
+	switch target {
+	case ErrRateLimited:
+		return e.StatusCode == http.StatusTooManyRequests || e.RetryAfter > 0
+	case ErrFriendListFull:
+		return e.FriendErrorKind() == FriendErrorKindFullList
+	case ErrFriendRestricted:
+		return e.FriendErrorKind() == FriendErrorKindRestricted
+	default:
+		return false
+	}
+}
+
 // RetryDelay returns the server-requested delay before retrying. It is
 // equivalent to RetryAfter and is provided for callers that use a small retry
 // interface with errors.As.
@@ -84,26 +114,6 @@ func (e *ResponseError) FriendErrorKind() string {
 		return FriendErrorKindUnknown
 	}
 	return classifyFriendErrorCode(e.Code)
-}
-
-// IsRateLimited reports whether err is a Social API rate limit response.
-func IsRateLimited(err error) bool {
-	var responseErr *ResponseError
-	return errors.As(err, &responseErr) &&
-		(responseErr.StatusCode == http.StatusTooManyRequests || responseErr.RetryAfter > 0)
-}
-
-// IsFriendListFull reports whether err is a known friend-list limit response.
-func IsFriendListFull(err error) bool {
-	var responseErr *ResponseError
-	return errors.As(err, &responseErr) && responseErr.FriendErrorKind() == FriendErrorKindFullList
-}
-
-// IsFriendRestricted reports whether err is a known privacy, enforcement, or
-// relationship restriction response.
-func IsFriendRestricted(err error) bool {
-	var responseErr *ResponseError
-	return errors.As(err, &responseErr) && responseErr.FriendErrorKind() == FriendErrorKindRestricted
 }
 
 func responseError(resp *http.Response) error {

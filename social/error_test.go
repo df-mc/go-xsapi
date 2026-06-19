@@ -23,6 +23,7 @@ func TestFollowReturnsResponseError(t *testing.T) {
 		source      string
 		kind        string
 		retryAfter  time.Duration
+		matches     error
 	}{
 		{
 			name:       "rate limit retry after seconds",
@@ -32,6 +33,7 @@ func TestFollowReturnsResponseError(t *testing.T) {
 			},
 			kind:       FriendErrorKindUnknown,
 			retryAfter: 7 * time.Second,
+			matches:    ErrRateLimited,
 		},
 		{
 			name:        "friend list full",
@@ -41,6 +43,7 @@ func TestFollowReturnsResponseError(t *testing.T) {
 			description: "The attempted People request was rejected because it would exceed the People list limit.",
 			source:      "people",
 			kind:        FriendErrorKindFullList,
+			matches:     ErrFriendListFull,
 		},
 		{
 			name:        "restricted relationship",
@@ -49,6 +52,7 @@ func TestFollowReturnsResponseError(t *testing.T) {
 			code:        1049,
 			description: "Target user privacy settings do not allow friend requests to be received.",
 			kind:        FriendErrorKindRestricted,
+			matches:     ErrFriendRestricted,
 		},
 	}
 	for _, tt := range tests {
@@ -98,11 +102,14 @@ func TestFollowReturnsResponseError(t *testing.T) {
 			if responseErr.RetryDelay() != tt.retryAfter {
 				t.Fatalf("RetryDelay = %s, want %s", responseErr.RetryDelay(), tt.retryAfter)
 			}
+			if !errors.Is(err, tt.matches) {
+				t.Fatalf("errors.Is(%v) = false", tt.matches)
+			}
 		})
 	}
 }
 
-func TestSocialErrorClassificationHelpers(t *testing.T) {
+func TestResponseErrorMatchesCategories(t *testing.T) {
 	tests := []struct {
 		name       string
 		err        error
@@ -132,14 +139,14 @@ func TestSocialErrorClassificationHelpers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if IsRateLimited(tt.err) != tt.rateLimit {
-				t.Fatalf("IsRateLimited = %t, want %t", IsRateLimited(tt.err), tt.rateLimit)
+			if errors.Is(tt.err, ErrRateLimited) != tt.rateLimit {
+				t.Fatalf("errors.Is(ErrRateLimited) = %t, want %t", errors.Is(tt.err, ErrRateLimited), tt.rateLimit)
 			}
-			if IsFriendListFull(tt.err) != tt.fullList {
-				t.Fatalf("IsFriendListFull = %t, want %t", IsFriendListFull(tt.err), tt.fullList)
+			if errors.Is(tt.err, ErrFriendListFull) != tt.fullList {
+				t.Fatalf("errors.Is(ErrFriendListFull) = %t, want %t", errors.Is(tt.err, ErrFriendListFull), tt.fullList)
 			}
-			if IsFriendRestricted(tt.err) != tt.restricted {
-				t.Fatalf("IsFriendRestricted = %t, want %t", IsFriendRestricted(tt.err), tt.restricted)
+			if errors.Is(tt.err, ErrFriendRestricted) != tt.restricted {
+				t.Fatalf("errors.Is(ErrFriendRestricted) = %t, want %t", errors.Is(tt.err, ErrFriendRestricted), tt.restricted)
 			}
 		})
 	}
@@ -157,8 +164,8 @@ func TestUnfollowReturnsResponseError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Unfollow returned nil error")
 	}
-	if !IsFriendListFull(err) {
-		t.Fatalf("IsFriendListFull = false for %T: %v", err, err)
+	if !errors.Is(err, ErrFriendListFull) {
+		t.Fatalf("errors.Is(ErrFriendListFull) = false for %T: %v", err, err)
 	}
 }
 
