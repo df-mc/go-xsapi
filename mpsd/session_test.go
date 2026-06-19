@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -459,5 +460,59 @@ func TestSessionCloseContextConcurrentCloseSendsSingleUpdate(t *testing.T) {
 	}
 	if err := session.Context().Err(); err != context.Canceled {
 		t.Fatalf("session context err = %v, want %v", err, context.Canceled)
+	}
+}
+
+func TestSubscriptionHandlerClosesSessionsOnUserUnsubscribe(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	requests := make(chan struct{}, 1)
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut {
+			t.Fatalf("request method = %s, want PUT", req.Method)
+		}
+		requests <- struct{}{}
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+			Header:     header,
+			Request:    req,
+		}, nil
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: client,
+		ref:    ref,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	handler := &subscriptionHandler{Client: client}
+	handler.HandleError(rta.ErrUnsubscribed)
+
+	select {
+	case <-requests:
+	case <-time.After(time.Second):
+		t.Fatal("subscription unsubscribe did not close session")
+	}
+	select {
+	case <-session.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("session context was not canceled")
+	}
+	if _, ok := client.sessions[ref.URL().String()]; ok {
+		t.Fatal("session still registered after subscription unsubscribe")
 	}
 }

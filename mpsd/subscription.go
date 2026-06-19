@@ -232,9 +232,6 @@ func (h *subscriptionHandler) HandleResync() {
 }
 
 func (h *subscriptionHandler) HandleError(err error) {
-	if errors.Is(err, rta.ErrUnsubscribed) {
-		return
-	}
 	for _, session := range h.sessionSnapshot() {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)
