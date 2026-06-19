@@ -23,6 +23,7 @@ func TestSubscribeWithoutRTAFails(t *testing.T) {
 		t.Fatalf("Subscribe error = %v, want %v", err, rta.ErrUnavailable)
 	}
 }
+
 func TestSubscriptionHandlerAllowsNonComparableHandlers(t *testing.T) {
 	calls := make(chan string, 1)
 	handler := nonComparableSocialHandler{
@@ -49,6 +50,55 @@ func TestSubscriptionHandlerAllowsNonComparableHandlers(t *testing.T) {
 	}
 }
 
+func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
+	calls := make(chan string, 1)
+	handler := nonComparableSocialHandler{
+		calls: calls,
+		data:  []string{"non-comparable"},
+	}
+	c := &Client{
+		subscriptionHandlers: []SubscriptionHandler{handler},
+	}
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleError(rta.ErrUnsubscribed)
+
+	select {
+	case got := <-calls:
+		t.Fatalf("handler call = %q, want none", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSubscriptionHandlerNotifiesSubscriptionLost(t *testing.T) {
+	calls := make(chan string, 1)
+	handler := nonComparableSocialHandler{
+		calls: calls,
+		data:  []string{"non-comparable"},
+	}
+	c := &Client{
+		subscriptionHandlers: []SubscriptionHandler{handler},
+	}
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	h.HandleError(io.ErrUnexpectedEOF)
+
+	select {
+	case got := <-calls:
+		if got != "lost" {
+			t.Fatalf("handler call = %q, want lost", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscription lost handler was not called")
+	}
+}
+
 type nonComparableSocialHandler struct {
 	calls chan<- string
 	data  []string
@@ -60,4 +110,6 @@ func (h nonComparableSocialHandler) HandleSocialNotification(typ string, xuids [
 
 func (h nonComparableSocialHandler) HandleIncomingFriendRequestCountChange(int) {}
 
-func (h nonComparableSocialHandler) HandleSubscriptionLost() {}
+func (h nonComparableSocialHandler) HandleSubscriptionLost() {
+	h.calls <- "lost"
+}

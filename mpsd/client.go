@@ -75,6 +75,12 @@ type Client struct {
 	// created by the Client with the RTA subscription to receive changes to
 	// themselves.
 	subscriptionData atomic.Pointer[subscriptionData]
+	// subscribeMu serializes subscription setup so callers cannot observe an
+	// active subscription before HandleSubscribe stores its custom data.
+	subscribeMu sync.Mutex
+	// reconcileMu serializes session connection reconciliation with subscription
+	// reconnects so stale connection IDs cannot overwrite newer ones.
+	reconcileMu sync.RWMutex
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex

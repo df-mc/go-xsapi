@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
@@ -203,6 +207,86 @@ func TestSessionUpdateReturnsDeletedOnNoContent(t *testing.T) {
 	}
 }
 
+func TestSessionSyncWaitsForInFlightUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	syncStarted := make(chan struct{}, 1)
+	var updateOnce sync.Once
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodPut:
+			updateOnce.Do(func() { close(updateStarted) })
+			<-releaseUpdate
+
+			header := make(http.Header)
+			header.Set("ETag", `"updated-etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+				Header:     header,
+				Request:    req,
+			}, nil
+		case http.MethodGet:
+			syncStarted <- struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusNotModified,
+				Status:     http.StatusText(http.StatusNotModified),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("request method = %s, want PUT or GET", req.Method)
+			return nil, nil
+		}
+	})}
+
+	session := &Session{
+		client: &Client{client: httpClient},
+		ref:    ref,
+		etag:   `"old-etag"`,
+		closed: make(chan struct{}),
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := session.update(context.Background(), SessionDescription{}, nil)
+		updateDone <- err
+	}()
+	<-updateStarted
+
+	syncDone := make(chan error, 1)
+	go func() {
+		syncDone <- session.Sync(context.Background())
+	}()
+
+	select {
+	case <-syncStarted:
+		t.Fatal("Sync started an HTTP request while update was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseUpdate)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("update returned error: %v", err)
+	}
+	if err := <-syncDone; err != nil {
+		t.Fatalf("Sync returned error: %v", err)
+	}
+	select {
+	case <-syncStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Sync did not start after update finished")
+	}
+}
+
 func TestSessionSetCustomPropertiesMarksDeletedOnNoContent(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
@@ -378,4 +462,354 @@ func TestSessionCloseContextConcurrentCloseSendsSingleUpdate(t *testing.T) {
 	if err := session.Context().Err(); err != context.Canceled {
 		t.Fatalf("session context err = %v, want %v", err, context.Canceled)
 	}
+}
+
+func TestSubscriptionHandlerClosesSessionsOnUserUnsubscribe(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	requests := make(chan struct{}, 1)
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut {
+			t.Fatalf("request method = %s, want PUT", req.Method)
+		}
+		requests <- struct{}{}
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+			Header:     header,
+			Request:    req,
+		}, nil
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: client,
+		ref:    ref,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	handler := &subscriptionHandler{Client: client}
+	handler.HandleError(rta.ErrUnsubscribed)
+
+	select {
+	case <-requests:
+	case <-time.After(time.Second):
+		t.Fatal("subscription unsubscribe did not close session")
+	}
+	select {
+	case <-session.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("session context was not canceled")
+	}
+	if _, ok := client.sessions[ref.URL().String()]; ok {
+		t.Fatal("session still registered after subscription unsubscribe")
+	}
+}
+
+func TestSubscribeSerializesInFlightSubscribe(t *testing.T) {
+	subscriber := &blockingSubscriber{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	client := NewWithRTASubscriber(nil, subscriber, nil, xsts.UserInfo{}, nil)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := client.subscribe(context.Background())
+		firstDone <- err
+	}()
+	<-subscriber.started
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := client.subscribe(context.Background())
+		secondDone <- err
+	}()
+	select {
+	case <-subscriber.secondStarted:
+		t.Fatal("second subscribe entered while first subscribe was in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(subscriber.release)
+	if err := <-firstDone; err == nil {
+		t.Fatal("first subscribe returned nil error")
+	}
+	if err := <-secondDone; err == nil {
+		t.Fatal("second subscribe returned nil error")
+	}
+}
+
+func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	oldConnectionID := uuid.New()
+	newConnectionID := uuid.New()
+
+	updates := make(chan uuid.UUID, 2)
+	releaseFirst := make(chan struct{})
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut {
+			return nil, fmt.Errorf("request method = %s, want PUT", req.Method)
+		}
+		var changes SessionDescription
+		if err := json.NewDecoder(req.Body).Decode(&changes); err != nil {
+			return nil, err
+		}
+		member := changes.Members["me"]
+		if member == nil || member.Properties == nil || member.Properties.System == nil {
+			return nil, errors.New("connection update missing me member system properties")
+		}
+		connectionID := member.Properties.System.Connection
+		updates <- connectionID
+		if n := requests.Add(1); n == 1 {
+			<-releaseFirst
+		}
+
+		body, err := json.Marshal(SessionDescription{
+			Members: map[string]*MemberDescription{
+				"me": {
+					Properties: &MemberProperties{
+						System: &MemberPropertiesSystem{
+							Connection: connectionID,
+							Active:     true,
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Header:     header,
+			Request:    req,
+		}, nil
+	})}
+
+	client := &Client{
+		client:       httpClient,
+		subscriber:   subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }),
+		subscription: rta.NewSubscription(resourceURI, nil),
+		sessions:     map[string]*Session{},
+	}
+	handler := &subscriptionHandler{
+		Client: client,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	client.subscriptionData.Store(&subscriptionData{ConnectionID: oldConnectionID})
+	session := &Session{
+		client: client,
+		ref:    ref,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		h:      NopHandler{},
+		cache: SessionDescription{
+			Members: map[string]*MemberDescription{
+				"me": {
+					Properties: &MemberProperties{
+						System: &MemberPropertiesSystem{
+							Connection: uuid.New(),
+							Active:     true,
+						},
+					},
+				},
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	reconcileDone := make(chan error, 1)
+	go func() {
+		reconcileDone <- client.reconcileSessionConnection(context.Background(), session)
+	}()
+	select {
+	case got := <-updates:
+		if got != oldConnectionID {
+			t.Fatalf("initial reconcile connection ID = %s, want %s", got, oldConnectionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial reconcile did not start")
+	}
+
+	subscribeDone := make(chan error, 1)
+	custom, err := json.Marshal(subscriptionData{ConnectionID: newConnectionID})
+	if err != nil {
+		t.Fatalf("marshal subscription data: %v", err)
+	}
+	go func() {
+		subscribeDone <- handler.HandleSubscribe(custom)
+	}()
+	select {
+	case got := <-updates:
+		t.Fatalf("reconnect wrote connection ID %s while initial reconcile was in flight", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	if err := <-reconcileDone; err != nil {
+		t.Fatalf("initial reconcile returned error: %v", err)
+	}
+	if err := <-subscribeDone; err != nil {
+		t.Fatalf("HandleSubscribe returned error: %v", err)
+	}
+	select {
+	case got := <-updates:
+		if got != newConnectionID {
+			t.Fatalf("reconnect connection ID = %s, want %s", got, newConnectionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not update session connection ID")
+	}
+}
+
+func TestSubscriptionHandlerCallbackRunsAfterReconcileLock(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	connectionID := uuid.New()
+
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodGet:
+			return &http.Response{
+				StatusCode: http.StatusNotModified,
+				Status:     http.StatusText(http.StatusNotModified),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		case http.MethodPut:
+			body, err := json.Marshal(SessionDescription{
+				Members: map[string]*MemberDescription{
+					"me": {
+						Properties: &MemberProperties{
+							System: &MemberPropertiesSystem{
+								Connection: connectionID,
+								Active:     true,
+							},
+						},
+					},
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+			header := make(http.Header)
+			header.Set("ETag", `"etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     header,
+				Request:    req,
+			}, nil
+		default:
+			return nil, fmt.Errorf("request method = %s, want GET or PUT", req.Method)
+		}
+	})}
+
+	client := &Client{
+		client:       httpClient,
+		subscriber:   subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }),
+		subscription: rta.NewSubscription(resourceURI, nil),
+		sessions:     map[string]*Session{},
+	}
+	client.subscriptionData.Store(&subscriptionData{ConnectionID: connectionID})
+	callbackErr := make(chan error, 1)
+	session := &Session{
+		client: client,
+		ref:    ref,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		h: sessionChangeFunc(func(session *Session) {
+			callbackErr <- client.reconcileSessionConnection(context.Background(), session)
+		}),
+		cache: SessionDescription{
+			Members: map[string]*MemberDescription{
+				"me": {
+					Properties: &MemberProperties{
+						System: &MemberPropertiesSystem{
+							Connection: uuid.New(),
+							Active:     true,
+						},
+					},
+				},
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	done := make(chan struct{})
+	handler := &subscriptionHandler{
+		Client: client,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	go func() {
+		handler.HandleResync()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("HandleResync deadlocked while invoking session handler")
+	}
+	if err := <-callbackErr; err != nil {
+		t.Fatalf("callback reconcile returned error: %v", err)
+	}
+}
+
+type sessionChangeFunc func(*Session)
+
+func (f sessionChangeFunc) HandleSessionChange(session *Session) {
+	f(session)
+}
+
+type blockingSubscriber struct {
+	started       chan struct{}
+	secondStarted chan struct{}
+	release       chan struct{}
+	calls         atomic.Int32
+}
+
+type subscriberFunc func(context.Context, *rta.Subscription) error
+
+func (f subscriberFunc) Subscribe(ctx context.Context, sub *rta.Subscription) error {
+	return f(ctx, sub)
+}
+
+func (s *blockingSubscriber) Subscribe(context.Context, *rta.Subscription) error {
+	switch s.calls.Add(1) {
+	case 1:
+		s.secondStarted = make(chan struct{})
+		close(s.started)
+		<-s.release
+	case 2:
+		close(s.secondStarted)
+	}
+	return errors.New("subscribe failed")
 }

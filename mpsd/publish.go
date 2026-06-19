@@ -162,20 +162,85 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 	if err := s.writeActivity(ctx); err != nil {
 		err = fmt.Errorf("write activity handle: %w", err)
 		if err2 := s.Close(); err2 != nil {
-			err = errors.Join(
-				err,
-				fmt.Errorf("close session: %w", err2),
-			)
+			err = errors.Join(err, fmt.Errorf("close session: %w", err2))
 		}
 		return nil, err
 	}
 
-	// Bind the session to the client so we can receive updates from RTA subscription.
+	// Bind the session before reconciliation so concurrent RTA reconnect
+	// handlers can refresh this session with the latest connection ID.
 	c.sessionsMu.Lock()
 	c.sessions[s.ref.URL().String()] = s
 	c.sessionsMu.Unlock()
 
+	if err := c.reconcileSessionConnection(ctx, s); err != nil {
+		err = fmt.Errorf("update session %s connection ID: %w", s.Reference().URL(), err)
+		if err2 := s.Close(); err2 != nil {
+			err = errors.Join(err, fmt.Errorf("close session: %w", err2))
+			s.closeMu.Lock()
+			s.closeLocked()
+			s.closeMu.Unlock()
+		}
+		return nil, err
+	}
+
 	return s, nil
+}
+
+// reconcileSessionConnection updates s to use the Client's current RTA
+// connection ID while ordered against subscription reconnect refreshes.
+func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) error {
+	if _, err := c.subscribe(ctx); err != nil {
+		return err
+	}
+
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
+
+	data := c.subscriptionData.Load()
+	if data == nil || data.ConnectionID == uuid.Nil {
+		return errors.New("mpsd: missing RTA connection ID")
+	}
+	return reconcileSessionConnection(ctx, s, data.ConnectionID)
+}
+
+// reconcileSessionConnection updates s to advertise connectionID for the local
+// member, marking the Session deleted if MPSD reports it was removed.
+func reconcileSessionConnection(ctx context.Context, s *Session, connectionID uuid.UUID) error {
+	if sessionConnectionCurrent(s, connectionID) {
+		return nil
+	}
+	deleted, err := s.update(ctx, SessionDescription{
+		Members: map[string]*MemberDescription{
+			"me": {
+				Properties: &MemberProperties{
+					System: &MemberPropertiesSystem{
+						Connection: connectionID,
+						Active:     true,
+					},
+				},
+			},
+		},
+	}, nil)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		s.markDeleted()
+		return errors.New("session was deleted while updating connection ID")
+	}
+	return nil
+}
+
+// sessionConnectionCurrent reports whether s already advertises connectionID for
+// the local active member.
+func sessionConnectionCurrent(s *Session, connectionID uuid.UUID) bool {
+	member, ok := s.Member("me")
+	if !ok || member.Properties == nil || member.Properties.System == nil {
+		return false
+	}
+	system := member.Properties.System
+	return system.Active && system.Connection == connectionID
 }
 
 // handleSessionClosure handles closure of a multiplayer session.
