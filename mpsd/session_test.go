@@ -518,16 +518,6 @@ func TestSubscriptionHandlerClosesSessionsOnUserUnsubscribe(t *testing.T) {
 	}
 }
 
-func TestSubscriptionConnectionIDRequiresActiveSubscription(t *testing.T) {
-	client := NewWithRTASubscriber(nil, nil, nil, xsts.UserInfo{}, nil)
-	client.subscriptionData.Store(&subscriptionData{ConnectionID: uuid.New()})
-
-	_, err := client.subscriptionConnectionID()
-	if !errors.Is(err, rta.ErrUnavailable) {
-		t.Fatalf("subscriptionConnectionID error = %v, want %v", err, rta.ErrUnavailable)
-	}
-}
-
 func TestSubscribeSerializesInFlightSubscribe(t *testing.T) {
 	subscriber := &blockingSubscriber{
 		started: make(chan struct{}),
@@ -619,8 +609,10 @@ func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
 	})}
 
 	client := &Client{
-		client:   httpClient,
-		sessions: map[string]*Session{},
+		client:       httpClient,
+		subscriber:   subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }),
+		subscription: rta.NewSubscription(resourceURI, nil),
+		sessions:     map[string]*Session{},
 	}
 	handler := &subscriptionHandler{
 		Client: client,
@@ -741,8 +733,10 @@ func TestSubscriptionHandlerCallbackRunsAfterReconcileLock(t *testing.T) {
 	})}
 
 	client := &Client{
-		client:   httpClient,
-		sessions: map[string]*Session{},
+		client:       httpClient,
+		subscriber:   subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }),
+		subscription: rta.NewSubscription(resourceURI, nil),
+		sessions:     map[string]*Session{},
 	}
 	client.subscriptionData.Store(&subscriptionData{ConnectionID: connectionID})
 	callbackErr := make(chan error, 1)
@@ -800,6 +794,12 @@ type blockingSubscriber struct {
 	secondStarted chan struct{}
 	release       chan struct{}
 	calls         atomic.Int32
+}
+
+type subscriberFunc func(context.Context, *rta.Subscription) error
+
+func (f subscriberFunc) Subscribe(ctx context.Context, sub *rta.Subscription) error {
+	return f(ctx, sub)
 }
 
 func (s *blockingSubscriber) Subscribe(context.Context, *rta.Subscription) error {

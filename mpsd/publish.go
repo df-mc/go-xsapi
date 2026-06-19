@@ -190,14 +190,18 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 // reconcileSessionConnection updates s to use the Client's current RTA
 // connection ID while ordered against subscription reconnect refreshes.
 func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) error {
+	if _, err := c.subscribe(ctx); err != nil {
+		return err
+	}
+
 	c.reconcileMu.Lock()
 	defer c.reconcileMu.Unlock()
 
-	connectionID, err := c.subscriptionConnectionID()
-	if err != nil {
-		return err
+	data := c.subscriptionData.Load()
+	if data == nil || data.ConnectionID == uuid.Nil {
+		return errors.New("mpsd: missing RTA connection ID")
 	}
-	return reconcileSessionConnection(ctx, s, connectionID)
+	return reconcileSessionConnection(ctx, s, data.ConnectionID)
 }
 
 // reconcileSessionConnection updates s to advertise connectionID for the local

@@ -19,23 +19,12 @@ import (
 // subscribe subscribes with the RTA (Real-Time Activity) Services in Xbox Live.
 // The subscription is used to associate with a multiplayer session to receive
 // notifications for changes in the session.
-func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
+func (c *Client) subscribe(ctx context.Context) (uuid.UUID, error) {
 	c.subscribeMu.Lock()
 	defer c.subscribeMu.Unlock()
 
-	if !c.subscription.Active() {
-		if err = c.subscriber.Subscribe(ctx, c.subscription); err != nil {
-			return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
-		}
-	}
-	return c.subscriptionConnectionID()
-}
-
-// subscriptionConnectionID returns the latest RTA connection ID delivered in
-// the subscription custom data.
-func (c *Client) subscriptionConnectionID() (uuid.UUID, error) {
-	if c.subscription != nil && !c.subscription.Active() {
-		return uuid.Nil, fmt.Errorf("mpsd: RTA subscription inactive: %w", rta.ErrUnavailable)
+	if err := c.subscriber.Subscribe(ctx, c.subscription); err != nil {
+		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
 	if data := c.subscriptionData.Load(); data != nil && data.ConnectionID != uuid.Nil {
 		return data.ConnectionID, nil
