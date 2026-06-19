@@ -135,7 +135,7 @@ func TestSession(t *testing.T) {
 	if err := client.Presence().Remove(ctx); err != nil {
 		t.Fatalf("error removing presence: %s", err)
 	}
-	if err := client.Presence().Update(t.Context(), presence.TitleRequest{
+	if _, err := client.Presence().Update(t.Context(), presence.TitleRequest{
 		// ID:    uint32(titleID),
 		State: presence.StateActive,
 	}); err != nil {
