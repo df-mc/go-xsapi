@@ -131,9 +131,7 @@ func (h *subscriptionHandler) HandleError(err error) {
 	h.log.Error("subscription lost", "err", err)
 
 	for _, handler := range h.handlers() {
-		if handler, ok := handler.(SubscriptionLostHandler); ok {
-			go handler.HandleSubscriptionLost()
-		}
+		go handler.HandleSubscriptionLost()
 	}
 }
 
@@ -163,14 +161,10 @@ type SubscriptionHandler interface {
 	// The payload contains only the updated count; the XUIDs of the users
 	// involved are not included. Therefore, it is generally used for notification purposes.
 	HandleIncomingFriendRequestCountChange(count int)
-}
 
-// SubscriptionLostHandler may be implemented by a [SubscriptionHandler] that
-// wants to be notified when the underlying subscription is lost.
-type SubscriptionLostHandler interface {
 	// HandleSubscriptionLost is called when the underlying subscription is lost.
-	// The caller might be able to call [Client.Subscribe] again using the same
-	// handler to reconnect to the RTA service.
+	// The caller might be able to call [Client.Subscribe] again using the same handler
+	// to reconnect to the RTA service.
 	HandleSubscriptionLost()
 }
 

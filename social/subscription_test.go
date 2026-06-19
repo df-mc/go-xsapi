@@ -1,15 +1,28 @@
 package social
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/rta"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
+
+func TestSubscribeWithoutRTAFails(t *testing.T) {
+	client := New(http.DefaultClient, nil, xsts.UserInfo{XUID: "1"}, nil)
+
+	err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
+	if !errors.Is(err, rta.ErrUnavailable) {
+		t.Fatalf("Subscribe error = %v, want %v", err, rta.ErrUnavailable)
+	}
+}
 
 func TestSubscriptionHandlerAllowsNonComparableHandlers(t *testing.T) {
 	calls := make(chan string, 1)
@@ -133,10 +146,3 @@ type countingSocialHandler struct{}
 func (*countingSocialHandler) HandleSocialNotification(string, []string)  {}
 func (*countingSocialHandler) HandleIncomingFriendRequestCountChange(int) {}
 func (*countingSocialHandler) HandleSubscriptionLost()                    {}
-
-var _ SubscriptionHandler = legacySocialHandler{}
-
-type legacySocialHandler struct{}
-
-func (legacySocialHandler) HandleSocialNotification(string, []string)  {}
-func (legacySocialHandler) HandleIncomingFriendRequestCountChange(int) {}
