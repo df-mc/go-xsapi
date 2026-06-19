@@ -11,25 +11,15 @@ import (
 )
 
 const (
-	// FriendErrorKindUnknown identifies an unclassified Xbox social error.
-	FriendErrorKindUnknown = "unknown"
-	// FriendErrorKindFullList identifies an Xbox social error caused by a
-	// caller or target friend list limit.
-	FriendErrorKindFullList = "friend_list_full"
-	// FriendErrorKindRestricted identifies an Xbox social error caused by
-	// privacy, enforcement, or relationship restrictions.
+	FriendErrorKindUnknown    = "unknown"
+	FriendErrorKindFullList   = "friend_list_full"
 	FriendErrorKindRestricted = "restricted"
 )
 
+// Social API error categories for use with errors.Is.
 var (
-	// ErrRateLimited matches Social API responses that indicate the caller
-	// should wait before retrying.
-	ErrRateLimited = errors.New("xsapi/social: rate limited")
-	// ErrFriendListFull matches known Social API responses for friend-list
-	// limit failures.
-	ErrFriendListFull = errors.New("xsapi/social: friend list full")
-	// ErrFriendRestricted matches known Social API responses for privacy,
-	// enforcement, or relationship restrictions.
+	ErrRateLimited      = errors.New("xsapi/social: rate limited")
+	ErrFriendListFull   = errors.New("xsapi/social: friend list full")
 	ErrFriendRestricted = errors.New("xsapi/social: friend restricted")
 )
 
@@ -52,7 +42,6 @@ type ResponseError struct {
 	RetryAfter time.Duration
 }
 
-// Error formats the Social API response failure for logs and returned errors.
 func (e *ResponseError) Error() string {
 	prefix := ""
 	if e.Method != "" && e.URL != "" {
@@ -70,8 +59,7 @@ func (e *ResponseError) Error() string {
 	return fmt.Sprintf("%sxsapi/social: request failed: status=%d", prefix, e.StatusCode)
 }
 
-// Is reports whether e matches a Social API error category such as
-// ErrRateLimited, ErrFriendListFull, or ErrFriendRestricted.
+// Is supports errors.Is checks against the Social API error categories.
 func (e *ResponseError) Is(target error) bool {
 	if e == nil {
 		return false
@@ -88,9 +76,8 @@ func (e *ResponseError) Is(target error) bool {
 	}
 }
 
-// RetryDelay returns the server-requested delay before retrying. It is
-// equivalent to RetryAfter and is provided for callers that use a small retry
-// interface with errors.As.
+// RetryDelay returns RetryAfter for callers that use a small retry interface
+// with errors.As.
 func (e *ResponseError) RetryDelay() time.Duration {
 	if e == nil {
 		return 0
