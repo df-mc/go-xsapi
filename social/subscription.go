@@ -29,8 +29,10 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 	c.subscriptionMu.Lock()
 	defer c.subscriptionMu.Unlock()
 
-	if err := c.subscriber.Subscribe(ctx, c.subscription); err != nil {
-		return err
+	if !c.subscription.Active() {
+		if err := c.subscriber.Subscribe(ctx, c.subscription); err != nil {
+			return err
+		}
 	}
 
 	c.subscriptionHandlers = append(c.subscriptionHandlers, h)

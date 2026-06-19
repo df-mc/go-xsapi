@@ -20,12 +20,12 @@ import (
 // The subscription is used to associate with a multiplayer session to receive
 // notifications for changes in the session.
 func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
+	if c.subscription.Active() {
+		return c.subscriptionConnectionID()
+	}
 	if err = c.subscriber.Subscribe(ctx, c.subscription); err != nil {
 		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
-	// If the subscription was already made with RTA, return the cached
-	// subscription along with its decoded payload. The Subscribe call above still
-	// matters for active subscriptions because it waits for reconnect/resubscribe.
 	return c.subscriptionConnectionID()
 }
 
