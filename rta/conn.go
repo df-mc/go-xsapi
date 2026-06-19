@@ -123,6 +123,10 @@ func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) err
 			continue
 		}
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				sub.opMu.Unlock()
+				return err
+			}
 			if errors.Is(err, errSubscribeRollbackFailed) {
 				sub.opMu.Unlock()
 				return err

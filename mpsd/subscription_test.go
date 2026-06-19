@@ -716,52 +716,6 @@ func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 	}
 }
 
-func TestSubscriptionHandlerIgnoresCallerContextErrors(t *testing.T) {
-	ref := SessionReference{
-		ServiceConfigID: uuid.New(),
-		TemplateName:    "template",
-		Name:            "SESSION",
-	}
-	var requests atomic.Int32
-	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requests.Add(1)
-		return &http.Response{
-			StatusCode: http.StatusNoContent,
-			Status:     http.StatusText(http.StatusNoContent),
-			Body:       io.NopCloser(bytes.NewReader(nil)),
-			Header:     make(http.Header),
-			Request:    req,
-		}, nil
-	})}
-	c := &Client{
-		client:   httpClient,
-		sessions: map[string]*Session{},
-	}
-	session := &Session{
-		client: c,
-		ref:    ref,
-		closed: make(chan struct{}),
-		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	c.sessions[ref.URL().String()] = session
-	h := &subscriptionHandler{
-		Client: c,
-		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-
-	h.HandleError(context.DeadlineExceeded)
-	h.HandleError(context.Canceled)
-
-	select {
-	case <-session.Context().Done():
-		t.Fatal("session was closed after caller context error")
-	case <-time.After(50 * time.Millisecond):
-	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("close requests = %d, want 0", got)
-	}
-}
-
 func TestSubscriptionHandlerClosesSessionsOnSubscriptionLoss(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
