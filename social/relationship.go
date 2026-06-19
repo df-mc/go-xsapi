@@ -78,6 +78,8 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 	return c.doRelationship(ctx, http.MethodDelete, requestURL.String(), opts, http.StatusOK)
 }
 
+// doRelationship sends a relationship mutation request and converts non-success
+// responses into ResponseError values.
 func (c *Client) doRelationship(ctx context.Context, method, requestURL string, opts []internal.RequestOption, successCodes ...int) error {
 	req, err := internal.NewRequest(ctx, method, requestURL, nil, append(
 		opts,

@@ -82,6 +82,8 @@ func (e *ResponseError) Is(target error) bool {
 	}
 }
 
+// responseError builds a ResponseError from an unsuccessful Social or PeopleHub
+// response.
 func responseError(resp *http.Response) error {
 	responseErr := &ResponseError{
 		StatusCode: resp.StatusCode,
@@ -113,6 +115,7 @@ func responseError(resp *http.Response) error {
 	return responseErr
 }
 
+// parseRetryAfter parses Retry-After header values in either seconds or HTTP-date form.
 func parseRetryAfter(value string) time.Duration {
 	if value == "" {
 		return 0
