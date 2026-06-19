@@ -64,8 +64,7 @@ func (e *ResponseError) Error() string {
 	return fmt.Sprintf("%sxsapi/social: request failed: status=%d", prefix, e.StatusCode)
 }
 
-// Is implements errors.Is matching for ErrRateLimited, ErrFriendListFull, and
-// ErrFriendRestricted.
+// Is implements errors.Is matching for Social API error categories.
 func (e *ResponseError) Is(target error) bool {
 	if e == nil {
 		return false
