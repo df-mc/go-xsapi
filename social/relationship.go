@@ -24,28 +24,7 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 	).String()
 
 	// Unlike [Client.AddFriend], this request call returns 204 No Content.
-	req, err := internal.NewRequest(ctx, http.MethodPut, requestURL, nil, append(
-		opts,
-		socialContractVersion,
-		internal.RequestHeader("Accept", "application/json"),
-		internal.RequestHeader("Cache-Control", "no-cache"),
-		internal.DefaultLanguage,
-	))
-	if err != nil {
-		return fmt.Errorf("make request: %w", err)
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusNoContent:
-		return nil
-	default:
-		return internal.UnexpectedStatusCode(resp)
-	}
+	return c.doRelationship(ctx, http.MethodPut, requestURL, opts, http.StatusOK, http.StatusNoContent)
 }
 
 // Unfollow removes an existing follow relationship with the user identified by XUID.
@@ -69,13 +48,7 @@ func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.Re
 	).String()
 
 	// Expected status code: 200 OK
-	return internal.Do(ctx, c.client, http.MethodPut, requestURL, nil, nil, append(
-		opts,
-		socialContractVersion,
-		internal.RequestHeader("Accept", "application/json"),
-		internal.RequestHeader("Cache-Control", "no-cache"),
-		internal.DefaultLanguage,
-	))
+	return c.doRelationship(ctx, http.MethodPut, requestURL, opts, http.StatusOK)
 }
 
 // RemoveFriend deletes the friend relationship with the user identified by XUID.
@@ -102,13 +75,32 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 	requestURL.RawQuery = q.Encode()
 
 	// This request is a DELETE call but returns 200 OK instead of 204 No Content.
-	return internal.Do(ctx, c.client, http.MethodDelete, requestURL.String(), nil, nil, append(
+	return c.doRelationship(ctx, http.MethodDelete, requestURL.String(), opts, http.StatusOK)
+}
+
+func (c *Client) doRelationship(ctx context.Context, method, requestURL string, opts []internal.RequestOption, successCodes ...int) error {
+	req, err := internal.NewRequest(ctx, method, requestURL, nil, append(
 		opts,
 		socialContractVersion,
 		internal.RequestHeader("Accept", "application/json"),
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.DefaultLanguage,
 	))
+	if err != nil {
+		return fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	for _, code := range successCodes {
+		if resp.StatusCode == code {
+			return nil
+		}
+	}
+	return responseError(resp)
 }
 
 var (
