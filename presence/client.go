@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -159,17 +160,66 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 
 // Update updates the presence of the authenticated user's current title.
 func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) error {
+	resp, err := c.update(ctx, request, opts)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// UpdateWithHeartbeatAfter updates the presence of the authenticated user's
+// current title and returns the server-requested heartbeat interval.
+//
+// The returned duration is read from the X-Heartbeat-After response header. If
+// the header is missing or invalid, the returned duration is zero.
+func (c *Client) UpdateWithHeartbeatAfter(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (time.Duration, error) {
+	resp, err := c.update(ctx, request, opts)
+	if err != nil {
+		return 0, err
+	}
+	heartbeat := heartbeatAfter(resp.Header.Get("X-Heartbeat-After"))
+	_ = resp.Body.Close()
+	return heartbeat, nil
+}
+
+// update sends the shared title-presence update request and leaves the
+// successful response body open for callers that need response metadata.
+func (c *Client) update(ctx context.Context, request TitleRequest, opts []internal.RequestOption) (*http.Response, error) {
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
 		"/devices/current/titles/current",
 	).String()
-	return internal.Do(ctx, c.client, http.MethodPost, requestURL, request, nil, append(opts,
+
+	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL, request, append(opts,
 		contractVersion,
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.RequestHeader("Content-Type", "application/json"),
 		internal.DefaultLanguage,
 	))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		err := internal.UnexpectedStatusCode(resp)
+		_ = resp.Body.Close()
+		return nil, err
+	}
+	return resp, nil
+}
+
+// heartbeatAfter parses the X-Heartbeat-After header value as seconds.
+func heartbeatAfter(header string) time.Duration {
+	seconds, err := strconv.Atoi(header)
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // TitleRequest describes the on-wire structure used to update a title's presence for the user.
