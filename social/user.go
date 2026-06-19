@@ -52,7 +52,7 @@ func (c *Client) Search(ctx context.Context, query string, opts ...internal.Requ
 		}
 		return result.Users, nil
 	default:
-		return nil, internal.UnexpectedStatusCode(resp)
+		return nil, responseError(req, resp)
 	}
 }
 
@@ -102,6 +102,20 @@ func (c *Client) UsersByXUIDs(ctx context.Context, xuids []string, opts ...inter
 // Use [Client.FriendsOf] to retrieve the friend list of another user.
 func (c *Client) Friends(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
 	return c.users(ctx, "me", "friends", nil, opts)
+}
+
+// Followers returns users who follow the caller. Unlike [Client.Friends], this
+// includes one-way relationships that may not have been accepted as mutual
+// friends.
+func (c *Client) Followers(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
+	return c.users(ctx, "me", "followers", nil, opts)
+}
+
+// Following returns users the caller follows. Unlike [Client.Friends], this
+// includes one-way relationships that may not have been accepted as mutual
+// friends.
+func (c *Client) Following(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
+	return c.users(ctx, "me", "social", nil, opts)
 }
 
 // FriendsOf returns the friend list of the user identified by the given XUID.
@@ -186,7 +200,7 @@ func (c *Client) users(ctx context.Context, perspective, selector string, postBo
 		}
 		return result.Users, nil
 	default:
-		return nil, internal.UnexpectedStatusCode(resp)
+		return nil, responseError(req, resp)
 	}
 }
 
