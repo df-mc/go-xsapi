@@ -46,7 +46,7 @@ type ResponseError struct {
 	RetryAfter time.Duration
 }
 
-// Error formats e as a Social API response failure.
+// Error implements error by formatting e as a Social API response failure.
 func (e *ResponseError) Error() string {
 	prefix := ""
 	if e.Method != "" && e.URL != "" {
@@ -64,7 +64,8 @@ func (e *ResponseError) Error() string {
 	return fmt.Sprintf("%sxsapi/social: request failed: status=%d", prefix, e.StatusCode)
 }
 
-// Is supports errors.Is checks against the Social API error categories.
+// Is implements errors.Is matching for ErrRateLimited, ErrFriendListFull, and
+// ErrFriendRestricted.
 func (e *ResponseError) Is(target error) bool {
 	if e == nil {
 		return false
