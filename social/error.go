@@ -42,6 +42,7 @@ type ResponseError struct {
 	RetryAfter time.Duration
 }
 
+// Error formats e as a Social API response failure.
 func (e *ResponseError) Error() string {
 	prefix := ""
 	if e.Method != "" && e.URL != "" {
