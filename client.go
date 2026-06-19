@@ -1,11 +1,9 @@
 package xsapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +24,8 @@ import (
 	"golang.org/x/text/language"
 )
 
+var dialRTA = rta.Dial
+
 // NewClient creates a new [Client] using a default [ClientConfig] and a
 // 15-second timeout for the initial login. For more control over the
 // configuration, use [ClientConfig.New] directly.
@@ -38,7 +38,9 @@ func NewClient(src TokenSource) (*Client, error) {
 
 // New creates a new [Client] using the given [TokenSource] and [ClientConfig].
 // The provided context governs the initial login, including
-// requesting XSTS tokens, fetching NSAL data, and connecting to WebSocket services.
+// requesting XSTS tokens and, by default, connecting to WebSocket services.
+// NSAL title data is resolved lazily when an authenticated request first needs
+// it.
 //
 // New clones the [ClientConfig.HTTPClient] internally so that the original
 // client is never mutated. This means that passing [http.DefaultClient] or any
@@ -51,6 +53,9 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
+	}
+	if config.RTAMode >= rtaCapacity {
+		return nil, fmt.Errorf("xsapi: invalid RTA mode: %d", config.RTAMode)
 	}
 
 	c := &Client{
@@ -78,33 +83,21 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 	c.userInfo = xui
 
-	// NSAL (Network Security Allow List) provides two kinds of title data:
-	//  - Default data covering *.xboxlive.com endpoints
-	//  - Title-scoped data for title-specific endpoints such as PlayFab
-	//
-	// Title-scoped data takes priority over default data when resolving the
-	// relying party for an XSTS token. Default data is used as the fallback.
-	c.defaultTitle, err = nsal.Default(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("request NSAL default title data: %w", err)
-	}
-	c.currentTitle, err = nsal.Current(ctx, token, src.ProofKey())
-	if err != nil {
-		return nil, fmt.Errorf("request NSAL title data for current authenticated title: %w", err)
+	c.transport = &nsal.Transport{
+		Base:     c.baseTransport(),
+		Resolver: nsal.NewResolver(src),
 	}
 
-	// Connect to RTA services.
-	if config.RTADialer.ErrorLog == nil {
-		config.RTADialer.ErrorLog = c.Log()
-	}
-	c.rta, err = config.RTADialer.DialContext(ctx, c.HTTPClient())
-	if err != nil {
-		return nil, fmt.Errorf("dial RTA: %w", err)
+	if config.RTAMode == RTAEager {
+		if _, err := c.ensureRTA(ctx); err != nil {
+			return nil, fmt.Errorf("dial RTA: %w", err)
+		}
 	}
 
 	// Initialise API clients, each scoped to their respective endpoint.
-	c.mpsd = mpsd.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log().With("src", "mpsd"))
-	c.social = social.New(c.HTTPClient(), c.RTA(), c.UserInfo(), c.Log().With("src", "social"))
+	rta := lazyRTA{client: c}
+	c.mpsd = mpsd.NewWithRTASubscriber(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "mpsd"))
+	c.social = social.NewWithRTASubscriber(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	return c, nil
 }
@@ -115,6 +108,42 @@ type TokenSource interface {
 	xsts.TokenSource
 	xasd.TokenSource
 }
+
+// TokenAndSignaturer resolves an XSTS token and signature policy for a request URL.
+//
+// It is used by callers that need to embed an XSTS token in a request body
+// instead of sending a normal authenticated request through [Client.HTTPClient]
+// or [github.com/df-mc/go-xsapi/v2/xal/nsal.Transport].
+type TokenAndSignaturer interface {
+	TokenAndSignature(ctx context.Context, u *url.URL) (*xsts.Token, nsal.SignaturePolicy, error)
+}
+
+var (
+	_ TokenAndSignaturer = (*Client)(nil)
+	_ TokenAndSignaturer = (*nsal.Resolver)(nil)
+)
+
+// RTAMode controls when a [Client] connects to Xbox Live RTA (Real-Time
+// Activity) services.
+type RTAMode uint
+
+const (
+	// RTAEager connects to RTA during [ClientConfig.New]. This is the default
+	// zero value and preserves the historical client construction behavior.
+	RTAEager RTAMode = iota
+
+	// RTALazy defers connecting to RTA until the first operation that needs an
+	// RTA subscription, such as joining an MPSD session as an active member or
+	// subscribing to social updates.
+	RTALazy
+
+	// RTADisabled prevents this client from connecting to RTA. Operations that
+	// require RTA return [rta.ErrUnavailable].
+	RTADisabled
+
+	// rtaCapacity is the maximum value of RTA mode supported by Client.
+	rtaCapacity
+)
 
 // ClientConfig holds the configuration for creating a [Client].
 type ClientConfig struct {
@@ -127,9 +156,11 @@ type ClientConfig struct {
 	// clients. If nil, [slog.Default] is used.
 	Logger *slog.Logger
 
-	// RTADialer is used to establish a connection to Xbox Live RTA
-	// (Real-Time Activity) services.
-	RTADialer rta.Dialer
+	// RTAMode controls when the client connects to Xbox Live RTA services. The
+	// zero value, [RTAEager], connects during [ClientConfig.New]. Use [RTALazy]
+	// when callers need REST APIs such as MPSD activity listing without opening
+	// an RTA WebSocket until a subscription-backed operation is used.
+	RTAMode RTAMode
 
 	// EnableChat enables the chat functionality.
 	// EnableChat bool
@@ -143,10 +174,13 @@ type Client struct {
 	client *http.Client
 	src    TokenSource
 
-	defaultTitle, currentTitle *nsal.TitleData
-	userInfo                   xsts.UserInfo
+	transport *nsal.Transport
+	userInfo  xsts.UserInfo
 
-	rta      *rta.Conn
+	rtaMu      sync.Mutex
+	rtaDialing chan struct{}
+	rta        *rta.Conn
+
 	mpsd     *mpsd.Client
 	social   *social.Client
 	presence *presence.Client
@@ -162,57 +196,24 @@ func (c *Client) HTTPClient() *http.Client {
 	return c.client
 }
 
-// RoundTrip implements [http.RoundTripper]. It resolves an XSTS token and
-// signature policy for the request URL using NSAL (Network Security Allow List),
-// then sets the 'Authorization' and 'Signature' headers before forwarding the request to
-// the underlying transport.
+// RoundTrip implements [http.RoundTripper].
 //
 // RoundTrip always consumes the request body, even on error, as required by
-// the [http.RoundTripper] contract. The request is cloned before any headers
-// are set to avoid mutating the original.
+// the [http.RoundTripper] contract.
 func (c *Client) RoundTrip(req *http.Request) (*http.Response, error) {
+	var reqBodyClosed bool
 	if req.Body != nil {
-		// The [http.RoundTripper] contract requires the body to be closed
-		// by the caller of RoundTrip, even on error. We handle it here
-		// rather than delegating to the base transport because the body
-		// is buffered for signing before being forwarded.
-		defer req.Body.Close()
+		defer func() {
+			if !reqBodyClosed {
+				_ = req.Body.Close()
+			}
+		}()
 	}
 	if c.closed.Load() {
 		return nil, net.ErrClosed
 	}
-
-	// Propagate the request's context so that XSTS token retrieval
-	// respects any deadlines or cancellations set by the caller.
-	ctx := req.Context()
-	token, policy, err := c.TokenAndSignature(ctx, req.URL)
-	if err != nil {
-		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
-	}
-
-	var (
-		// Clone the request so that the original headers are never mutated,
-		// as required by the [http.RoundTripper] contract.
-		req2 = req.Clone(ctx)
-		// Body bytes buffered for inclusion in the request signature.
-		data []byte
-	)
-	token.SetAuthHeader(req2)
-	// If a body is present, it is buffered in full so that it can be included
-	// in the 'Signature' header. It is then restored on the cloned request.
-	if req.Body != nil {
-		signingBuffer := &bytes.Buffer{}
-		if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
-			signingBuffer.Reset()
-			return nil, fmt.Errorf("clone request body: %w", err)
-		}
-		data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
-	}
-	if err := policy.Sign(req2, data, c.src.ProofKey(), xal.ServerTime()); err != nil {
-		return nil, fmt.Errorf("sign request: %w", err)
-	}
-
-	return c.baseTransport().RoundTrip(req2)
+	reqBodyClosed = true
+	return c.transport.RoundTrip(req.WithContext(c.nsalContext(req.Context())))
 }
 
 // baseTransport returns the transport of the HTTP client passed via
@@ -238,22 +239,31 @@ func (c *Client) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Tok
 	if c.closed.Load() {
 		return nil, policy, net.ErrClosed
 	}
-	// Title-scoped data is checked first. Default data is only consulted as a
-	// fallback because it can contain duplicate entries for the same endpoint
-	// (e.g. *.playfabapi.com may appear in both title-scoped and default data).
-	endpoint, policy, ok := c.currentTitle.Match(u)
-	if !ok {
-		endpoint, policy, ok = c.defaultTitle.Match(u)
-		if !ok {
-			return nil, policy, fmt.Errorf("no endpoint was found for %s", u)
-		}
-	}
-
-	token, err := c.src.XSTSToken(ctx, endpoint.RelyingParty)
+	token, policy, err := c.transport.TokenAndSignature(c.nsalContext(ctx), u)
 	if err != nil {
-		return nil, policy, fmt.Errorf("request XSTS token: %w", err)
+		return nil, policy, err
 	}
 	return token, policy, nil
+}
+
+// WithoutAuthHeaders returns a cloned HTTP request configured to exclude
+// specified authentication headers from being automatically added by
+// [Client.HTTPClient].
+//
+// Header names are matched case-insensitively. If no headers are provided,
+// both Authorization and Signature are excluded.
+func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
+	return nsal.WithoutAuthHeaders(req, headers...)
+}
+
+func (c *Client) nsalContext(ctx context.Context) context.Context {
+	if client, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && client != nil {
+		return ctx
+	}
+	if c.client == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, xal.HTTPClient, c.client)
 }
 
 // Log returns the [slog.Logger] configured via [ClientConfig.Logger].
@@ -284,7 +294,11 @@ func (c *Client) Presence() *presence.Client {
 }
 
 // RTA returns the connection to Xbox Live RTA (Real-Time Activity) services.
+// If [ClientConfig.RTAMode] is [RTALazy], RTA returns nil until an operation
+// creates the connection.
 func (c *Client) RTA() *rta.Conn {
+	c.rtaMu.Lock()
+	defer c.rtaMu.Unlock()
 	return c.rta
 }
 
@@ -333,10 +347,117 @@ func (c *Client) CloseContext(ctx context.Context) error {
 
 	// Once rta is closed, the client is no longer usable and Close cannot be retried.
 	c.closed.Store(true)
-	if c.rta != nil {
-		c.closeErr = c.rta.Close()
-	}
+	c.closeErr = c.closeRTA(ctx)
 	return c.closeErr
+}
+
+// ensureRTA returns the existing RTA connection or dials one on demand. Only
+// one caller may dial at a time; concurrent callers wait for that dial to
+// finish and then reuse the resulting connection.
+func (c *Client) ensureRTA(ctx context.Context) (*rta.Conn, error) {
+	if c.config.RTAMode == RTADisabled {
+		return nil, rta.ErrUnavailable
+	}
+	for {
+		if c.closed.Load() {
+			return nil, net.ErrClosed
+		}
+		c.rtaMu.Lock()
+		if c.rta != nil {
+			conn := c.rta
+			c.rtaMu.Unlock()
+			return conn, nil
+		}
+		if c.closed.Load() {
+			c.rtaMu.Unlock()
+			return nil, net.ErrClosed
+		}
+		if done := c.rtaDialing; done != nil {
+			c.rtaMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		done := make(chan struct{})
+		c.rtaDialing = done
+		c.rtaMu.Unlock()
+
+		conn, err := dialRTA(ctx, c.HTTPClient(), c.Log())
+
+		c.rtaMu.Lock()
+		if err == nil {
+			if c.closed.Load() {
+				err = net.ErrClosed
+			} else {
+				c.rta = conn
+			}
+		}
+		c.rtaDialing = nil
+		close(done)
+		c.rtaMu.Unlock()
+
+		if err != nil {
+			if conn != nil {
+				_ = conn.Close()
+			}
+			return nil, err
+		}
+		return conn, nil
+	}
+}
+
+// closeRTA closes the current RTA connection after any in-progress lazy dial
+// finishes. It clears the stored connection before closing so future calls do
+// not reuse a connection that is being shut down.
+func (c *Client) closeRTA(ctx context.Context) error {
+	for {
+		c.rtaMu.Lock()
+		if done := c.rtaDialing; done != nil {
+			c.rtaMu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		conn := c.rta
+		c.rta = nil
+		c.rtaMu.Unlock()
+		if conn == nil {
+			return nil
+		}
+		return conn.Close()
+	}
+}
+
+// lazyRTA adapts Client's on-demand RTA connection lifecycle to the subscriber
+// interfaces used by MPSD and Social clients.
+type lazyRTA struct {
+	client *Client
+}
+
+// Subscribe ensures an RTA connection exists before installing sub.
+func (r lazyRTA) Subscribe(ctx context.Context, sub *rta.Subscription) error {
+	conn, err := r.client.ensureRTA(ctx)
+	if err != nil {
+		return err
+	}
+	return conn.Subscribe(ctx, sub)
+}
+
+// Unsubscribe removes sub from the current RTA connection. It does not dial a
+// lazy connection solely to remove a subscription.
+func (r lazyRTA) Unsubscribe(ctx context.Context, sub *rta.Subscription) error {
+	conn := r.client.RTA()
+	if conn == nil {
+		return rta.ErrUnavailable
+	}
+	return conn.Unsubscribe(ctx, sub)
 }
 
 // AcceptLanguage returns a [internal.RequestOption] that appends the given

@@ -9,7 +9,6 @@ import (
 
 func TestClientCloseContextSkipsInactiveSubscription(t *testing.T) {
 	c := &Client{
-		rta:          &rta.Conn{},
 		subscription: rta.NewSubscription(resourceURI, rta.NopSubscriptionHandler{}),
 	}
 

@@ -21,32 +21,12 @@ import (
 // The [http.Client] is used to authenticate handshake HTTP requests and is typically retrieved from
 // [github.com/df-mc/go-xsapi.Client.HTTPClient].
 func Dial(ctx context.Context, client *http.Client, log *slog.Logger) (*Conn, error) {
-	return Dialer{ErrorLog: log}.DialContext(ctx, client)
-}
-
-// Dialer represents the options for establishing a Conn with real-time
-// activity services with DialContext or Dial.
-type Dialer struct {
-	Options  *websocket.DialOptions
-	ErrorLog *slog.Logger
-}
-
-// Dial calls DialContext with a 15 seconds timeout.
-func (d Dialer) Dial(client *http.Client) (*Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
-	defer cancel()
-	return d.DialContext(ctx, client)
-}
-
-// DialContext establishes a connection with real-time activity service. A
-// context.Context is used to control the WebSocket dial.
-func (d Dialer) DialContext(ctx context.Context, client *http.Client) (*Conn, error) {
-	dialer := d.newDialer(client)
-	c, err := dialer.dial(ctx)
+	d := newDialer(client, log)
+	c, err := d.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return newConn(c, dialer), nil
+	return newConn(c, d), nil
 }
 
 func newConn(c *websocket.Conn, d *dialer) *Conn {
@@ -69,23 +49,16 @@ type dialer struct {
 	options *websocket.DialOptions
 }
 
-func (d Dialer) newDialer(client *http.Client) *dialer {
-	if d.ErrorLog == nil {
-		d.ErrorLog = slog.Default()
-	}
-	options := &websocket.DialOptions{}
-	if d.Options != nil {
-		copy := *d.Options
-		copy.Subprotocols = slices.Clone(d.Options.Subprotocols)
-		options = &copy
-	}
-	options.HTTPClient = client
-	if !slices.Contains(options.Subprotocols, subprotocol) {
-		options.Subprotocols = append(options.Subprotocols, subprotocol)
+func newDialer(client *http.Client, log *slog.Logger) *dialer {
+	if log == nil {
+		log = slog.Default()
 	}
 	return &dialer{
-		log:     d.ErrorLog,
-		options: options,
+		log: log,
+		options: &websocket.DialOptions{
+			Subprotocols: []string{subprotocol},
+			HTTPClient:   client,
+		},
 	}
 }
 

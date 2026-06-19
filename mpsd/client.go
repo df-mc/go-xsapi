@@ -16,14 +16,27 @@ import (
 
 // New returns a new [Client] using the provided components.
 func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+	return NewWithRTASubscriber(client, internal.Subscriber(conn), internal.Unsubscriber(conn), userInfo, log)
+}
+
+// NewWithRTASubscriber returns a new [Client] using the provided components and
+// RTA subscription transport.
+func NewWithRTASubscriber(client *http.Client, subscriber RTASubscriber, unsubscriber RTAUnsubscriber, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
+	if subscriber == nil {
+		subscriber = internal.Subscriber(nil)
+	}
+	if unsubscriber == nil {
+		unsubscriber = internal.Unsubscriber(nil)
+	}
 	c := &Client{
-		client:   client,
-		rta:      conn,
-		userInfo: userInfo,
-		log:      log,
+		client:       client,
+		subscriber:   subscriber,
+		unsubscriber: unsubscriber,
+		userInfo:     userInfo,
+		log:          log,
 
 		sessions: make(map[string]*Session),
 	}
@@ -34,12 +47,25 @@ func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.
 	return c
 }
 
+// RTASubscriber is the part of an RTA connection needed to create MPSD
+// subscriptions.
+type RTASubscriber interface {
+	Subscribe(context.Context, *rta.Subscription) error
+}
+
+// RTAUnsubscriber is the part of an RTA connection needed to remove MPSD
+// subscriptions.
+type RTAUnsubscriber interface {
+	Unsubscribe(context.Context, *rta.Subscription) error
+}
+
 // Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
 type Client struct {
-	client   *http.Client
-	rta      *rta.Conn
-	userInfo xsts.UserInfo
-	log      *slog.Logger
+	client       *http.Client
+	subscriber   RTASubscriber
+	unsubscriber RTAUnsubscriber
+	userInfo     xsts.UserInfo
+	log          *slog.Logger
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.
@@ -85,14 +111,10 @@ func (c *Client) Close() error {
 // It unsubscribes from the RTA service if any subscription is present on the Client.
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
-	if c.rta == nil || c.subscription == nil {
-		return nil
-	}
-	if !c.subscription.Active() {
-		return nil
-	}
-	if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
-		return fmt.Errorf("mpsd: unsubscribe: %w", err)
+	if c.subscription.Active() {
+		if err := c.unsubscriber.Unsubscribe(ctx, c.subscription); err != nil {
+			return fmt.Errorf("mpsd: unsubscribe: %w", err)
+		}
 	}
 	return nil
 }

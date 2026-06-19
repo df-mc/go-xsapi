@@ -60,21 +60,10 @@ type Conn struct {
 	cancel context.CancelCauseFunc
 }
 
-// Subscribe attempts to subscribe with the specific resource URI, with the
-// [context.Context] to be used during the handshake. A Subscription may be
-// returned, which contains an ID and Custom data as the result of handshake.
-func (c *Conn) Subscribe(ctx context.Context, resourceURI string) (*Subscription, error) {
-	sub := NewSubscription(resourceURI, NopSubscriptionHandler{})
-	if err := c.SubscribeSubscription(ctx, sub); err != nil {
-		return nil, err
-	}
-	return sub, nil
-}
-
-// SubscribeSubscription attempts to subscribe using a caller-owned Subscription. It is
+// Subscribe attempts to subscribe using a caller-owned Subscription. It is
 // useful for services that need to preserve the same subscription object across
 // reconnects.
-func (c *Conn) SubscribeSubscription(ctx context.Context, sub *Subscription) error {
+func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
@@ -345,16 +334,12 @@ func NewSubscription(resourceURI string, h SubscriptionHandler) *Subscription {
 // Subscription represents a subscription contracted with the resource URI available through
 // the real-time activity service. A Subscription may be contracted via Conn.Subscribe.
 type Subscription struct {
-	ID     uint32
-	Custom json.RawMessage
-
+	currentID     uint32
+	currentCustom json.RawMessage
 	h             atomic.Pointer[SubscriptionHandler]
 	mu            sync.RWMutex
 	opMu          sync.Mutex
 	resourceURI   string
-	currentID     uint32
-	currentCustom json.RawMessage
-	hasState      bool
 
 	// active indicates whether the Subscription is currently active on the RTA connection.
 	active          bool
@@ -364,22 +349,31 @@ type Subscription struct {
 
 // id returns the ID assigned to the [Subscription] within a single RTA connection.
 func (s *Subscription) id() uint32 {
+	return s.ID()
+}
+
+// ID returns the ID assigned to the [Subscription] within a single RTA connection.
+func (s *Subscription) ID() uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.hasState {
-		return s.currentID
-	}
-	return s.ID
+	return s.currentID
 }
 
 // custom returns the custom data associated with the [Subscription].
 func (s *Subscription) custom() json.RawMessage {
+	return s.Custom()
+}
+
+// Custom returns the custom data associated with the [Subscription].
+//
+// The format and semantics of this data depend on the resource the
+// subscription is targeting. It is received alongside the successful
+// subscription response when the [Subscription] was established.
+// The custom data may change if the Conn has reconnected to RTA service.
+func (s *Subscription) Custom() json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.hasState {
-		return slices.Clone(s.currentCustom)
-	}
-	return slices.Clone(s.Custom)
+	return slices.Clone(s.currentCustom)
 }
 
 // ResourceURI returns the URI identifying the resource which the [Subscription] is targeting.
@@ -415,10 +409,7 @@ func (s *Subscription) setUnsubscribing(unsubscribing bool) {
 
 func (s *Subscription) activate(id uint32, custom json.RawMessage) {
 	s.mu.Lock()
-	s.currentID, s.currentCustom, s.hasState = id, slices.Clone(custom), true
-	if s.ID == 0 && s.Custom == nil {
-		s.ID, s.Custom = id, slices.Clone(custom)
-	}
+	s.currentID, s.currentCustom = id, slices.Clone(custom)
 	s.active, s.unsubscribing, s.subscribeFailed = true, false, false
 	s.mu.Unlock()
 }
@@ -426,10 +417,7 @@ func (s *Subscription) activate(id uint32, custom json.RawMessage) {
 func (s *Subscription) failedSubscribeID() (uint32, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.hasState {
-		return s.currentID, s.active && s.subscribeFailed
-	}
-	return s.ID, s.active && s.subscribeFailed
+	return s.currentID, s.active && s.subscribeFailed
 }
 
 func (s *Subscription) markSubscribeFailed() {
@@ -443,7 +431,7 @@ func (s *Subscription) markSubscribeFailed() {
 
 func (s *Subscription) clearInactiveID(id uint32) {
 	s.mu.Lock()
-	if !s.active && s.hasState && s.currentID == id {
+	if !s.active && s.currentID == id {
 		s.currentID = 0
 		s.currentCustom = nil
 	}
