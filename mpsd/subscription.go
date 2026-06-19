@@ -20,6 +20,9 @@ import (
 // The subscription is used to associate with a multiplayer session to receive
 // notifications for changes in the session.
 func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
+	c.subscribeMu.Lock()
+	defer c.subscribeMu.Unlock()
+
 	if c.subscription.Active() {
 		return c.subscriptionConnectionID()
 	}

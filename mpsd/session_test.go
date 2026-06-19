@@ -528,6 +528,40 @@ func TestSubscriptionConnectionIDRequiresActiveSubscription(t *testing.T) {
 	}
 }
 
+func TestSubscribeSerializesInFlightSubscribe(t *testing.T) {
+	subscriber := &blockingSubscriber{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	client := NewWithRTASubscriber(nil, subscriber, nil, xsts.UserInfo{}, nil)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := client.subscribe(context.Background())
+		firstDone <- err
+	}()
+	<-subscriber.started
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := client.subscribe(context.Background())
+		secondDone <- err
+	}()
+	select {
+	case <-subscriber.secondStarted:
+		t.Fatal("second subscribe entered while first subscribe was in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(subscriber.release)
+	if err := <-firstDone; err == nil {
+		t.Fatal("first subscribe returned nil error")
+	}
+	if err := <-secondDone; err == nil {
+		t.Fatal("second subscribe returned nil error")
+	}
+}
+
 func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
@@ -759,4 +793,23 @@ type sessionChangeFunc func(*Session)
 
 func (f sessionChangeFunc) HandleSessionChange(session *Session) {
 	f(session)
+}
+
+type blockingSubscriber struct {
+	started       chan struct{}
+	secondStarted chan struct{}
+	release       chan struct{}
+	calls         atomic.Int32
+}
+
+func (s *blockingSubscriber) Subscribe(context.Context, *rta.Subscription) error {
+	switch s.calls.Add(1) {
+	case 1:
+		s.secondStarted = make(chan struct{})
+		close(s.started)
+		<-s.release
+	case 2:
+		close(s.secondStarted)
+	}
+	return errors.New("subscribe failed")
 }
