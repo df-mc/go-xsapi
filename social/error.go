@@ -11,9 +11,11 @@ import (
 )
 
 const (
-	FriendErrorKindUnknown    = "unknown"
-	FriendErrorKindFullList   = "friend_list_full"
-	FriendErrorKindRestricted = "restricted"
+	// Observed Social REST response body codes. These are not xsapi HRESULT
+	// values and are not documented in the GDK headers.
+	socialCodeFriendListFull    = 1028 // Observed when the People list limit would be exceeded.
+	socialCodeRestricted        = 1011 // Observed for forbidden relationship operations.
+	socialCodeRestrictedPrivacy = 1049 // Observed for target-user privacy restrictions.
 )
 
 var (
@@ -69,41 +71,14 @@ func (e *ResponseError) Is(target error) bool {
 	}
 	switch target {
 	case ErrRateLimited:
-		return e.StatusCode == http.StatusTooManyRequests || e.RetryAfter > 0
+		return e.StatusCode == http.StatusTooManyRequests
 	case ErrFriendListFull:
-		return e.FriendErrorKind() == FriendErrorKindFullList
+		return e.Code == socialCodeFriendListFull
 	case ErrFriendRestricted:
-		return e.FriendErrorKind() == FriendErrorKindRestricted
+		return e.Code == socialCodeRestricted || e.Code == socialCodeRestrictedPrivacy
 	default:
 		return false
 	}
-}
-
-// RetryDelay returns RetryAfter for callers that use a small retry interface
-// with errors.As.
-func (e *ResponseError) RetryDelay() time.Duration {
-	if e == nil {
-		return 0
-	}
-	return e.RetryAfter
-}
-
-// XboxSocialCode returns the Xbox social service error code, if present.
-func (e *ResponseError) XboxSocialCode() int {
-	if e == nil {
-		return 0
-	}
-	return e.Code
-}
-
-// FriendErrorKind returns the best-known classification for the Xbox social
-// service error code. Unknown or unclassified codes return
-// FriendErrorKindUnknown.
-func (e *ResponseError) FriendErrorKind() string {
-	if e == nil {
-		return FriendErrorKindUnknown
-	}
-	return classifyFriendErrorCode(e.Code)
 }
 
 func responseError(resp *http.Response) error {
@@ -122,7 +97,7 @@ func responseError(resp *http.Response) error {
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("xsapi/social: read error response: %w", err)
+		return responseErr
 	}
 	var data struct {
 		Code        int    `json:"code"`
@@ -156,15 +131,4 @@ func parseRetryAfter(value string) time.Duration {
 		return 0
 	}
 	return delay
-}
-
-func classifyFriendErrorCode(code int) string {
-	switch code {
-	case 1028:
-		return FriendErrorKindFullList
-	case 1011, 1049:
-		return FriendErrorKindRestricted
-	default:
-		return FriendErrorKindUnknown
-	}
 }
