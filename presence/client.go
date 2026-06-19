@@ -3,10 +3,8 @@ package presence
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -161,40 +159,17 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 
 // Update updates the presence of the authenticated user's current title.
 func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) error {
-	_, err := c.UpdateWithHeartbeat(ctx, request, opts...)
-	return err
-}
-
-// UpdateWithHeartbeat updates the presence of the authenticated user's current
-// title and returns the duration from the X-Heartbeat-After response header.
-//
-// A zero duration means the service did not return a positive heartbeat delay.
-func (c *Client) UpdateWithHeartbeat(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (time.Duration, error) {
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
 		"/devices/current/titles/current",
 	).String()
-	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL, request, append(opts,
+	return internal.Do(ctx, c.client, http.MethodPost, requestURL, request, nil, append(opts,
 		contractVersion,
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.RequestHeader("Content-Type", "application/json"),
 		internal.DefaultLanguage,
 	))
-	if err != nil {
-		return 0, fmt.Errorf("make request: %w", err)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated:
-		return ParseHeartbeatAfter(resp.Header.Get(HeaderHeartbeatAfter)), nil
-	default:
-		return 0, internal.UnexpectedStatusCode(resp)
-	}
 }
 
 // TitleRequest describes the on-wire structure used to update a title's presence for the user.
@@ -219,10 +194,6 @@ type TitleRequest struct {
 }
 
 const (
-	// HeaderHeartbeatAfter is the response header that reports the number of
-	// seconds after which the title should update presence again.
-	HeaderHeartbeatAfter = "X-Heartbeat-After"
-
 	// StateActive indicates that the user is active in the title.
 	StateActive = "active"
 	// StateInactive indicates that the user is no longer active in the title.
@@ -247,16 +218,6 @@ const (
 	// PlacementBackground indicates that the title is running in the background.
 	PlacementBackground = "background"
 )
-
-// ParseHeartbeatAfter parses an X-Heartbeat-After header value as a positive
-// duration. It returns zero if the value is empty, invalid, or non-positive.
-func ParseHeartbeatAfter(value string) time.Duration {
-	seconds, err := strconv.Atoi(value)
-	if err != nil || seconds <= 0 {
-		return 0
-	}
-	return time.Duration(seconds) * time.Second
-}
 
 // ActivityRequest describes the on-wire structure used to set in-title
 // presence details such as rich presence and media information.

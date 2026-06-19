@@ -44,7 +44,7 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 	case http.StatusOK, http.StatusNoContent:
 		return nil
 	default:
-		return responseError(req, resp)
+		return internal.UnexpectedStatusCode(resp)
 	}
 }
 
@@ -68,27 +68,14 @@ func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.Re
 		"xuid("+xuid+")",
 	).String()
 
-	req, err := internal.NewRequest(ctx, http.MethodPut, requestURL, nil, append(
+	// Expected status code: 200 OK
+	return internal.Do(ctx, c.client, http.MethodPut, requestURL, nil, nil, append(
 		opts,
 		socialContractVersion,
 		internal.RequestHeader("Accept", "application/json"),
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.DefaultLanguage,
 	))
-	if err != nil {
-		return fmt.Errorf("make request: %w", err)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return nil
-	default:
-		return responseError(req, resp)
-	}
 }
 
 // RemoveFriend deletes the friend relationship with the user identified by XUID.
@@ -114,27 +101,14 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 	q.Set("deleteRelationships", relationships)
 	requestURL.RawQuery = q.Encode()
 
-	req, err := internal.NewRequest(ctx, http.MethodDelete, requestURL.String(), nil, append(
+	// This request is a DELETE call but returns 200 OK instead of 204 No Content.
+	return internal.Do(ctx, c.client, http.MethodDelete, requestURL.String(), nil, nil, append(
 		opts,
 		socialContractVersion,
 		internal.RequestHeader("Accept", "application/json"),
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.DefaultLanguage,
 	))
-	if err != nil {
-		return fmt.Errorf("make request: %w", err)
-	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return nil
-	default:
-		return responseError(req, resp)
-	}
 }
 
 var (

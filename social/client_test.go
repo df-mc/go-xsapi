@@ -2,12 +2,10 @@ package social
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
@@ -56,53 +54,6 @@ func TestFollowingQueriesPeopleHubSocial(t *testing.T) {
 
 	if _, err := client.Following(context.Background()); err != nil {
 		t.Fatalf("Following returned error: %v", err)
-	}
-}
-
-func TestAddFriendReturnsServiceError(t *testing.T) {
-	client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.Method != http.MethodPut {
-			t.Fatalf("method = %s, want PUT", req.Method)
-		}
-		if !strings.Contains(req.URL.Path, "/users/me/people/friends/v2/xuid(2)") {
-			t.Fatalf("path = %q", req.URL.Path)
-		}
-		return jsonResponse(http.StatusForbidden, `{"code":1028,"description":"friend list full","source":"social"}`), nil
-	})}, nil, xsts.UserInfo{XUID: "1"}, nil)
-
-	err := client.AddFriend(context.Background(), "2")
-	if err == nil {
-		t.Fatal("AddFriend returned nil error")
-	}
-	var socialErr *ServiceError
-	if !errors.As(err, &socialErr) {
-		t.Fatalf("error = %T, want *ServiceError", err)
-	}
-	if socialErr.Code != 1028 || socialErr.Description != "friend list full" {
-		t.Fatalf("service error = %#v", socialErr)
-	}
-	if !IsFriendListFull(err) {
-		t.Fatalf("IsFriendListFull(%v) = false, want true", err)
-	}
-}
-
-func TestSocialRateLimitReturnsRetryAfterError(t *testing.T) {
-	client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		resp := jsonResponse(http.StatusTooManyRequests, `{}`)
-		resp.Header.Set("Retry-After", "7")
-		return resp, nil
-	})}, nil, xsts.UserInfo{XUID: "1"}, nil)
-
-	err := client.Follow(context.Background(), "2")
-	if err == nil {
-		t.Fatal("Follow returned nil error")
-	}
-	var retryAfter *RetryAfterError
-	if !errors.As(err, &retryAfter) {
-		t.Fatalf("error = %T, want *RetryAfterError", err)
-	}
-	if retryAfter.RetryDelay() != 7*time.Second {
-		t.Fatalf("retry delay = %s, want 7s", retryAfter.RetryDelay())
 	}
 }
 
