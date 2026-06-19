@@ -16,10 +16,12 @@ const (
 	FriendErrorKindRestricted = "restricted"
 )
 
-// Social API error categories for use with errors.Is.
 var (
-	ErrRateLimited      = errors.New("xsapi/social: rate limited")
-	ErrFriendListFull   = errors.New("xsapi/social: friend list full")
+	// ErrRateLimited matches responses that indicate the caller should wait before retrying.
+	ErrRateLimited = errors.New("xsapi/social: rate limited")
+	// ErrFriendListFull matches responses caused by caller or target friend-list limits.
+	ErrFriendListFull = errors.New("xsapi/social: friend list full")
+	// ErrFriendRestricted matches privacy, enforcement, or relationship restriction responses.
 	ErrFriendRestricted = errors.New("xsapi/social: friend restricted")
 )
 
