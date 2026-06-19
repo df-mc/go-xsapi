@@ -48,6 +48,9 @@ func TestSubscribeHandlerErrorDoesNotDeadlock(t *testing.T) {
 	if got := srv.unsubscribeCount.Load(); got != 1 {
 		t.Fatalf("unsubscribe count = %d, want 1", got)
 	}
+	if sub.Active() {
+		t.Fatal("subscription is active after HandleSubscribe error")
+	}
 }
 
 func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
@@ -69,6 +72,9 @@ func TestSubscribeHandlerErrorWithInterruptedCleanupDoesNotRetry(t *testing.T) {
 	}
 	if got := srv.subscribeCount.Load(); got != 1 {
 		t.Fatalf("subscribe count = %d, want 1", got)
+	}
+	if sub.Active() {
+		t.Fatal("subscription is active after HandleSubscribe error")
 	}
 }
 

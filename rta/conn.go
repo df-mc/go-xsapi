@@ -116,6 +116,7 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 		sub.activate(id, custom)
 		if err := sub.handler().HandleSubscribe(custom); err != nil {
 			// This resource has failed to understand this subscription.
+			sub.deactivate(err)
 			if err2 := c.unsubscribe(ctx, id); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
 			}
