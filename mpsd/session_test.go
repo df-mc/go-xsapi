@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -514,5 +515,136 @@ func TestSubscriptionHandlerClosesSessionsOnUserUnsubscribe(t *testing.T) {
 	}
 	if _, ok := client.sessions[ref.URL().String()]; ok {
 		t.Fatal("session still registered after subscription unsubscribe")
+	}
+}
+
+func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	oldConnectionID := uuid.New()
+	newConnectionID := uuid.New()
+
+	updates := make(chan uuid.UUID, 2)
+	releaseFirst := make(chan struct{})
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPut {
+			return nil, fmt.Errorf("request method = %s, want PUT", req.Method)
+		}
+		var changes SessionDescription
+		if err := json.NewDecoder(req.Body).Decode(&changes); err != nil {
+			return nil, err
+		}
+		member := changes.Members["me"]
+		if member == nil || member.Properties == nil || member.Properties.System == nil {
+			return nil, errors.New("connection update missing me member system properties")
+		}
+		connectionID := member.Properties.System.Connection
+		updates <- connectionID
+		if n := requests.Add(1); n == 1 {
+			<-releaseFirst
+		}
+
+		body, err := json.Marshal(SessionDescription{
+			Members: map[string]*MemberDescription{
+				"me": {
+					Properties: &MemberProperties{
+						System: &MemberPropertiesSystem{
+							Connection: connectionID,
+							Active:     true,
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		header := make(http.Header)
+		header.Set("ETag", `"etag"`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Header:     header,
+			Request:    req,
+		}, nil
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	handler := &subscriptionHandler{
+		Client: client,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	client.subscriptionHandler = handler
+	client.subscriptionData.Store(&subscriptionData{ConnectionID: oldConnectionID})
+	session := &Session{
+		client: client,
+		ref:    ref,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		h:      NopHandler{},
+		cache: SessionDescription{
+			Members: map[string]*MemberDescription{
+				"me": {
+					Properties: &MemberProperties{
+						System: &MemberPropertiesSystem{
+							Connection: uuid.New(),
+							Active:     true,
+						},
+					},
+				},
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	reconcileDone := make(chan error, 1)
+	go func() {
+		reconcileDone <- client.reconcileSessionConnection(context.Background(), session)
+	}()
+	select {
+	case got := <-updates:
+		if got != oldConnectionID {
+			t.Fatalf("initial reconcile connection ID = %s, want %s", got, oldConnectionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial reconcile did not start")
+	}
+
+	subscribeDone := make(chan error, 1)
+	custom, err := json.Marshal(subscriptionData{ConnectionID: newConnectionID})
+	if err != nil {
+		t.Fatalf("marshal subscription data: %v", err)
+	}
+	go func() {
+		subscribeDone <- handler.HandleSubscribe(custom)
+	}()
+	select {
+	case got := <-updates:
+		t.Fatalf("reconnect wrote connection ID %s while initial reconcile was in flight", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	if err := <-reconcileDone; err != nil {
+		t.Fatalf("initial reconcile returned error: %v", err)
+	}
+	if err := <-subscribeDone; err != nil {
+		t.Fatalf("HandleSubscribe returned error: %v", err)
+	}
+	select {
+	case got := <-updates:
+		if got != newConnectionID {
+			t.Fatalf("reconnect connection ID = %s, want %s", got, newConnectionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not update session connection ID")
 	}
 }

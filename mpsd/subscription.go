@@ -115,19 +115,7 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
-			deleted, err := session.update(ctx, SessionDescription{
-				Members: map[string]*MemberDescription{
-					"me": {
-						Properties: &MemberProperties{
-							System: &MemberPropertiesSystem{
-								Connection: data.ConnectionID,
-								Active:     true,
-							},
-						},
-					},
-				},
-			}, nil)
-			if err != nil {
+			if err := reconcileSessionConnection(ctx, session, data.ConnectionID); err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					return
 				}
@@ -139,9 +127,6 @@ func (h *subscriptionHandler) HandleSubscribe(custom json.RawMessage) error {
 					session.closeMu.Unlock()
 				}
 				return
-			}
-			if deleted {
-				session.markDeleted()
 			}
 		})
 	}

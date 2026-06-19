@@ -194,10 +194,19 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 }
 
 func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) error {
+	if c.subscriptionHandler != nil {
+		c.subscriptionHandler.reconcileMu.Lock()
+		defer c.subscriptionHandler.reconcileMu.Unlock()
+	}
+
 	connectionID, err := c.subscriptionConnectionID()
 	if err != nil {
 		return err
 	}
+	return reconcileSessionConnection(ctx, s, connectionID)
+}
+
+func reconcileSessionConnection(ctx context.Context, s *Session, connectionID uuid.UUID) error {
 	if member, ok := s.Member("me"); ok && member.Properties != nil && member.Properties.System != nil {
 		if system := member.Properties.System; system.Active && system.Connection == connectionID {
 			return nil
