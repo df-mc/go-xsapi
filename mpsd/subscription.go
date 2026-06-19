@@ -235,6 +235,9 @@ func (h *subscriptionHandler) HandleError(err error) {
 	if errors.Is(err, rta.ErrUnsubscribed) {
 		return
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
 	for _, session := range h.sessionSnapshot() {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)
