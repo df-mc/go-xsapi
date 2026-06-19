@@ -196,10 +196,8 @@ func (c *Client) createSession(ctx context.Context, ref SessionReference, resp *
 // reconcileSessionConnection updates s to use the Client's current RTA
 // connection ID while ordered against subscription reconnect refreshes.
 func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) error {
-	if c.subscriptionHandler != nil {
-		c.subscriptionHandler.reconcileMu.Lock()
-		defer c.subscriptionHandler.reconcileMu.Unlock()
-	}
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
 
 	connectionID, err := c.subscriptionConnectionID()
 	if err != nil {

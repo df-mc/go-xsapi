@@ -40,12 +40,10 @@ func NewWithRTASubscriber(client *http.Client, subscriber RTASubscriber, unsubsc
 
 		sessions: make(map[string]*Session),
 	}
-	handler := &subscriptionHandler{
+	c.subscription = rta.NewSubscription(resourceURI, &subscriptionHandler{
 		Client: c,
 		log:    c.log.With("src", "subscription handler"),
-	}
-	c.subscriptionHandler = handler
-	c.subscription = rta.NewSubscription(resourceURI, handler)
+	})
 	return c
 }
 
@@ -77,9 +75,9 @@ type Client struct {
 	// created by the Client with the RTA subscription to receive changes to
 	// themselves.
 	subscriptionData atomic.Pointer[subscriptionData]
-	// subscriptionHandler serializes session connection reconciliation with
-	// subscription reconnects so stale connection IDs cannot overwrite newer ones.
-	subscriptionHandler *subscriptionHandler
+	// reconcileMu serializes session connection reconciliation with subscription
+	// reconnects so stale connection IDs cannot overwrite newer ones.
+	reconcileMu sync.RWMutex
 
 	sessions   map[string]*Session
 	sessionsMu sync.RWMutex

@@ -86,8 +86,7 @@ type subscriptionData struct {
 // in order to synchronize the session properties with the latest state.
 type subscriptionHandler struct {
 	*Client
-	log         *slog.Logger
-	reconcileMu sync.RWMutex
+	log *slog.Logger
 
 	rta.NopSubscriptionHandler
 }

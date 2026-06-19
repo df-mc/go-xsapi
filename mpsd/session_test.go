@@ -582,7 +582,6 @@ func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
 		Client: client,
 		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	client.subscriptionHandler = handler
 	client.subscriptionData.Store(&subscriptionData{ConnectionID: oldConnectionID})
 	session := &Session{
 		client: client,
