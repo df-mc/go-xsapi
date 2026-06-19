@@ -10,18 +10,6 @@ import (
 	"time"
 )
 
-const (
-	// FriendErrorKindUnknown indicates that an Xbox social error could not be
-	// mapped to a more specific friend-management category.
-	FriendErrorKindUnknown = "unknown"
-	// FriendErrorKindFullList indicates that a friend relationship could not be
-	// created because one of the users has reached a friend-list limit.
-	FriendErrorKindFullList = "friend_list_full"
-	// FriendErrorKindRestricted indicates that privacy, policy, or relationship
-	// restrictions prevented the requested friend-management operation.
-	FriendErrorKindRestricted = "restricted"
-)
-
 // RetryAfterError reports that Xbox Live rejected a social request with a
 // retryable rate limit response.
 type RetryAfterError struct {
@@ -52,7 +40,6 @@ type ServiceError struct {
 	Code        int
 	Description string
 	Source      string
-	Kind        string
 }
 
 func (e *ServiceError) Error() string {
@@ -65,34 +52,25 @@ func (e *ServiceError) Error() string {
 	return fmt.Sprintf("%s %s: xbox social code %d: %s", e.Method, e.URL, e.Code, e.Description)
 }
 
-// XboxSocialCode returns the integer code from the Xbox social error payload.
-func (e *ServiceError) XboxSocialCode() int {
-	return e.Code
-}
-
-// FriendErrorKind returns the friend-management category for this social error.
-func (e *ServiceError) FriendErrorKind() string {
-	if e.Kind == "" {
-		return FriendErrorKindUnknown
-	}
-	return e.Kind
-}
-
 // IsFriendListFull reports whether err indicates a friend-list capacity limit.
 func IsFriendListFull(err error) bool {
-	var social interface {
-		FriendErrorKind() string
-	}
-	return errors.As(err, &social) && social.FriendErrorKind() == FriendErrorKindFullList
+	var serviceErr *ServiceError
+	return errors.As(err, &serviceErr) && serviceErr.Code == 1028
 }
 
 // IsFriendRestricted reports whether err indicates a privacy, policy, or
 // relationship restriction for a friend-management operation.
 func IsFriendRestricted(err error) bool {
-	var social interface {
-		FriendErrorKind() string
+	var serviceErr *ServiceError
+	if !errors.As(err, &serviceErr) {
+		return false
 	}
-	return errors.As(err, &social) && social.FriendErrorKind() == FriendErrorKindRestricted
+	switch serviceErr.Code {
+	case 1011, 1049:
+		return true
+	default:
+		return false
+	}
 }
 
 func responseError(req *http.Request, resp *http.Response) error {
@@ -146,17 +124,5 @@ func decodeServiceError(req *http.Request, resp *http.Response, body []byte) *Se
 		Code:        data.Code,
 		Description: data.Description,
 		Source:      data.Source,
-		Kind:        classifyFriendSocialCode(data.Code),
-	}
-}
-
-func classifyFriendSocialCode(code int) string {
-	switch code {
-	case 1028:
-		return FriendErrorKindFullList
-	case 1011, 1049:
-		return FriendErrorKindRestricted
-	default:
-		return FriendErrorKindUnknown
 	}
 }
