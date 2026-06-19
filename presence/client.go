@@ -159,28 +159,15 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 }
 
 // Update updates the presence of the authenticated user's current title.
-func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) error {
+func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (UpdateResult, error) {
 	resp, err := c.update(ctx, request, opts)
 	if err != nil {
-		return err
+		return UpdateResult{}, err
 	}
 	_ = resp.Body.Close()
-	return nil
-}
-
-// UpdateWithHeartbeatAfter updates the presence of the authenticated user's
-// current title and returns the server-requested heartbeat interval.
-//
-// The returned duration is read from the X-Heartbeat-After response header. If
-// the header is missing or invalid, the returned duration is zero.
-func (c *Client) UpdateWithHeartbeatAfter(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (time.Duration, error) {
-	resp, err := c.update(ctx, request, opts)
-	if err != nil {
-		return 0, err
-	}
-	heartbeat := heartbeatAfter(resp.Header.Get("X-Heartbeat-After"))
-	_ = resp.Body.Close()
-	return heartbeat, nil
+	return UpdateResult{
+		HeartbeatAfter: heartbeatAfter(resp.Header.Get("X-Heartbeat-After")),
+	}, nil
 }
 
 // update sends the shared title-presence update request and leaves the
@@ -220,6 +207,14 @@ func heartbeatAfter(header string) time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// UpdateResult describes metadata returned by the Presence API after updating
+// the authenticated user's current title presence.
+type UpdateResult struct {
+	// HeartbeatAfter is the server-requested delay before the next presence
+	// update. It is zero when X-Heartbeat-After is missing or invalid.
+	HeartbeatAfter time.Duration
 }
 
 // TitleRequest describes the on-wire structure used to update a title's presence for the user.

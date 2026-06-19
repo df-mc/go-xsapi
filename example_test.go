@@ -69,7 +69,7 @@ func ExampleClient() {
 	}()
 
 	// Appear online in the social network.
-	if err := client.Presence().Update(signals, presence.TitleRequest{
+	if _, err := client.Presence().Update(signals, presence.TitleRequest{
 		State: presence.StateActive,
 	}); err != nil {
 		panic(fmt.Sprintf("error updating presence: %s", err))

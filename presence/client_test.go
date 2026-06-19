@@ -15,7 +15,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func TestUpdateWithHeartbeatAfter(t *testing.T) {
+func TestUpdateReturnsResult(t *testing.T) {
 	tests := []struct {
 		name      string
 		header    string
@@ -40,14 +40,14 @@ func TestUpdateWithHeartbeatAfter(t *testing.T) {
 				}, nil
 			})}, xsts.UserInfo{XUID: "1234"})
 
-			heartbeat, err := client.UpdateWithHeartbeatAfter(context.Background(), TitleRequest{
+			result, err := client.Update(context.Background(), TitleRequest{
 				State: StateActive,
 			})
 			if err != nil {
-				t.Fatalf("UpdateWithHeartbeatAfter returned error: %v", err)
+				t.Fatalf("Update returned error: %v", err)
 			}
-			if heartbeat != tt.heartbeat {
-				t.Fatalf("heartbeat = %v, want %v", heartbeat, tt.heartbeat)
+			if result.HeartbeatAfter != tt.heartbeat {
+				t.Fatalf("heartbeat = %v, want %v", result.HeartbeatAfter, tt.heartbeat)
 			}
 		})
 	}
