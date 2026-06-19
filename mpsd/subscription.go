@@ -23,11 +23,10 @@ func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 	c.subscribeMu.Lock()
 	defer c.subscribeMu.Unlock()
 
-	if c.subscription.Active() {
-		return c.subscriptionConnectionID()
-	}
-	if err = c.subscriber.Subscribe(ctx, c.subscription); err != nil {
-		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
+	if !c.subscription.Active() {
+		if err = c.subscriber.Subscribe(ctx, c.subscription); err != nil {
+			return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
+		}
 	}
 	return c.subscriptionConnectionID()
 }
@@ -38,14 +37,10 @@ func (c *Client) subscriptionConnectionID() (uuid.UUID, error) {
 	if c.subscription != nil && !c.subscription.Active() {
 		return uuid.Nil, fmt.Errorf("mpsd: RTA subscription inactive: %w", rta.ErrUnavailable)
 	}
-	data := c.subscriptionData.Load()
-	if data == nil {
-		return uuid.Nil, errors.New("mpsd: missing RTA subscription data")
+	if data := c.subscriptionData.Load(); data != nil && data.ConnectionID != uuid.Nil {
+		return data.ConnectionID, nil
 	}
-	if data.ConnectionID == uuid.Nil {
-		return uuid.Nil, errors.New("mpsd: missing RTA connection ID")
-	}
-	return data.ConnectionID, nil
+	return uuid.Nil, errors.New("mpsd: missing RTA connection ID")
 }
 
 // resourceURI is the resource URI used to subscribe with RTA (Real-Time Activity) Services
