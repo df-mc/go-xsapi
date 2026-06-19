@@ -209,10 +209,8 @@ func (c *Client) reconcileSessionConnection(ctx context.Context, s *Session) err
 // reconcileSessionConnection updates s to advertise connectionID for the local
 // member, marking the Session deleted if MPSD reports it was removed.
 func reconcileSessionConnection(ctx context.Context, s *Session, connectionID uuid.UUID) error {
-	if member, ok := s.Member("me"); ok && member.Properties != nil && member.Properties.System != nil {
-		if system := member.Properties.System; system.Active && system.Connection == connectionID {
-			return nil
-		}
+	if sessionConnectionCurrent(s, connectionID) {
+		return nil
 	}
 	deleted, err := s.update(ctx, SessionDescription{
 		Members: map[string]*MemberDescription{
@@ -234,6 +232,17 @@ func reconcileSessionConnection(ctx context.Context, s *Session, connectionID uu
 		return errors.New("session was deleted while updating connection ID")
 	}
 	return nil
+}
+
+// sessionConnectionCurrent reports whether s already advertises connectionID for
+// the local active member.
+func sessionConnectionCurrent(s *Session, connectionID uuid.UUID) bool {
+	member, ok := s.Member("me")
+	if !ok || member.Properties == nil || member.Properties.System == nil {
+		return false
+	}
+	system := member.Properties.System
+	return system.Active && system.Connection == connectionID
 }
 
 // handleSessionClosure handles closure of a multiplayer session.
