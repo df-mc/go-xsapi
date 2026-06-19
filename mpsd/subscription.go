@@ -32,6 +32,9 @@ func (c *Client) subscribe(ctx context.Context) (_ uuid.UUID, err error) {
 // subscriptionConnectionID returns the latest RTA connection ID delivered in
 // the subscription custom data.
 func (c *Client) subscriptionConnectionID() (uuid.UUID, error) {
+	if c.subscription != nil && !c.subscription.Active() {
+		return uuid.Nil, fmt.Errorf("mpsd: RTA subscription inactive: %w", rta.ErrUnavailable)
+	}
 	data := c.subscriptionData.Load()
 	if data == nil {
 		return uuid.Nil, errors.New("mpsd: missing RTA subscription data")
@@ -175,13 +178,10 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 			return reference.Equal(session.Reference())
 		}) {
 			go func() {
-				h.reconcileMu.RLock()
-				defer h.reconcileMu.RUnlock()
-
 				ctx, cancel := context.WithTimeout(session.Context(), time.Second*15)
 				defer cancel()
 
-				if err := session.Sync(ctx); err != nil {
+				if err := h.syncSession(ctx, session); err != nil {
 					h.log.Error("error synchronizing multiplayer session",
 						slog.Any("error", err))
 					return
@@ -198,16 +198,13 @@ func (h *subscriptionHandler) HandleEvent(custom json.RawMessage) {
 }
 
 func (h *subscriptionHandler) HandleResync() {
-	h.reconcileMu.RLock()
-	defer h.reconcileMu.RUnlock()
-
 	sessions := h.sessionSnapshot()
 	var wg sync.WaitGroup
 	for _, session := range sessions {
 		wg.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
 			defer cancel()
-			if err := session.Sync(ctx); err != nil {
+			if err := h.syncSession(ctx, session); err != nil {
 				h.log.Error("error resyncing multiplayer session", slog.Any("err", err))
 				return
 			}
@@ -215,6 +212,14 @@ func (h *subscriptionHandler) HandleResync() {
 		})
 	}
 	wg.Wait()
+}
+
+// syncSession synchronizes session while ordered against subscription
+// reconciliation, but returns before user callbacks are invoked.
+func (h *subscriptionHandler) syncSession(ctx context.Context, session *Session) error {
+	h.reconcileMu.RLock()
+	defer h.reconcileMu.RUnlock()
+	return session.Sync(ctx)
 }
 
 func (h *subscriptionHandler) HandleError(err error) {

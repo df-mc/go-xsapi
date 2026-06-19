@@ -518,6 +518,16 @@ func TestSubscriptionHandlerClosesSessionsOnUserUnsubscribe(t *testing.T) {
 	}
 }
 
+func TestSubscriptionConnectionIDRequiresActiveSubscription(t *testing.T) {
+	client := NewWithRTASubscriber(nil, nil, nil, xsts.UserInfo{}, nil)
+	client.subscriptionData.Store(&subscriptionData{ConnectionID: uuid.New()})
+
+	_, err := client.subscriptionConnectionID()
+	if !errors.Is(err, rta.ErrUnavailable) {
+		t.Fatalf("subscriptionConnectionID error = %v, want %v", err, rta.ErrUnavailable)
+	}
+}
+
 func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
@@ -646,4 +656,107 @@ func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("reconnect did not update session connection ID")
 	}
+}
+
+func TestSubscriptionHandlerCallbackRunsAfterReconcileLock(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+	connectionID := uuid.New()
+
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodGet:
+			return &http.Response{
+				StatusCode: http.StatusNotModified,
+				Status:     http.StatusText(http.StatusNotModified),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		case http.MethodPut:
+			body, err := json.Marshal(SessionDescription{
+				Members: map[string]*MemberDescription{
+					"me": {
+						Properties: &MemberProperties{
+							System: &MemberPropertiesSystem{
+								Connection: connectionID,
+								Active:     true,
+							},
+						},
+					},
+				},
+			})
+			if err != nil {
+				return nil, err
+			}
+			header := make(http.Header)
+			header.Set("ETag", `"etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     header,
+				Request:    req,
+			}, nil
+		default:
+			return nil, fmt.Errorf("request method = %s, want GET or PUT", req.Method)
+		}
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	client.subscriptionData.Store(&subscriptionData{ConnectionID: connectionID})
+	callbackErr := make(chan error, 1)
+	session := &Session{
+		client: client,
+		ref:    ref,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		h: sessionChangeFunc(func(session *Session) {
+			callbackErr <- client.reconcileSessionConnection(context.Background(), session)
+		}),
+		cache: SessionDescription{
+			Members: map[string]*MemberDescription{
+				"me": {
+					Properties: &MemberProperties{
+						System: &MemberPropertiesSystem{
+							Connection: uuid.New(),
+							Active:     true,
+						},
+					},
+				},
+			},
+		},
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	done := make(chan struct{})
+	handler := &subscriptionHandler{
+		Client: client,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	go func() {
+		handler.HandleResync()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("HandleResync deadlocked while invoking session handler")
+	}
+	if err := <-callbackErr; err != nil {
+		t.Fatalf("callback reconcile returned error: %v", err)
+	}
+}
+
+type sessionChangeFunc func(*Session)
+
+func (f sessionChangeFunc) HandleSessionChange(session *Session) {
+	f(session)
 }
