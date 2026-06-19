@@ -239,6 +239,9 @@ func (h *subscriptionHandler) HandleError(err error) {
 		// TODO: Cancel the background context of the session.
 		session.log.Error("subscription lost", "err", err)
 		go func() {
+			h.reconcileMu.RLock()
+			defer h.reconcileMu.RUnlock()
+
 			if closeErr := session.Close(); closeErr != nil {
 				session.log.Error("error closing session after subscription loss", "err", closeErr)
 				session.closeMu.Lock()

@@ -253,6 +253,86 @@ func TestSubscriptionHandlerEventWaitsForConnectionUpdate(t *testing.T) {
 	}
 }
 
+func TestSubscriptionHandlerErrorWaitsForConnectionUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	closeStarted := make(chan struct{}, 1)
+	var requests atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch requests.Add(1) {
+		case 1:
+			close(updateStarted)
+			<-releaseUpdate
+
+			header := make(http.Header)
+			header.Set("ETag", `"updated-etag"`)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     http.StatusText(http.StatusOK),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+				Header:     header,
+				Request:    req,
+			}, nil
+		default:
+			closeStarted <- struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Status:     http.StatusText(http.StatusNoContent),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}
+	})}
+
+	c := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: c,
+		ref:    ref,
+		etag:   `"old-etag"`,
+		closed: make(chan struct{}),
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	c.sessions[ref.URL().String()] = session
+	h := &subscriptionHandler{
+		Client: c,
+		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	subscribeDone := make(chan error, 1)
+	go func() {
+		subscribeDone <- h.HandleSubscribe(json.RawMessage(`{"ConnectionId":"` + uuid.NewString() + `"}`))
+	}()
+	<-updateStarted
+
+	h.HandleError(io.ErrUnexpectedEOF)
+
+	select {
+	case <-closeStarted:
+		t.Fatal("HandleError started Close while connection update was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseUpdate)
+	if err := <-subscribeDone; err != nil {
+		t.Fatalf("HandleSubscribe returned error: %v", err)
+	}
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("HandleError did not close session after update finished")
+	}
+}
+
 func TestSubscriptionHandlerResyncWaitsForConnectionUpdate(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
