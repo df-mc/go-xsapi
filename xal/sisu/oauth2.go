@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
@@ -112,7 +113,7 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("POST %s: %s", tf.conf.oauth2().Endpoint.TokenURL, resp.Status)
+		return nil, xal.UnexpectedStatus(resp)
 	}
 	var tk *oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&tk); err != nil {
@@ -227,7 +228,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 	timestamp.Update(resp.Header)
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return "", xal.UnexpectedStatus(resp)
 	}
 	var respBody *authCodeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {

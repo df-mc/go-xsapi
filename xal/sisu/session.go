@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
@@ -389,7 +390,7 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		return r, nil
 	default:
 		errs := []error{
-			fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status),
+			xal.UnexpectedStatus(resp),
 			wwwAuthenticate(resp.Header),
 		}
 		xerr := resp.Header.Get("X-Err")
