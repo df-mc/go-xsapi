@@ -300,7 +300,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 // If using PKCE to protect against CSRF attacks, opts should include a
 // VerifierOption.
 func (conf Config) Exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
-	return conf.oauth2().Exchange(ctx, code, append(opts,
+	return conf.oauth2().Exchange(oauth2Context(ctx), code, append(opts,
 		oauth2.SetAuthURLParam("scope", scope),
 		oauth2.SetAuthURLParam("client_id", conf.ClientID),
 	)...)

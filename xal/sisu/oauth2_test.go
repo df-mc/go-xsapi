@@ -2,6 +2,7 @@ package sisu
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -62,6 +63,34 @@ func TestTokenSourceRefreshErrorIncludesOAuthBody(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "invalid_grant: refresh expired") {
 		t.Fatalf("error = %q, want OAuth body detail", got)
+	}
+}
+
+func TestExchangeUsesXALContextClient(t *testing.T) {
+	defaultTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("default transport used")
+	})
+	defer func() {
+		http.DefaultTransport = defaultTransport
+	}()
+
+	var calls int
+	base := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return response(http.StatusOK, `{"access_token":"access","token_type":"bearer","refresh_token":"refresh","expires_in":3600}`), nil
+	})}
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, base)
+
+	token, err := (Config{ClientID: "client"}).Exchange(ctx, "code")
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if token.AccessToken != "access" {
+		t.Fatalf("access token = %q, want access", token.AccessToken)
 	}
 }
 
