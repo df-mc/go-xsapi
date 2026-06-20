@@ -13,10 +13,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func TestOAuth2ContextClientIgnoresTypedNil(t *testing.T) {
+func TestOAuth2ClientIgnoresTypedNil(t *testing.T) {
 	var client *http.Client
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
-	if got := oauth2ContextClient(ctx); got == nil {
+	if got := oauth2Client(ctx); got == nil {
 		t.Fatal("client is nil")
 	} else if got == http.DefaultClient {
 		t.Fatal("client = http.DefaultClient, want cloned client")
@@ -25,10 +25,10 @@ func TestOAuth2ContextClientIgnoresTypedNil(t *testing.T) {
 	}
 }
 
-func TestOAuth2ContextClientUsesXALClient(t *testing.T) {
+func TestOAuth2ClientUsesXALClient(t *testing.T) {
 	base := &http.Client{}
 	ctx := context.WithValue(context.Background(), xal.HTTPClient, base)
-	got := oauth2ContextClient(ctx)
+	got := oauth2Client(ctx)
 	if got == base {
 		t.Fatal("client was not cloned")
 	}
@@ -37,10 +37,10 @@ func TestOAuth2ContextClientUsesXALClient(t *testing.T) {
 	}
 }
 
-func TestOAuth2ContextClientPreservesConfiguredTimeout(t *testing.T) {
+func TestOAuth2ClientPreservesConfiguredTimeout(t *testing.T) {
 	base := &http.Client{Timeout: time.Minute}
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, base)
-	if got := oauth2ContextClient(ctx); got != base {
+	if got := oauth2Client(ctx); got != base {
 		t.Fatalf("client = %p, want original client %p", got, base)
 	}
 }

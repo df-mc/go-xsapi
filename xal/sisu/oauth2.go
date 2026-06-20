@@ -23,34 +23,26 @@ import (
 
 const oauth2RequestTimeout = 15 * time.Second
 
-// oauth2ContextClient returns the HTTP client from the context,
-// or a default client if not present. The returned client has a request timeout
-// when the source client does not already define one.
-func oauth2ContextClient(ctx context.Context) *http.Client {
-	if hc, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok && hc != nil {
-		return oauth2HTTPClient(hc)
-	}
-	if hc, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && hc != nil {
-		return oauth2HTTPClient(hc)
-	}
-	return oauth2HTTPClient(http.DefaultClient)
-}
-
 func oauth2Context(ctx context.Context) context.Context {
-	return context.WithValue(ctx, oauth2.HTTPClient, oauth2ContextClient(ctx))
+	return context.WithValue(ctx, oauth2.HTTPClient, oauth2Client(ctx))
 }
 
-func oauth2HTTPClient(base *http.Client) *http.Client {
-	if base == nil {
-		base = http.DefaultClient
+// oauth2Client returns the OAuth HTTP client from ctx, falling back to the XAL
+// client key so callers can use one context client for the full SISU flow.
+func oauth2Client(ctx context.Context) *http.Client {
+	client, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+	if client == nil {
+		client, _ = ctx.Value(xal.HTTPClient).(*http.Client)
 	}
-	if base.Timeout != 0 {
-		return base
+	if client == nil {
+		client = http.DefaultClient
 	}
-	client := new(http.Client)
-	*client = *base
-	client.Timeout = oauth2RequestTimeout
-	return client
+	if client.Timeout != 0 {
+		return client
+	}
+	cloned := *client
+	cloned.Timeout = oauth2RequestTimeout
+	return &cloned
 }
 
 // DeviceAuth returns a device auth struct which contains a device code
@@ -130,7 +122,7 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", tf.conf.UserAgent)
 
-	resp, err := oauth2ContextClient(tf.ctx).Do(req)
+	resp, err := oauth2Client(tf.ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +259,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 		return "", fmt.Errorf("sign request: %w", err)
 	}
 
-	resp, err := oauth2ContextClient(ctx).Do(req)
+	resp, err := oauth2Client(ctx).Do(req)
 	if err != nil {
 		return "", err
 	}
