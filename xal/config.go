@@ -3,7 +3,10 @@ package xal
 import (
 	"context"
 	"net/http"
+	"time"
 )
+
+const defaultHTTPClientTimeout = 30 * time.Second
 
 // Config represents the basic configuration used to authenticate with Xbox Live
 // services. All fields are specific or bound to the title and cannot be easily changed.
@@ -35,8 +38,10 @@ type contextKey struct{}
 // passed to the API call.
 var HTTPClient contextKey
 
+var defaultHTTPClient = &http.Client{Timeout: defaultHTTPClientTimeout}
+
 // ContextClient returns an [http.Client] from the [context.Context] if possible,
-// otherwise it returns [http.DefaultClient].
+// otherwise it returns a default client with a request timeout.
 //
 // A typed-nil *http.Client stored under HTTPClient is treated as absent so that
 // callers never receive a nil client.
@@ -44,7 +49,7 @@ func ContextClient(ctx context.Context) *http.Client {
 	if value, ok := ctx.Value(HTTPClient).(*http.Client); ok && value != nil {
 		return value
 	}
-	return http.DefaultClient
+	return defaultHTTPClient
 }
 
 // Device describes the platform and operating system of the device being

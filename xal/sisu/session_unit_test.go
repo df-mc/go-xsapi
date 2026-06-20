@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"golang.org/x/oauth2"
 )
@@ -45,6 +46,13 @@ func TestAuthorizeRejectsNilProofKey(t *testing.T) {
 	_, err := session.authorize(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "proof key is absent") {
 		t.Fatalf("authorize error = %v, want absent proof key", err)
+	}
+}
+
+func TestSessionDefaultHTTPClientHasTimeout(t *testing.T) {
+	session := (Config{}).New(staticMSATokenSource{}, nil)
+	if session.client != xal.ContextClient(context.Background()) {
+		t.Fatalf("session client = %p, want XAL default client %p", session.client, xal.ContextClient(context.Background()))
 	}
 }
 
