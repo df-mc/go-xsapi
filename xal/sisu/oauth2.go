@@ -160,25 +160,25 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 // existing HTTP status error. It prefers the OAuth error fields when present and
 // falls back to the trimmed raw body. An empty body returns an empty string.
 func oauth2ErrorBody(body []byte) string {
-	body = []byte(strings.TrimSpace(string(body)))
-	if len(body) == 0 {
+	detail := strings.TrimSpace(string(body))
+	if detail == "" {
 		return ""
 	}
 	var response struct {
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
-	if err := json.Unmarshal(body, &response); err == nil {
+	if err := json.Unmarshal([]byte(detail), &response); err == nil {
 		switch {
 		case response.Error != "" && response.ErrorDescription != "":
-			return fmt.Sprintf(": %s: %s", response.Error, response.ErrorDescription)
+			detail = response.Error + ": " + response.ErrorDescription
 		case response.Error != "":
-			return ": " + response.Error
+			detail = response.Error
 		case response.ErrorDescription != "":
-			return ": " + response.ErrorDescription
+			detail = response.ErrorDescription
 		}
 	}
-	return ": " + string(body)
+	return ": " + detail
 }
 
 // AuthCodeURL returns a URL to Microsoft's title-themed page that asks
