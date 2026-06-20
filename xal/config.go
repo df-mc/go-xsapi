@@ -109,4 +109,7 @@ const (
 	// at "10.0" for both Windows 10 and Windows 11 (for example,
 	// "10.0.19045" or "10.0.22621").
 	DeviceTypeWin32 = "Win32"
+
+	// DeviceTypeXbox indicates that the device is an Xbox console.
+	DeviceTypeXbox = "Xbox"
 )
