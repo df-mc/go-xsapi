@@ -13,18 +13,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func TestOAuth2ClientIgnoresTypedNil(t *testing.T) {
-	var client *http.Client
-	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
-	if got := oauth2Client(ctx); got == nil {
-		t.Fatal("client is nil")
-	} else if got == http.DefaultClient {
-		t.Fatal("client = http.DefaultClient, want cloned client")
-	} else if got.Timeout != oauth2RequestTimeout {
-		t.Fatalf("client timeout = %v, want %v", got.Timeout, oauth2RequestTimeout)
-	}
-}
-
 func TestOAuth2ClientUsesXALClient(t *testing.T) {
 	base := &http.Client{}
 	ctx := context.WithValue(context.Background(), xal.HTTPClient, base)

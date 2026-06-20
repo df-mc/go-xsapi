@@ -156,6 +156,9 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	return tk, nil
 }
 
+// oauth2ErrorBody formats OAuth error response bodies for appending to an
+// existing HTTP status error. It prefers the OAuth error fields when present and
+// falls back to the trimmed raw body. An empty body returns an empty string.
 func oauth2ErrorBody(body []byte) string {
 	body = []byte(strings.TrimSpace(string(body)))
 	if len(body) == 0 {
