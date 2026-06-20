@@ -2,7 +2,6 @@ package sisu
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -26,84 +25,22 @@ func TestOAuth2ContextClientIgnoresTypedNil(t *testing.T) {
 }
 
 func TestOAuth2ContextClientUsesXALClient(t *testing.T) {
-	base := &http.Client{Timeout: time.Minute}
+	base := &http.Client{}
 	ctx := context.WithValue(context.Background(), xal.HTTPClient, base)
 	got := oauth2ContextClient(ctx)
 	if got == base {
 		t.Fatal("client was not cloned")
 	}
-	if got.Timeout != base.Timeout {
-		t.Fatalf("client timeout = %v, want %v", got.Timeout, base.Timeout)
+	if got.Timeout != oauth2RequestTimeout {
+		t.Fatalf("client timeout = %v, want %v", got.Timeout, oauth2RequestTimeout)
 	}
 }
 
-func TestOAuth2ContextClientRetriesTransientResponses(t *testing.T) {
-	var calls int
-	base := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		switch calls {
-		case 1:
-			return response(http.StatusTooManyRequests, ""), nil
-		case 2:
-			return response(http.StatusBadGateway, ""), nil
-		default:
-			return response(http.StatusOK, "ok"), nil
-		}
-	})}
+func TestOAuth2ContextClientPreservesConfiguredTimeout(t *testing.T) {
+	base := &http.Client{Timeout: time.Minute}
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, base)
-
-	resp, err := oauth2ContextClient(ctx).Get("https://example.com")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	if calls != 3 {
-		t.Fatalf("calls = %d, want 3", calls)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %v, want %v", resp.StatusCode, http.StatusOK)
-	}
-}
-
-func TestOAuth2ContextClientDoesNotRetryPermanentResponses(t *testing.T) {
-	var calls int
-	base := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		return response(http.StatusBadRequest, "bad"), nil
-	})}
-	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, base)
-
-	resp, err := oauth2ContextClient(ctx).Get("https://example.com")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
-	}
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %v, want %v", resp.StatusCode, http.StatusBadRequest)
-	}
-}
-
-func TestOAuth2ContextClientRetriesTransportErrors(t *testing.T) {
-	var calls int
-	base := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		if calls == 1 {
-			return nil, errors.New("temporary")
-		}
-		return response(http.StatusOK, "ok"), nil
-	})}
-	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, base)
-
-	resp, err := oauth2ContextClient(ctx).Get("https://example.com")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp.Body.Close()
-	if calls != 2 {
-		t.Fatalf("calls = %d, want 2", calls)
+	if got := oauth2ContextClient(ctx); got != base {
+		t.Fatalf("client = %p, want original client %p", got, base)
 	}
 }
 

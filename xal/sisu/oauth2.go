@@ -21,15 +21,11 @@ import (
 	"golang.org/x/oauth2/microsoft"
 )
 
-const (
-	oauth2RequestTimeout = 15 * time.Second
-	oauth2RetryAttempts  = 5
-)
+const oauth2RequestTimeout = 15 * time.Second
 
 // oauth2ContextClient returns the HTTP client from the context,
-// or a default client if not present. The returned client retries transient
-// transport/status failures and has a request timeout when the source client
-// does not already define one.
+// or a default client if not present. The returned client has a request timeout
+// when the source client does not already define one.
 func oauth2ContextClient(ctx context.Context) *http.Client {
 	if hc, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok && hc != nil {
 		return oauth2HTTPClient(hc)
@@ -48,125 +44,13 @@ func oauth2HTTPClient(base *http.Client) *http.Client {
 	if base == nil {
 		base = http.DefaultClient
 	}
-	if _, ok := base.Transport.(oauth2RetryTransport); ok && base.Timeout != 0 {
+	if base.Timeout != 0 {
 		return base
 	}
 	client := new(http.Client)
 	*client = *base
-	if client.Timeout == 0 {
-		client.Timeout = oauth2RequestTimeout
-	}
-	transport := client.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
-	client.Transport = oauth2RetryTransport{base: transport}
+	client.Timeout = oauth2RequestTimeout
 	return client
-}
-
-type oauth2RetryTransport struct {
-	base http.RoundTripper
-}
-
-func (t oauth2RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < oauth2RetryAttempts; attempt++ {
-		req2, err := oauth2RetryRequest(req, attempt)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := base.RoundTrip(req2)
-		if !oauth2ShouldRetry(req, resp, err, attempt) {
-			return resp, err
-		}
-		if resp != nil && resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
-		lastErr = err
-
-		timer := time.NewTimer(oauth2RetryDelay(resp, attempt))
-		select {
-		case <-req.Context().Done():
-			timer.Stop()
-			if lastErr != nil {
-				return nil, lastErr
-			}
-			return nil, req.Context().Err()
-		case <-timer.C:
-		}
-	}
-	return nil, lastErr
-}
-
-func oauth2RetryRequest(req *http.Request, attempt int) (*http.Request, error) {
-	if attempt == 0 {
-		return req, nil
-	}
-	req2 := req.Clone(req.Context())
-	if req.Body == nil {
-		return req2, nil
-	}
-	if req.GetBody == nil {
-		return nil, errors.New("xal/sisu: cannot retry OAuth2 request without GetBody")
-	}
-	body, err := req.GetBody()
-	if err != nil {
-		return nil, fmt.Errorf("reset OAuth2 request body: %w", err)
-	}
-	req2.Body = body
-	return req2, nil
-}
-
-func oauth2ShouldRetry(req *http.Request, resp *http.Response, err error, attempt int) bool {
-	if attempt+1 >= oauth2RetryAttempts || req.Context().Err() != nil {
-		return false
-	}
-	if err != nil {
-		return true
-	}
-	if resp == nil {
-		return false
-	}
-	switch resp.StatusCode {
-	case http.StatusRequestTimeout, http.StatusTooManyRequests:
-		return true
-	default:
-		return resp.StatusCode >= 500
-	}
-}
-
-func oauth2RetryDelay(resp *http.Response, attempt int) time.Duration {
-	if resp != nil {
-		if delay, ok := retryAfter(resp.Header.Get("Retry-After")); ok {
-			return delay
-		}
-	}
-	delay := time.Duration(1<<attempt) * 200 * time.Millisecond
-	if delay > 5*time.Second {
-		return 5 * time.Second
-	}
-	return delay
-}
-
-func retryAfter(value string) (time.Duration, bool) {
-	if value == "" {
-		return 0, false
-	}
-	if seconds, err := strconv.Atoi(value); err == nil {
-		return time.Duration(seconds) * time.Second, true
-	}
-	if t, err := http.ParseTime(value); err == nil {
-		if delay := time.Until(t); delay > 0 {
-			return delay, true
-		}
-	}
-	return 0, false
 }
 
 // DeviceAuth returns a device auth struct which contains a device code
