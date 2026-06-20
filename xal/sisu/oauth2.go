@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
@@ -19,26 +21,165 @@ import (
 	"golang.org/x/oauth2/microsoft"
 )
 
+const (
+	oauth2RequestTimeout = 15 * time.Second
+	oauth2RetryAttempts  = 5
+)
+
 // oauth2ContextClient returns the HTTP client from the context,
-// or [http.DefaultClient] if not present.
+// or a default client if not present. The returned client retries transient
+// transport/status failures and has a request timeout when the source client
+// does not already define one.
 func oauth2ContextClient(ctx context.Context) *http.Client {
 	if hc, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok && hc != nil {
-		return hc
+		return oauth2HTTPClient(hc)
 	}
-	return http.DefaultClient
+	if hc, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && hc != nil {
+		return oauth2HTTPClient(hc)
+	}
+	return oauth2HTTPClient(http.DefaultClient)
+}
+
+func oauth2Context(ctx context.Context) context.Context {
+	return context.WithValue(ctx, oauth2.HTTPClient, oauth2ContextClient(ctx))
+}
+
+func oauth2HTTPClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	if _, ok := base.Transport.(oauth2RetryTransport); ok && base.Timeout != 0 {
+		return base
+	}
+	client := new(http.Client)
+	*client = *base
+	if client.Timeout == 0 {
+		client.Timeout = oauth2RequestTimeout
+	}
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	client.Transport = oauth2RetryTransport{base: transport}
+	return client
+}
+
+type oauth2RetryTransport struct {
+	base http.RoundTripper
+}
+
+func (t oauth2RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < oauth2RetryAttempts; attempt++ {
+		req2, err := oauth2RetryRequest(req, attempt)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := base.RoundTrip(req2)
+		if !oauth2ShouldRetry(req, resp, err, attempt) {
+			return resp, err
+		}
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+		lastErr = err
+
+		timer := time.NewTimer(oauth2RetryDelay(resp, attempt))
+		select {
+		case <-req.Context().Done():
+			timer.Stop()
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, req.Context().Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func oauth2RetryRequest(req *http.Request, attempt int) (*http.Request, error) {
+	if attempt == 0 {
+		return req, nil
+	}
+	req2 := req.Clone(req.Context())
+	if req.Body == nil {
+		return req2, nil
+	}
+	if req.GetBody == nil {
+		return nil, errors.New("xal/sisu: cannot retry OAuth2 request without GetBody")
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, fmt.Errorf("reset OAuth2 request body: %w", err)
+	}
+	req2.Body = body
+	return req2, nil
+}
+
+func oauth2ShouldRetry(req *http.Request, resp *http.Response, err error, attempt int) bool {
+	if attempt+1 >= oauth2RetryAttempts || req.Context().Err() != nil {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	if resp == nil {
+		return false
+	}
+	switch resp.StatusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return resp.StatusCode >= 500
+	}
+}
+
+func oauth2RetryDelay(resp *http.Response, attempt int) time.Duration {
+	if resp != nil {
+		if delay, ok := retryAfter(resp.Header.Get("Retry-After")); ok {
+			return delay
+		}
+	}
+	delay := time.Duration(1<<attempt) * 200 * time.Millisecond
+	if delay > 5*time.Second {
+		return 5 * time.Second
+	}
+	return delay
+}
+
+func retryAfter(value string) (time.Duration, bool) {
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		return time.Duration(seconds) * time.Second, true
+	}
+	if t, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(t); delay > 0 {
+			return delay, true
+		}
+	}
+	return 0, false
 }
 
 // DeviceAuth returns a device auth struct which contains a device code
 // and authorization information provided for users to enter on another device.
 func (conf Config) DeviceAuth(ctx context.Context) (*oauth2.DeviceAuthResponse, error) {
-	return conf.oauth2().DeviceAuth(ctx, oauth2.SetAuthURLParam("response_type", "device_code"))
+	return conf.oauth2().DeviceAuth(oauth2Context(ctx), oauth2.SetAuthURLParam("response_type", "device_code"))
 }
 
 // DeviceAccessToken continuously polls the access token in the device authentication flow.
 // If the [context.Context] has exceeded its deadline, it will return a nil *oauth2.Token with
 // the contextual error.
 func (conf Config) DeviceAccessToken(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
-	return conf.oauth2().DeviceAccessToken(ctx, da)
+	return conf.oauth2().DeviceAccessToken(oauth2Context(ctx), da)
 }
 
 // oauth2 returns an [oauth2.Config] that may be used for exchanging access tokens
@@ -59,7 +200,7 @@ func (conf Config) oauth2() *oauth2.Config {
 // automatically refreshing it as necessary using the provided context.
 func (conf Config) TokenSource(ctx context.Context, t *oauth2.Token) oauth2.TokenSource {
 	tkr := &tokenRefresher{
-		ctx:  ctx,
+		ctx:  oauth2Context(ctx),
 		conf: &conf,
 	}
 	if t != nil {
@@ -112,7 +253,8 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("POST %s: %s", tf.conf.oauth2().Endpoint.TokenURL, resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("POST %s: %s%s", tf.conf.oauth2().Endpoint.TokenURL, resp.Status, oauth2ErrorBody(body))
 	}
 	var tk *oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&tk); err != nil {
@@ -136,6 +278,28 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 		tf.refreshToken = tk.RefreshToken
 	}
 	return tk, nil
+}
+
+func oauth2ErrorBody(body []byte) string {
+	body = []byte(strings.TrimSpace(string(body)))
+	if len(body) == 0 {
+		return ""
+	}
+	var response struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &response); err == nil {
+		switch {
+		case response.Error != "" && response.ErrorDescription != "":
+			return fmt.Sprintf(": %s: %s", response.Error, response.ErrorDescription)
+		case response.Error != "":
+			return ": " + response.Error
+		case response.ErrorDescription != "":
+			return ": " + response.ErrorDescription
+		}
+	}
+	return ": " + string(body)
 }
 
 // AuthCodeURL returns a URL to Microsoft's title-themed page that asks
