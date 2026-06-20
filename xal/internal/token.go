@@ -4,6 +4,7 @@ import (
 	"time"
 )
 
+// tokenExpirationSkew is the safety margin before expiration when tokens stop being reusable.
 const tokenExpirationSkew = time.Minute
 
 // Token represents the basic structure of the Token issued by various
