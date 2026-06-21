@@ -3,7 +3,9 @@ package sisu
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,39 @@ import (
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"golang.org/x/oauth2"
 )
+
+func TestErrorCodeWireValues(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		wire string
+		want ErrorCode
+	}{
+		{wire: "2148916227", want: ErrorCodeAccountSuspended},
+		{wire: "2148916233", want: ErrorCodeAccountCreationRequired},
+		{wire: "2148916236", want: ErrorCodeAgeVerificationRequired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.wire, func(t *testing.T) {
+			t.Parallel()
+			n, err := strconv.ParseUint(tc.wire, 10, 32)
+			if err != nil {
+				t.Fatalf("ParseUint(%q): %v", tc.wire, err)
+			}
+			if got := ErrorCode(n); got != tc.want {
+				t.Fatalf("ErrorCode(%d) = %#x, want %#x", n, got, tc.want)
+			}
+		})
+	}
+
+	var code ErrorCode
+	if !errors.As(ErrorCodeAccountSuspended, &code) {
+		t.Fatal("errors.As failed for ErrorCodeAccountSuspended")
+	}
+	if code != ErrorCodeAccountSuspended {
+		t.Fatalf("errors.As code = %#x, want %#x", code, ErrorCodeAccountSuspended)
+	}
+}
 
 func TestAccountCreationRequiredErrorDoesNotExposeSignupURL(t *testing.T) {
 	signupURL, err := url.Parse("https://sisu.xboxlive.com/create?sig=sensitive")
