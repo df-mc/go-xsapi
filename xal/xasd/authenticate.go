@@ -22,12 +22,9 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 	if proofKey == nil {
 		return nil, errors.New("xal/xasd: authenticate: proof key is nil")
 	}
-	id := uuid.NewString()
-	switch config.Device.Type {
-	case xal.DeviceTypeAndroid:
-		id = "{" + id + "}"
-	case xal.DeviceTypeWin32:
-		id = strings.ToUpper(id)
+	id, serialNumber, err := deviceID(config.Device.Type, uuid.NewString())
+	if err != nil {
+		return nil, fmt.Errorf("xal/xasd: authenticate: %w", err)
 	}
 
 	var (
@@ -35,11 +32,12 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 			RelyingParty: "http://auth.xboxlive.com",
 			TokenType:    "JWT",
 			Properties: properties{
-				AuthMethod: "ProofOfPossession",
-				ID:         id,
-				DeviceType: config.Device.Type,
-				Version:    config.Device.Version,
-				ProofKey:   internal.ProofKey(proofKey),
+				AuthMethod:   "ProofOfPossession",
+				ID:           id,
+				SerialNumber: serialNumber,
+				DeviceType:   config.Device.Type,
+				Version:      config.Device.Version,
+				ProofKey:     internal.ProofKey(proofKey),
 			},
 		}
 		t *Token
@@ -51,6 +49,22 @@ func Authenticate(ctx context.Context, config xal.Config, proofKey *ecdsa.Privat
 		return nil, errors.New("xal/xasd: invalid token response")
 	}
 	return t, nil
+}
+
+func deviceID(deviceType, id string) (string, string, error) {
+	switch deviceType {
+	case xal.DeviceTypeAndroid, xal.DeviceTypeNintendo:
+		return "{" + id + "}", "", nil
+	case xal.DeviceTypeIOS:
+		return strings.ToUpper(id), "", nil
+	case xal.DeviceTypePlayStation:
+		return id, "", nil
+	case xal.DeviceTypeWin32, xal.DeviceTypeXbox:
+		id = "{" + strings.ToUpper(id) + "}"
+		return id, id, nil
+	default:
+		return "", "", fmt.Errorf("unknown device type: %s", deviceType)
+	}
 }
 
 type (
@@ -65,6 +79,9 @@ type (
 		AuthMethod string
 		// ID is the unique ID used to associate a device.
 		ID string `json:"Id"`
+		// SerialNumber is the device serial number when required by the
+		// device type.
+		SerialNumber string `json:",omitempty"`
 		// DeviceType is the [xal.Device.Type].
 		DeviceType string
 		// Version is the [xal.Device.Version].
