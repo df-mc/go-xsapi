@@ -129,8 +129,25 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return nil, errors.Join(xal.UnexpectedStatus(resp), )
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return nil, xal.UnexpectedStatus(resp)
+		}
+		retrieveError := &oauth2.RetrieveError{
+			Response: resp,
+			Body:     body,
+		}
+		var response struct {
+			ErrorCode        string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+			ErrorURI         string `json:"error_uri"`
+		}
+		if err := json.Unmarshal(body, &response); err == nil {
+			retrieveError.ErrorCode = response.ErrorCode
+			retrieveError.ErrorDescription = response.ErrorDescription
+			retrieveError.ErrorURI = response.ErrorURI
+		}
+		return nil, errors.Join(xal.UnexpectedStatus(resp), retrieveError)
 	}
 	var tk *oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&tk); err != nil {
@@ -154,31 +171,6 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 		tf.refreshToken = tk.RefreshToken
 	}
 	return tk, nil
-}
-
-// oauth2ErrorBody formats OAuth error response bodies for appending to an
-// existing HTTP status error. It prefers the OAuth error fields when present and
-// falls back to the trimmed raw body. An empty body returns an empty string.
-func oauth2ErrorBody(body []byte) string {
-	detail := strings.TrimSpace(string(body))
-	if detail == "" {
-		return ""
-	}
-	var response struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	if err := json.Unmarshal([]byte(detail), &response); err == nil {
-		switch {
-		case response.Error != "" && response.ErrorDescription != "":
-			detail = response.Error + ": " + response.ErrorDescription
-		case response.Error != "":
-			detail = response.Error
-		case response.ErrorDescription != "":
-			detail = response.ErrorDescription
-		}
-	}
-	return ": " + detail
 }
 
 // AuthCodeURL returns a URL to Microsoft's title-themed page that asks
