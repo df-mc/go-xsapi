@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -20,26 +21,41 @@ import (
 	"golang.org/x/oauth2/microsoft"
 )
 
-// oauth2ContextClient returns the HTTP client from the context,
-// or [http.DefaultClient] if not present.
-func oauth2ContextClient(ctx context.Context) *http.Client {
-	if hc, ok := ctx.Value(oauth2.HTTPClient).(*http.Client); ok && hc != nil {
-		return hc
+const oauth2RequestTimeout = 15 * time.Second
+
+func oauth2Context(ctx context.Context) context.Context {
+	return context.WithValue(ctx, oauth2.HTTPClient, oauth2Client(ctx))
+}
+
+// oauth2Client returns the OAuth HTTP client from ctx, falling back to the XAL
+// client key so callers can use one context client for the full SISU flow.
+func oauth2Client(ctx context.Context) *http.Client {
+	client, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+	if client == nil {
+		client, _ = ctx.Value(xal.HTTPClient).(*http.Client)
 	}
-	return http.DefaultClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	if client.Timeout != 0 {
+		return client
+	}
+	cloned := *client
+	cloned.Timeout = oauth2RequestTimeout
+	return &cloned
 }
 
 // DeviceAuth returns a device auth struct which contains a device code
 // and authorization information provided for users to enter on another device.
 func (conf Config) DeviceAuth(ctx context.Context) (*oauth2.DeviceAuthResponse, error) {
-	return conf.oauth2().DeviceAuth(ctx, oauth2.SetAuthURLParam("response_type", "device_code"))
+	return conf.oauth2().DeviceAuth(oauth2Context(ctx), oauth2.SetAuthURLParam("response_type", "device_code"))
 }
 
 // DeviceAccessToken continuously polls the access token in the device authentication flow.
 // If the [context.Context] has exceeded its deadline, it will return a nil *oauth2.Token with
 // the contextual error.
 func (conf Config) DeviceAccessToken(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
-	return conf.oauth2().DeviceAccessToken(ctx, da)
+	return conf.oauth2().DeviceAccessToken(oauth2Context(ctx), da)
 }
 
 // oauth2 returns an [oauth2.Config] that may be used for exchanging access tokens
@@ -60,7 +76,7 @@ func (conf Config) oauth2() *oauth2.Config {
 // automatically refreshing it as necessary using the provided context.
 func (conf Config) TokenSource(ctx context.Context, t *oauth2.Token) oauth2.TokenSource {
 	tkr := &tokenRefresher{
-		ctx:  ctx,
+		ctx:  oauth2Context(ctx),
 		conf: &conf,
 	}
 	if t != nil {
@@ -106,14 +122,32 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", tf.conf.UserAgent)
 
-	resp, err := oauth2ContextClient(tf.ctx).Do(req)
+	resp, err := oauth2Client(tf.ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, xal.UnexpectedStatus(resp)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return nil, xal.UnexpectedStatus(resp)
+		}
+		retrieveError := &oauth2.RetrieveError{
+			Response: resp,
+			Body:     body,
+		}
+		var response struct {
+			ErrorCode        string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+			ErrorURI         string `json:"error_uri"`
+		}
+		if err := json.Unmarshal(body, &response); err == nil {
+			retrieveError.ErrorCode = response.ErrorCode
+			retrieveError.ErrorDescription = response.ErrorDescription
+			retrieveError.ErrorURI = response.ErrorURI
+		}
+		return nil, errors.Join(xal.UnexpectedStatus(resp), retrieveError)
 	}
 	var tk *oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&tk); err != nil {
@@ -220,7 +254,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 		return "", fmt.Errorf("sign request: %w", err)
 	}
 
-	resp, err := oauth2ContextClient(ctx).Do(req)
+	resp, err := oauth2Client(ctx).Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -253,7 +287,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 // If using PKCE to protect against CSRF attacks, opts should include a
 // VerifierOption.
 func (conf Config) Exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
-	return conf.oauth2().Exchange(ctx, code, append(opts,
+	return conf.oauth2().Exchange(oauth2Context(ctx), code, append(opts,
 		oauth2.SetAuthURLParam("scope", scope),
 		oauth2.SetAuthURLParam("client_id", conf.ClientID),
 	)...)
