@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/df-mc/go-xsapi/v2/xal/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasu"
@@ -26,7 +25,7 @@ type Token internal.Token[DisplayClaims]
 
 // Valid reports whether the token is currently usable.
 func (t *Token) Valid() bool {
-	return t != nil && t.Token != "" && !time.Now().After(t.NotAfter) &&
+	return t != nil && internal.ValidToken(t.Token, t.NotAfter) &&
 		len(t.DisplayClaims.UserInfo) > 0
 }
 
