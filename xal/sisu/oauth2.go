@@ -130,7 +130,7 @@ func (tf *tokenRefresher) Token() (*oauth2.Token, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return nil, fmt.Errorf("POST %s: %s%s", tf.conf.oauth2().Endpoint.TokenURL, resp.Status, oauth2ErrorBody(body))
+		return nil, errors.Join(xal.UnexpectedStatus(resp), )
 	}
 	var tk *oauth2.Token
 	if err := json.NewDecoder(resp.Body).Decode(&tk); err != nil {
@@ -270,7 +270,7 @@ func (conf Config) AuthCodeURL(ctx context.Context, device xasd.TokenSource, sta
 	timestamp.Update(resp.Header)
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return "", xal.UnexpectedStatus(resp)
 	}
 	var respBody *authCodeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {

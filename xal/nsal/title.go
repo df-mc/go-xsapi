@@ -51,7 +51,7 @@ func Default(ctx context.Context) (*TitleData, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", req.URL, resp.Status)
+		return nil, xal.UnexpectedStatus(resp)
 	}
 	var t *TitleData
 	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
@@ -106,7 +106,7 @@ func Title(ctx context.Context, token interface{ SetAuthHeader(req *http.Request
 	timestamp.Update(resp.Header)
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return nil, xal.UnexpectedStatus(resp)
 	}
 	var t *TitleData
 	if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {

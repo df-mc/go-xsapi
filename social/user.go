@@ -52,7 +52,7 @@ func (c *Client) Search(ctx context.Context, query string, opts ...internal.Requ
 		}
 		return result.Users, nil
 	default:
-		return nil, internal.UnexpectedStatusCode(resp)
+		return nil, responseError(resp)
 	}
 }
 
@@ -200,7 +200,7 @@ func (c *Client) users(ctx context.Context, perspective, selector string, postBo
 		}
 		return result.Users, nil
 	default:
-		return nil, internal.UnexpectedStatusCode(resp)
+		return nil, responseError(resp)
 	}
 }
 

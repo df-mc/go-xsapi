@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/internal/timestamp"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
@@ -389,12 +390,12 @@ func (s *Session) authorize(ctx context.Context) (*authorizationResponse, error)
 		return r, nil
 	default:
 		errs := []error{
-			fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status),
+			xal.UnexpectedStatus(resp),
 			wwwAuthenticate(resp.Header),
 		}
 		xerr := resp.Header.Get("X-Err")
 		if xerr != "" {
-			n, err := strconv.ParseInt(xerr, 10, 64)
+			n, err := strconv.ParseUint(xerr, 10, 32)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("parse X-Err header as numerical error code: %w", err))
 			} else {
@@ -484,6 +485,8 @@ func accountCreationRequired(resp *http.Response, device *xasd.Token, proofKey *
 }
 
 // ErrorCode represents a numeric error code returned by SISU and other Xbox Live services.
+// Wire values arrive as unsigned decimal (for example 2148916227 for 0x8015DC03), while the
+// constants below use the documented Xbox hex HRESULT values.
 // An error returned by this package may wrap an ErrorCode alongside other errors.
 // Use [errors.As] to extract it:
 //
@@ -491,7 +494,7 @@ func accountCreationRequired(resp *http.Response, device *xasd.Token, proofKey *
 //	if errors.As(err, &code) {
 //	    // handle code
 //	}
-type ErrorCode int
+type ErrorCode uint32
 
 // String returns a human-readable description of the error code suitable for display to users.
 func (c ErrorCode) String() (s string) {
@@ -519,10 +522,10 @@ func (c ErrorCode) String() (s string) {
 	case ErrorCodeTitleSinglePointOfPresenceViolated:
 		s = "You are already signed in to this title on another device. Sign out from another device and try again"
 	default:
-		return fmt.Sprintf("unknown error code: 0x%X", int(c))
+		return fmt.Sprintf("unknown error code: 0x%X", uint32(c))
 	}
 	// We can't use %#X because it also capitalizes the X letter like 0X23EEB3
-	return fmt.Sprintf("%s (error code 0x%X)", s, int(c))
+	return fmt.Sprintf("%s (error code 0x%X)", s, uint32(c))
 }
 
 // Error implements the error interface so it can be wrapped alongside other related errors.

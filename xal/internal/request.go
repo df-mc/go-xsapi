@@ -55,7 +55,7 @@ func (r TokenRequest[P]) Do(ctx context.Context, config xal.Config, reqURL strin
 	defer resp.Body.Close()
 	timestamp.Update(resp.Header)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
+		return xal.UnexpectedStatus(resp)
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(respBody); err != nil {

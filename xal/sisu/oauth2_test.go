@@ -96,3 +96,39 @@ func response(status int, body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
+
+func TestTokenSourceRefreshErrorIncludesStatusError(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "401 Unauthorized",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})}
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
+	src := (Config{ClientID: "client"}).TokenSource(ctx, &oauth2.Token{
+		AccessToken:  "expired",
+		RefreshToken: "refresh",
+		TokenType:    "bearer",
+		Expiry:       time.Now().Add(-time.Minute),
+	})
+
+	_, err := src.Token()
+	if err == nil {
+		t.Fatal("Token() error = nil")
+	}
+	var statusErr *xal.StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("Token() error = %T %[1]v, want xal.StatusError", err)
+	}
+	if statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("StatusCode = %v, want %v", statusErr.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
