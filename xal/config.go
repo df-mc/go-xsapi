@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-const defaultHTTPClientTimeout = 30 * time.Second
-
 // Config represents the basic configuration used to authenticate with Xbox Live
 // services. All fields are specific or bound to the title and cannot be easily changed.
 type Config struct {
@@ -38,7 +36,7 @@ type contextKey struct{}
 // passed to the API call.
 var HTTPClient contextKey
 
-var defaultHTTPClient = &http.Client{Timeout: defaultHTTPClientTimeout}
+var defaultHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // ContextClient returns an [http.Client] from the [context.Context] if possible,
 // otherwise it returns a default client with a request timeout.
