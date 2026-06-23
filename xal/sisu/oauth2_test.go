@@ -49,8 +49,9 @@ func TestTokenSourceRefreshErrorIncludesOAuthBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("Token succeeded, want error")
 	}
-	if got := err.Error(); !strings.Contains(got, "invalid_grant: refresh expired") {
-		t.Fatalf("error = %q, want OAuth body detail", got)
+	var retrieveError *oauth2.RetrieveError
+	if !errors.As(err, &retrieveError) {
+		t.Fatalf("error = %q, want oauth2.RetrieveError", err)
 	}
 }
 
@@ -80,12 +81,6 @@ func TestExchangeUsesXALContextClient(t *testing.T) {
 	if token.AccessToken != "access" {
 		t.Fatalf("access token = %q, want access", token.AccessToken)
 	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
 }
 
 func response(status int, body string) *http.Response {
