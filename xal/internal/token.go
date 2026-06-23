@@ -4,8 +4,8 @@ import (
 	"time"
 )
 
-// tokenExpirationSkew is the safety margin before expiration when tokens stop being reusable.
-const tokenExpirationSkew = time.Minute
+// expirationDelta is the safety margin before expiration when tokens stop being reusable.
+const expirationDelta = time.Minute
 
 // Token represents the basic structure of the Token issued by various
 // Xbox Authentication Services (XAS). The C generic type indicates the
@@ -31,5 +31,5 @@ func (t *Token[C]) Valid() bool {
 // ValidToken reports whether token is non-empty and expires after the refresh
 // margin used for Xbox authentication tokens.
 func ValidToken(token string, notAfter time.Time) bool {
-	return token != "" && time.Now().Before(notAfter.Add(-tokenExpirationSkew))
+	return token != "" && time.Now().Before(notAfter.Add(-expirationDelta))
 }

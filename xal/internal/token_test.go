@@ -18,12 +18,12 @@ func TestTokenValidRequiresExpirationPastSkew(t *testing.T) {
 		},
 		{
 			name:     "expires inside skew",
-			token:    &Token[struct{}]{Token: "token", NotAfter: time.Now().Add(tokenExpirationSkew / 2)},
+			token:    &Token[struct{}]{Token: "token", NotAfter: time.Now().Add(expirationDelta / 2)},
 			expected: false,
 		},
 		{
 			name:     "expires after skew",
-			token:    &Token[struct{}]{Token: "token", NotAfter: time.Now().Add(tokenExpirationSkew * 2)},
+			token:    &Token[struct{}]{Token: "token", NotAfter: time.Now().Add(expirationDelta * 2)},
 			expected: true,
 		},
 		{
