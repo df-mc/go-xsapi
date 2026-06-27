@@ -38,6 +38,9 @@ type Conn struct {
 
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
+	// subscriptionOpMu serializes public subscribe and unsubscribe operations so
+	// idle-close cannot close a WebSocket while a new subscription is being established.
+	subscriptionOpMu sync.Mutex
 
 	log *slog.Logger
 
@@ -64,6 +67,8 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
+	c.subscriptionOpMu.Lock()
+	defer c.subscriptionOpMu.Unlock()
 	for {
 		sub.opMu.Lock()
 		if sub.Active() {
@@ -136,6 +141,8 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	if err := c.wait(ctx); err != nil {
 		return err
 	}
+	c.subscriptionOpMu.Lock()
+	defer c.subscriptionOpMu.Unlock()
 	sub.opMu.Lock()
 	if !sub.Active() {
 		sub.opMu.Unlock()
@@ -153,6 +160,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	// might be able to clean up resources tied to this subscription.
 	sub.deactivate(ErrUnsubscribed)
 	sub.opMu.Unlock()
+	c.closeIdleConn()
 	return nil
 }
 
@@ -183,8 +191,11 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 		return nil, context.Cause(c.ctx)
 	}
 
+	conn, err := c.ensureWebSocket(ctx)
+	if err != nil {
+		return nil, err
+	}
 	seq := c.sequences[op].Add(1)
-	conn := c.currentConn()
 	ch := c.expect(conn, op, seq)
 	if err := c.write(conn, operationToType(op), append([]any{seq}, payload...)); err != nil {
 		c.release(op, seq)
@@ -414,12 +425,51 @@ func (c *Conn) untrackSubscription(sub *Subscription) {
 	c.subscriptionsMu.Unlock()
 }
 
-// currentConn returns the currently-active WebSocket connection.
-// It is safe for concurrent use.
-func (c *Conn) currentConn() *websocket.Conn {
-	c.connMu.RLock()
-	defer c.connMu.RUnlock()
-	return c.conn
+// popSubscriptions returns subscriptions that should be restored on a new
+// WebSocket connection, plus all active subscriptions removed from the map.
+// The full popped set is retained so reconnect failures can still notify
+// subscriptions that are active but not worth resubscribing.
+func (c *Conn) popSubscriptions() (resubscribe, popped []*Subscription) {
+	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
+	resubscribe = make([]*Subscription, 0, len(c.subscriptions))
+	popped = make([]*Subscription, 0, len(c.subscriptions))
+	for _, subscription := range c.subscriptions {
+		if subscription.Active() {
+			popped = append(popped, subscription)
+		}
+		if subscription.shouldResubscribe() {
+			resubscribe = append(resubscribe, subscription)
+		}
+	}
+	clear(c.subscriptions)
+	return resubscribe, popped
+}
+
+// closeIdleConn closes the current WebSocket when no active subscription needs
+// it. The Conn itself remains reusable.
+func (c *Conn) closeIdleConn() {
+	c.subscriptionsMu.RLock()
+	idle := len(c.subscriptions) == 0
+	c.subscriptionsMu.RUnlock()
+	if !idle {
+		return
+	}
+	_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
+}
+
+// closeWebSocket closes and clears the active WebSocket without closing the
+// parent Conn.
+func (c *Conn) closeWebSocket(status websocket.StatusCode, reason string) error {
+	c.connMu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.connMu.Unlock()
+	if conn != nil {
+		c.drainExpected(conn)
+		return conn.Close(status, reason)
+	}
+	return nil
 }
 
 // isCurrentConn reports whether conn is still the active WebSocket connection.
@@ -427,6 +477,27 @@ func (c *Conn) isCurrentConn(conn *websocket.Conn) bool {
 	c.connMu.RLock()
 	defer c.connMu.RUnlock()
 	return c.conn == conn
+}
+
+// ensureWebSocket returns the active WebSocket connection, lazily dialing a new
+// one if the previous socket was closed after the last subscription was removed.
+func (c *Conn) ensureWebSocket(ctx context.Context) (*websocket.Conn, error) {
+	if err := c.ctx.Err(); err != nil {
+		return nil, context.Cause(c.ctx)
+	}
+
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if c.conn != nil {
+		return c.conn, nil
+	}
+	conn, err := c.dialer.dial(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("rta: dial: %w", err)
+	}
+	c.conn = conn
+	go c.read(conn)
+	return conn, nil
 }
 
 // read continuously reads JSON messages from the WebSocket connection and
@@ -488,21 +559,22 @@ func (c *Conn) reconnect() {
 
 	interruptedAttempts := 0
 	for {
+		subscriptions, popped := c.popSubscriptions()
+		if len(subscriptions) == 0 {
+			_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
+			return
+		}
 		conn, err := c.dialer.reconnect(c.ctx)
 		if err != nil {
 			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
+			for _, subscription := range popped {
+				if subscription.Active() {
+					c.trackSubscription(subscription)
+				}
+			}
 			_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
 			return
 		}
-		c.subscriptionsMu.Lock()
-		subscriptions := make([]*Subscription, 0, len(c.subscriptions))
-		for _, subscription := range c.subscriptions {
-			if subscription.shouldResubscribe() {
-				subscriptions = append(subscriptions, subscription)
-			}
-		}
-		clear(c.subscriptions)
-		c.subscriptionsMu.Unlock()
 
 		c.connMu.Lock()
 		c.conn = conn
@@ -589,7 +661,7 @@ func (c *Conn) Close() (err error) {
 func (c *Conn) close(cause error) (err error) {
 	c.once.Do(func() {
 		c.cancel(cause)
-		err = c.currentConn().Close(websocket.StatusNormalClosure, "")
+		err = c.closeWebSocket(websocket.StatusNormalClosure, "")
 
 		notifyErr := cause
 		if !errors.Is(notifyErr, net.ErrClosed) {

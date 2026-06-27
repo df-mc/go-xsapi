@@ -115,6 +115,130 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	}
 }
 
+// TestUnsubscribeLastSubscriptionClosesSocketButKeepsConnReusable verifies that
+// idle RTA sockets close without making the Conn unusable for future subscribe calls.
+func TestUnsubscribeLastSubscriptionClosesSocketButKeepsConnReusable(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if err := conn.Unsubscribe(ctx, sub); err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	waitAtomicUint32(t, &srv.closeCount, 1, "websocket close count")
+	if err := context.Cause(conn.ctx); err != nil {
+		t.Fatalf("connection cause = %v, want nil", err)
+	}
+
+	next := NewSubscription("next-resource", NopSubscriptionHandler{})
+	if err := conn.Subscribe(ctx, next); err != nil {
+		t.Fatalf("second Subscribe returned error: %v", err)
+	}
+	if got := srv.dialCount.Load(); got != 2 {
+		t.Fatalf("dial count = %d, want 2", got)
+	}
+	if !next.Active() {
+		t.Fatal("second subscription is inactive")
+	}
+}
+
+// TestUnsubscribeLastSubscriptionDoesNotCloseSocketDuringSubscribe verifies that
+// idle-close does not race with a new subscription that has not been tracked yet.
+func TestUnsubscribeLastSubscriptionDoesNotCloseSocketDuringSubscribe(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	blockingHandler := newBlockingSubscribeHandler(1)
+	next := NewSubscription("next-resource", blockingHandler)
+	subscribeErr := make(chan error, 1)
+	go func() {
+		subscribeErr <- conn.Subscribe(ctx, next)
+	}()
+	select {
+	case <-blockingHandler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("second Subscribe did not reach handler")
+	}
+
+	unsubscribeErr := make(chan error, 1)
+	go func() {
+		unsubscribeErr <- conn.Unsubscribe(ctx, sub)
+	}()
+
+	select {
+	case err := <-unsubscribeErr:
+		t.Fatalf("Unsubscribe completed while Subscribe was still in progress: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := srv.closeCount.Load(); got != 0 {
+		t.Fatalf("websocket close count = %d, want 0 before second Subscribe completes", got)
+	}
+
+	close(blockingHandler.unblock)
+	if err := <-subscribeErr; err != nil {
+		t.Fatalf("second Subscribe returned error: %v", err)
+	}
+	if err := <-unsubscribeErr; err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	if got := srv.closeCount.Load(); got != 0 {
+		t.Fatalf("websocket close count = %d, want 0 while second subscription is active", got)
+	}
+	if !next.Active() {
+		t.Fatal("second subscription is inactive")
+	}
+}
+
+// TestReconnectWithNoSubscriptionsDoesNotDial verifies that reconnect returns
+// before dialing when there are no active subscriptions to restore.
+func TestReconnectWithNoSubscriptionsDoesNotDial(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if err := conn.Unsubscribe(ctx, sub); err != nil {
+		t.Fatalf("Unsubscribe returned error: %v", err)
+	}
+	waitAtomicUint32(t, &srv.closeCount, 1, "websocket close count")
+
+	conn.reconnect()
+	if got := srv.dialCount.Load(); got != 1 {
+		t.Fatalf("dial count = %d, want 1", got)
+	}
+	if err := context.Cause(conn.ctx); err != nil {
+		t.Fatalf("connection cause = %v, want nil", err)
+	}
+}
+
 func TestConcurrentSubscribeCoalescesSingleHandshake(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -142,6 +266,36 @@ func TestConcurrentSubscribeCoalescesSingleHandshake(t *testing.T) {
 	}
 	if got := srv.subscribeCount.Load(); got != 1 {
 		t.Fatalf("subscribe count = %d, want 1", got)
+	}
+}
+
+// TestPopSubscriptionsPreservesSkippedActiveSubscriptions verifies that reconnect
+// keeps skipped active subscriptions available for close-time error notification.
+func TestPopSubscriptionsPreservesSkippedActiveSubscriptions(t *testing.T) {
+	conn := &Conn{
+		subscriptions: make(map[uint32]*Subscription),
+	}
+
+	keep := NewSubscription("keep-resource", NopSubscriptionHandler{})
+	keep.activate(1, nil)
+	skip := NewSubscription("skip-resource", NopSubscriptionHandler{})
+	skip.activate(2, nil)
+	skip.setUnsubscribing(true)
+	conn.subscriptions[keep.ID()] = keep
+	conn.subscriptions[skip.ID()] = skip
+
+	resubscribe, popped := conn.popSubscriptions()
+	if got, want := len(resubscribe), 1; got != want {
+		t.Fatalf("resubscribe count = %d, want %d", got, want)
+	}
+	if resubscribe[0] != keep {
+		t.Fatal("resubscribe list did not contain keep subscription")
+	}
+	if got, want := len(popped), 2; got != want {
+		t.Fatalf("popped count = %d, want %d", got, want)
+	}
+	if len(conn.subscriptions) != 0 {
+		t.Fatalf("subscriptions map length = %d, want 0", len(conn.subscriptions))
 	}
 }
 
@@ -324,6 +478,8 @@ func (h *blockingSubscribeHandler) HandleSubscribe(json.RawMessage) error {
 
 type connTestServer struct {
 	server            *httptest.Server
+	dialCount         atomic.Uint32
+	closeCount        atomic.Uint32
 	subscribeCount    atomic.Uint32
 	unsubscribeCount  atomic.Uint32
 	unsubscribeStatus atomic.Int32
@@ -389,7 +545,9 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	s.dialCount.Add(1)
 	defer func() {
+		s.closeCount.Add(1)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -445,6 +603,25 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		default:
 			return
+		}
+	}
+}
+
+// waitAtomicUint32 waits until counter reaches want or fails the test.
+func waitAtomicUint32(t *testing.T, counter *atomic.Uint32, want uint32, name string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		got := counter.Load()
+		if got >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("%s = %d, want at least %d", name, got, want)
+		case <-tick.C:
 		}
 	}
 }
