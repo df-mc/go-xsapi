@@ -53,7 +53,7 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 	}
 
 	if s.client == nil {
-		s.client = http.DefaultClient
+		s.client = xal.ContextClient(context.Background())
 	}
 	if s.xsts == nil {
 		s.xsts = make(map[string]*xsts.Token)
@@ -78,7 +78,7 @@ type SessionConfig struct {
 	DeviceTokenSource xasd.TokenSource
 
 	// HTTPClient is the HTTP client used to make requests.
-	// If not present, [http.DefaultClient] will be used instead.
+	// If not present, a default client with a request timeout will be used instead.
 	HTTPClient *http.Client
 }
 
