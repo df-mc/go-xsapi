@@ -44,13 +44,11 @@ type Conn struct {
 
 	log *slog.Logger
 
-	// reconnecting indicates whether the Conn is currently reconnecting to the RTA service.
-	reconnecting atomic.Bool
 	// reconnectDone is a channel that is closed when the reconnect is complete.
 	// It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
 	// reconnectMu guards reconnectDone from concurrent read/write access.
-	reconnectMu sync.RWMutex
+	reconnectMu sync.Mutex
 
 	// once ensures that the Conn is closed only once.
 	once sync.Once
@@ -78,7 +76,7 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 		err := c.subscribe(ctx, sub)
 		sub.opMu.Unlock()
 		if err == errConnectionInterrupted {
-			if err := pauseAfterConnectionInterrupt(ctx, c.ctx); err != nil {
+			if err := c.wait(ctx); err != nil {
 				return err
 			}
 			continue
@@ -200,7 +198,7 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	if err := c.write(conn, operationToType(op), append([]any{seq}, payload...)); err != nil {
 		c.release(op, seq)
 		c.drainExpected(conn)
-		go c.reconnect()
+		c.startReconnect()
 		return nil, errConnectionInterrupted
 	}
 	select {
@@ -221,23 +219,6 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 // errConnectionInterrupted marks a call that lost its socket while the parent
 // connection is still allowed to reconnect and retry the operation.
 var errConnectionInterrupted = errors.New("rta: connection interrupted")
-
-// connectionInterruptRetryDelay briefly yields after a socket interruption so
-// the reconnect goroutine can publish reconnect state before callers retry.
-const connectionInterruptRetryDelay = 10 * time.Millisecond
-
-// pauseAfterConnectionInterrupt waits before retrying an interrupted call, while
-// still respecting both the caller context and the connection lifetime context.
-func pauseAfterConnectionInterrupt(ctx, connCtx context.Context) error {
-	select {
-	case <-time.After(connectionInterruptRetryDelay):
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-connCtx.Done():
-		return context.Cause(connCtx)
-	}
-}
 
 func NewSubscription(resourceURI string, h SubscriptionHandler) *Subscription {
 	sub := &Subscription{resourceURI: resourceURI}
@@ -380,9 +361,9 @@ func (c *Conn) write(conn *websocket.Conn, typ uint32, payload []any) error {
 
 // wait blocks until any in-progress reconnect attempt has finished.
 func (c *Conn) wait(ctx context.Context) error {
-	c.reconnectMu.RLock()
+	c.reconnectMu.Lock()
 	done := c.reconnectDone
-	c.reconnectMu.RUnlock()
+	c.reconnectMu.Unlock()
 
 	if done == nil {
 		return nil
@@ -517,7 +498,7 @@ func (c *Conn) read(conn *websocket.Conn) {
 				return
 			}
 			c.log.Error("error reading from WebSocket connection", slog.Any("error", err))
-			go c.reconnect()
+			c.startReconnect()
 			return
 		}
 		typ, err := readHeader(payload)
@@ -532,30 +513,57 @@ func (c *Conn) read(conn *websocket.Conn) {
 	}
 }
 
+// beginReconnect starts a reconnect gate if none is already active. It reports
+// whether the caller owns running the reconnect.
+func (c *Conn) beginReconnect() (chan struct{}, bool) {
+	if c.ctx.Err() != nil {
+		return nil, false
+	}
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+	if c.reconnectDone != nil {
+		return c.reconnectDone, false
+	}
+	done := make(chan struct{})
+	c.reconnectDone = done
+	return done, true
+}
+
+// finishReconnect clears and closes the reconnect gate for waiters.
+func (c *Conn) finishReconnect(done chan struct{}) {
+	c.reconnectMu.Lock()
+	if c.reconnectDone == done {
+		c.reconnectDone = nil
+	}
+	c.reconnectMu.Unlock()
+	close(done)
+}
+
+// startReconnect begins a background reconnect if one is not already running.
+func (c *Conn) startReconnect() {
+	done, ok := c.beginReconnect()
+	if ok {
+		go c.runReconnect(done)
+	}
+}
+
 // reconnect re-establishes the WebSocket connection. Only one reconnect may
 // run at a time. Concurrent calls after the first are no-ops. If establishment fails,
 // the Conn is closed with the error as the cause.
 func (c *Conn) reconnect() {
-	if c.ctx.Err() != nil {
+	done, ok := c.beginReconnect()
+	if !ok {
 		return
 	}
-	if !c.reconnecting.CompareAndSwap(false, true) {
-		return
-	}
-	defer c.reconnecting.Store(false)
+	c.runReconnect(done)
+}
+
+// runReconnect redials RTA and restores active subscriptions until reconnect
+// succeeds, no subscriptions remain, or the Conn must close.
+func (c *Conn) runReconnect(done chan struct{}) {
+	defer c.finishReconnect(done)
 
 	c.log.Info("re-establishing WebSocket connection...")
-
-	done := make(chan struct{})
-	c.reconnectMu.Lock()
-	c.reconnectDone = done
-	c.reconnectMu.Unlock()
-	defer func() {
-		c.reconnectMu.Lock()
-		c.reconnectDone = nil
-		c.reconnectMu.Unlock()
-		close(done)
-	}()
 
 	interruptedAttempts := 0
 	for {
@@ -564,7 +572,7 @@ func (c *Conn) reconnect() {
 			_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
 			return
 		}
-		conn, err := c.dialer.reconnect(c.ctx)
+		conn, err := c.dialer.dialWithBackoff(c.ctx)
 		if err != nil {
 			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
 			for _, subscription := range popped {
@@ -575,7 +583,6 @@ func (c *Conn) reconnect() {
 			_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
 			return
 		}
-
 		c.connMu.Lock()
 		c.conn = conn
 		c.connMu.Unlock()
@@ -584,7 +591,7 @@ func (c *Conn) reconnect() {
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 		if c.resubscribe(subscriptions) {
 			interruptedAttempts++
-			if interruptedAttempts >= maxReconnectAttempts {
+			if interruptedAttempts >= maxResubscribeAttempts {
 				err := fmt.Errorf("resubscribe interrupted after %d reconnect attempts", interruptedAttempts)
 				c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
 				_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
@@ -597,6 +604,10 @@ func (c *Conn) reconnect() {
 		return
 	}
 }
+
+// maxResubscribeAttempts is the maximum number of interrupted resubscribe
+// rounds before the Conn is closed.
+const maxResubscribeAttempts = 4
 
 // resubscribe re-establishes all subscriptions inherited from the previous
 // WebSocket connection. Each re-subscribe attempt has a timeout of 15 seconds.
