@@ -365,7 +365,7 @@ func TestReconnectClosesAfterPersistentInterruptedResubscribe(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("reconnect did not finish after persistent interrupted resubscribe")
 	}
-	if got, want := srv.subscribeCount.Load(), uint32(1+maxReconnectAttempts); got != want {
+	if got, want := srv.subscribeCount.Load(), uint32(1+maxResubscribeAttempts); got != want {
 		t.Fatalf("subscribe count = %d, want %d", got, want)
 	}
 	if err := context.Cause(conn.ctx); err == nil || !strings.Contains(err.Error(), "resubscribe interrupted") {

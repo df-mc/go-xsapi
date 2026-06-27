@@ -77,17 +77,17 @@ func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 	return c, nil
 }
 
-// reconnect attempts to re-establish a WebSocket connection with the RTA service.
-// It retries up to maxReconnectAttempts times, waiting between each attempt with
+// dialWithBackoff attempts to establish a WebSocket connection with the RTA service.
+// It retries up to maxDialAttempts times, waiting between each attempt with
 // exponential backoff and jitter. If the context is canceled, it returns the
 // context error immediately.
-func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
-	for attempt := 0; attempt < maxReconnectAttempts; attempt++ {
+func (d *dialer) dialWithBackoff(ctx context.Context) (*websocket.Conn, error) {
+	for attempt := range maxDialAttempts {
 		c, err := d.dial(ctx)
 		if err != nil {
 			sleep := backoffDuration(attempt)
 			d.log.Error("error re-establishing WebSocket connection",
-				slog.Int("attempt", attempt), slog.Int("maxAttempts", maxReconnectAttempts),
+				slog.Int("attempt", attempt), slog.Int("maxAttempts", maxDialAttempts),
 				slog.Duration("sleep", sleep),
 			)
 			select {
@@ -100,7 +100,7 @@ func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
 		d.log.Debug("reconnected to RTA service", slog.Int("attempt", attempt))
 		return c, nil
 	}
-	return nil, fmt.Errorf("max reconnect attempt (%d) reached", maxReconnectAttempts)
+	return nil, fmt.Errorf("max reconnect attempt (%d) reached", maxDialAttempts)
 }
 
 // backoffDuration returns the duration to wait before the next reconnect attempt.
@@ -111,9 +111,9 @@ func backoffDuration(attempt int) time.Duration {
 	return base + jitter
 }
 
-// maxReconnectAttempts is the maximum number of reconnect attempts before
-// [dialer.reconnect] gives up and returns an error.
-const maxReconnectAttempts = 4
+// maxDialAttempts is the maximum number of reconnect attempts before
+// [dialer.dialWithBackoff] gives up and returns an error.
+const maxDialAttempts = 4
 
 // subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
 const subprotocol = "rta.xboxlive.com.V2"
