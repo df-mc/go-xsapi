@@ -38,7 +38,7 @@ type Conn struct {
 	subscriptions   map[uint32]*Subscription
 	subscriptionsMu sync.RWMutex
 	// subscriptionOpMu serializes public subscribe and unsubscribe operations so
-	// idle-close cannot close a WebSocket while a new subscription is being established.
+	// subscription state cannot change while a subscribe handshake is still running.
 	subscriptionOpMu sync.Mutex
 
 	log *slog.Logger
@@ -157,7 +157,6 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	// might be able to clean up resources tied to this subscription.
 	sub.deactivate(ErrUnsubscribed)
 	sub.opMu.Unlock()
-	c.closeIdleConn()
 	return nil
 }
 
@@ -386,18 +385,6 @@ func (c *Conn) untrackSubscription(sub *Subscription) {
 	c.subscriptionsMu.Unlock()
 }
 
-// closeIdleConn closes the current WebSocket when no active subscription needs
-// it. The Conn itself remains reusable.
-func (c *Conn) closeIdleConn() {
-	c.subscriptionsMu.RLock()
-	idle := len(c.subscriptions) == 0
-	c.subscriptionsMu.RUnlock()
-	if !idle {
-		return
-	}
-	_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
-}
-
 // closeWebSocket closes and clears the active WebSocket without closing the
 // parent Conn.
 func (c *Conn) closeWebSocket(status websocket.StatusCode, reason string) error {
@@ -420,7 +407,7 @@ func (c *Conn) isCurrentConn(conn *websocket.Conn) bool {
 }
 
 // ensureWebSocket returns the active WebSocket connection, lazily dialing a new
-// one if the previous socket was closed after the last subscription was removed.
+// one if the previous socket was closed.
 func (c *Conn) ensureWebSocket(ctx context.Context) (*websocket.Conn, error) {
 	if err := c.ctx.Err(); err != nil {
 		return nil, context.Cause(c.ctx)
