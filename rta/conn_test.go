@@ -115,9 +115,10 @@ func TestUnsubscribeFailurePreservesTrackedSubscription(t *testing.T) {
 	}
 }
 
-// TestUnsubscribeLastSubscriptionClosesSocketButKeepsConnReusable verifies that
-// idle RTA sockets close without making the Conn unusable for future subscribe calls.
-func TestUnsubscribeLastSubscriptionClosesSocketButKeepsConnReusable(t *testing.T) {
+// TestUnsubscribeLastSubscriptionKeepsSocketReusable verifies that removing the
+// last subscription does not proactively close the WebSocket. The open socket
+// remains available for a later Subscribe to avoid an unnecessary redial.
+func TestUnsubscribeLastSubscriptionKeepsSocketReusable(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
@@ -134,7 +135,7 @@ func TestUnsubscribeLastSubscriptionClosesSocketButKeepsConnReusable(t *testing.
 	if err := conn.Unsubscribe(ctx, sub); err != nil {
 		t.Fatalf("Unsubscribe returned error: %v", err)
 	}
-	waitAtomicUint32(t, &srv.closeCount, 1, "websocket close count")
+	assertAtomicUint32Stays(t, &srv.closeCount, 0, "websocket close count")
 	if err := context.Cause(conn.ctx); err != nil {
 		t.Fatalf("connection cause = %v, want nil", err)
 	}
@@ -143,17 +144,17 @@ func TestUnsubscribeLastSubscriptionClosesSocketButKeepsConnReusable(t *testing.
 	if err := conn.Subscribe(ctx, next); err != nil {
 		t.Fatalf("second Subscribe returned error: %v", err)
 	}
-	if got := srv.dialCount.Load(); got != 2 {
-		t.Fatalf("dial count = %d, want 2", got)
+	if got := srv.dialCount.Load(); got != 1 {
+		t.Fatalf("dial count = %d, want 1", got)
 	}
 	if !next.Active() {
 		t.Fatal("second subscription is inactive")
 	}
 }
 
-// TestUnsubscribeLastSubscriptionDoesNotCloseSocketDuringSubscribe verifies that
-// idle-close does not race with a new subscription that has not been tracked yet.
-func TestUnsubscribeLastSubscriptionDoesNotCloseSocketDuringSubscribe(t *testing.T) {
+// TestUnsubscribeWaitsForInFlightSubscribe verifies that unsubscribe cannot
+// remove the last tracked subscription while another Subscribe is still running.
+func TestUnsubscribeWaitsForInFlightSubscribe(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
@@ -210,7 +211,8 @@ func TestUnsubscribeLastSubscriptionDoesNotCloseSocketDuringSubscribe(t *testing
 }
 
 // TestReconnectWithNoSubscriptionsDoesNotDial verifies that reconnect returns
-// before dialing when there are no active subscriptions to restore.
+// before dialing when Xbox closes an idle WebSocket with no active subscriptions
+// to restore.
 func TestReconnectWithNoSubscriptionsDoesNotDial(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -225,12 +227,12 @@ func TestReconnectWithNoSubscriptionsDoesNotDial(t *testing.T) {
 	if err := conn.Subscribe(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
+	srv.closeAfterUnsubscribeResponse()
 	if err := conn.Unsubscribe(ctx, sub); err != nil {
 		t.Fatalf("Unsubscribe returned error: %v", err)
 	}
 	waitAtomicUint32(t, &srv.closeCount, 1, "websocket close count")
-
-	conn.reconnect()
+	assertAtomicUint32Stays(t, &srv.dialCount, 1, "dial count")
 	if got := srv.dialCount.Load(); got != 1 {
 		t.Fatalf("dial count = %d, want 1", got)
 	}
@@ -269,9 +271,9 @@ func TestConcurrentSubscribeCoalescesSingleHandshake(t *testing.T) {
 	}
 }
 
-// TestPopSubscriptionsPreservesSkippedActiveSubscriptions verifies that reconnect
-// keeps skipped active subscriptions available for close-time error notification.
-func TestPopSubscriptionsPreservesSkippedActiveSubscriptions(t *testing.T) {
+// TestTakeSubscriptionsForReconnectSkipsUnsubscribing verifies that reconnect
+// only takes subscriptions that still need to be restored on a new WebSocket.
+func TestTakeSubscriptionsForReconnectSkipsUnsubscribing(t *testing.T) {
 	conn := &Conn{
 		subscriptions: make(map[uint32]*Subscription),
 	}
@@ -284,15 +286,12 @@ func TestPopSubscriptionsPreservesSkippedActiveSubscriptions(t *testing.T) {
 	conn.subscriptions[keep.ID()] = keep
 	conn.subscriptions[skip.ID()] = skip
 
-	resubscribe, popped := conn.popSubscriptions()
+	resubscribe := conn.takeSubscriptionsForReconnect()
 	if got, want := len(resubscribe), 1; got != want {
 		t.Fatalf("resubscribe count = %d, want %d", got, want)
 	}
 	if resubscribe[0] != keep {
 		t.Fatal("resubscribe list did not contain keep subscription")
-	}
-	if got, want := len(popped), 2; got != want {
-		t.Fatalf("popped count = %d, want %d", got, want)
 	}
 	if len(conn.subscriptions) != 0 {
 		t.Fatalf("subscriptions map length = %d, want 0", len(conn.subscriptions))
@@ -486,6 +485,7 @@ type connTestServer struct {
 	closeSubscribeID  atomic.Uint32
 	closeSubscribeMin atomic.Uint32
 	closeUnsubscribe  atomic.Bool
+	closeAfterUnsub   atomic.Bool
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
@@ -536,6 +536,10 @@ func (s *connTestServer) closeSubscribesFrom(id uint32) {
 
 func (s *connTestServer) closeUnsubscribeResponse() {
 	s.closeUnsubscribe.Store(true)
+}
+
+func (s *connTestServer) closeAfterUnsubscribeResponse() {
+	s.closeAfterUnsub.Store(true)
 }
 
 func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
@@ -601,6 +605,10 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 			}); err != nil {
 				return
 			}
+			if s.closeAfterUnsub.Load() {
+				_ = conn.Close(websocket.StatusGoingAway, "test close")
+				return
+			}
 		default:
 			return
 		}
@@ -621,6 +629,27 @@ func waitAtomicUint32(t *testing.T, counter *atomic.Uint32, want uint32, name st
 		select {
 		case <-deadline:
 			t.Fatalf("%s = %d, want at least %d", name, got, want)
+		case <-tick.C:
+		}
+	}
+}
+
+// assertAtomicUint32Stays fails if counter changes from want before a short
+// deadline. It is used for negative lifecycle assertions where the code should
+// not close or redial a WebSocket.
+func assertAtomicUint32Stays(t *testing.T, counter *atomic.Uint32, want uint32, name string) {
+	t.Helper()
+	deadline := time.After(100 * time.Millisecond)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		got := counter.Load()
+		if got != want {
+			t.Fatalf("%s = %d, want %d", name, got, want)
+		}
+		select {
+		case <-deadline:
+			return
 		case <-tick.C:
 		}
 	}

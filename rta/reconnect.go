@@ -30,25 +30,21 @@ func (c *Conn) wait(ctx context.Context) error {
 	}
 }
 
-// popSubscriptions returns subscriptions that should be restored on a new
-// WebSocket connection, plus all active subscriptions removed from the map.
-// The full popped set is retained so reconnect failures can still notify
-// subscriptions that are active but not worth resubscribing.
-func (c *Conn) popSubscriptions() (resubscribe, popped []*Subscription) {
+// takeSubscriptionsForReconnect removes current subscriptions from the old
+// WebSocket and returns only the subscriptions that should be restored on a new
+// one. Subscriptions that are already unsubscribing are left for Unsubscribe to
+// finish.
+func (c *Conn) takeSubscriptionsForReconnect() (resubscribe []*Subscription) {
 	c.subscriptionsMu.Lock()
 	defer c.subscriptionsMu.Unlock()
 	resubscribe = make([]*Subscription, 0, len(c.subscriptions))
-	popped = make([]*Subscription, 0, len(c.subscriptions))
 	for _, subscription := range c.subscriptions {
-		if subscription.Active() {
-			popped = append(popped, subscription)
-		}
 		if subscription.shouldResubscribe() {
 			resubscribe = append(resubscribe, subscription)
 		}
 	}
 	clear(c.subscriptions)
-	return resubscribe, popped
+	return resubscribe
 }
 
 // beginReconnect starts a reconnect gate if none is already active. It reports
@@ -105,7 +101,7 @@ func (c *Conn) runReconnect(done chan struct{}) {
 
 	interruptedAttempts := 0
 	for {
-		subscriptions, popped := c.popSubscriptions()
+		subscriptions := c.takeSubscriptionsForReconnect()
 		if len(subscriptions) == 0 {
 			_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
 			return
@@ -113,7 +109,7 @@ func (c *Conn) runReconnect(done chan struct{}) {
 		conn, err := c.dialer.dialWithBackoff(c.ctx)
 		if err != nil {
 			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
-			for _, subscription := range popped {
+			for _, subscription := range subscriptions {
 				if subscription.Active() {
 					c.trackSubscription(subscription)
 				}
