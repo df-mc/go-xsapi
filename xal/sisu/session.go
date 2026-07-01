@@ -243,20 +243,26 @@ func (s *Session) Snapshot() *Snapshot {
 // XSTS tokens are cached per relying party and reused until expiration.
 func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error) {
 	s.xstsMu.Lock()
-	defer s.xstsMu.Unlock()
-
 	token, ok := s.xsts[relyingParty]
 	if ok && token.Valid() {
 		// Re-use the cached XSTS token as possible.
+		s.xstsMu.Unlock()
 		return token, nil
 	}
-	var err error
-	token, err = s.requestXSTS(ctx, relyingParty)
+	s.xstsMu.Unlock()
+
+	token, err := s.requestXSTS(ctx, relyingParty)
 	if err != nil {
 		return nil, err
 	}
 	if !token.Valid() {
 		return nil, errors.New("xal/sisu: invalid XSTS token data")
+	}
+
+	s.xstsMu.Lock()
+	defer s.xstsMu.Unlock()
+	if cached, ok := s.xsts[relyingParty]; ok && cached.Valid() {
+		return cached, nil
 	}
 	s.xsts[relyingParty] = token
 	return token, nil
