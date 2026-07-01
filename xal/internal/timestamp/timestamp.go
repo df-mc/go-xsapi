@@ -24,7 +24,7 @@ func Update(header http.Header) {
 	if date == "" {
 		return
 	}
-	t, err := time.Parse(time.RFC1123, date)
+	t, err := http.ParseTime(date)
 	if err != nil || t.IsZero() {
 		return
 	}
