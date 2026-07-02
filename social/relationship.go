@@ -1,7 +1,9 @@
 package social
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -30,8 +32,34 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 // Unfollow removes an existing follow relationship with the user identified by XUID.
 // If no follow relationship exists, an error will be returned. Therefore, it is recommended
 // to check if the caller has an existing follow relationship with [Client.UserByXUID].
+//
+// Like [Client.Follow], it uses the legacy people endpoint: a DELETE mirrors
+// the PUT that established the relationship.
 func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	return c.deleteRelationships(ctx, xuid, "follows", opts)
+	requestURL := socialEndpoint.JoinPath(
+		"users",
+		"me",
+		"people",
+		"xuid("+xuid+")",
+	).String()
+
+	return c.doRelationship(ctx, http.MethodDelete, requestURL, opts, http.StatusOK, http.StatusNoContent)
+}
+
+// RemoveFollower removes the follow relationship the user identified by XUID
+// has towards the caller, so the user no longer follows the caller. It is
+// primarily useful for dropping followers whose privacy or enforcement
+// restrictions prevent a friendship from being established.
+func (c *Client) RemoveFollower(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
+	requestURL := socialEndpoint.JoinPath(
+		"users",
+		"me",
+		"people",
+		"follower",
+		"xuid("+xuid+")",
+	).String()
+
+	return c.doRelationship(ctx, http.MethodDelete, requestURL, opts, http.StatusOK, http.StatusNoContent)
 }
 
 // AddFriend creates or accepts a friend relationship with the user identified
@@ -75,6 +103,73 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 
 	return c.doRelationship(ctx, http.MethodDelete, requestURL.String(), opts, http.StatusOK, http.StatusCreated)
 }
+
+// BulkAddFriends creates or accepts friend relationships with all users
+// identified by the given XUIDs in a single request, and returns the XUIDs
+// that Xbox Live reports as updated. It behaves like [Client.AddFriend] for
+// each user, but a single bulk call avoids per-user rate limits when
+// accepting many pending requests at once.
+func (c *Client) BulkAddFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
+	requestURL := socialEndpoint.JoinPath(
+		"bulk",
+		"users",
+		"me",
+		"people",
+		"friends",
+		"v2",
+	)
+	q := requestURL.Query()
+	q.Set("method", "add")
+	requestURL.RawQuery = q.Encode()
+
+	body, err := json.Marshal(bulkFriendsRequest{XUIDs: xuids})
+	if err != nil {
+		return nil, fmt.Errorf("encode request body: %w", err)
+	}
+	req, err := internal.NewRequest(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(body), append(
+		opts,
+		socialContractVersion,
+		internal.RequestHeader("Accept", "application/json"),
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.RequestHeader("Cache-Control", "no-cache"),
+		internal.DefaultLanguage,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		var result bulkFriendsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, fmt.Errorf("decode response body: %w", err)
+		}
+		return result.UpdatedPeople, nil
+	default:
+		return nil, responseError(resp)
+	}
+}
+
+type (
+	// bulkFriendsRequest is the wire representation of a bulk friend mutation
+	// request body.
+	bulkFriendsRequest struct {
+		// XUIDs lists the XUIDs of the users whose friend relationships are mutated.
+		XUIDs []string `json:"xuids"`
+	}
+
+	// bulkFriendsResponse is the response body returned by the bulk friends
+	// endpoint.
+	bulkFriendsResponse struct {
+		// UpdatedPeople lists the XUIDs whose relationships were updated by the request.
+		UpdatedPeople []string `json:"updatedPeople"`
+	}
+)
 
 // doRelationship sends a relationship mutation request and converts non-success
 // responses into ResponseError values.

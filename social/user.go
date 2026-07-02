@@ -59,7 +59,7 @@ func (c *Client) Search(ctx context.Context, query string, opts ...internal.Requ
 // UserByXUID returns the [User] identified by the given XUID. An error is
 // returned if no user with that XUID is found.
 func (c *Client) UserByXUID(ctx context.Context, xuid string, opts ...internal.RequestOption) (u User, err error) {
-	users, err := c.users(ctx, "me", "xuids("+xuid+")", nil, opts)
+	users, err := c.users(ctx, "me", "xuids("+xuid+")", nil, PeopleListConfig{}, opts)
 	if err != nil {
 		return u, err
 	}
@@ -91,7 +91,7 @@ func (c *Client) UserByGamerTag(ctx context.Context, gamertag string, opts ...in
 func (c *Client) UsersByXUIDs(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]User, error) {
 	return c.users(ctx, "me", "batch", batchRequest{
 		XUIDs: xuids,
-	}, opts)
+	}, PeopleListConfig{}, opts)
 }
 
 // Friends returns the caller's friend list. Pending requests that have not
@@ -101,47 +101,81 @@ func (c *Client) UsersByXUIDs(ctx context.Context, xuids []string, opts ...inter
 //
 // Use [Client.FriendsOf] to retrieve the friend list of another user.
 func (c *Client) Friends(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "me", "friends", nil, opts)
+	return c.users(ctx, "me", "friends", nil, PeopleListConfig{}, opts)
 }
 
 // Followers returns users who follow the caller. Unlike [Client.Friends], this
 // includes one-way relationships that may not have been accepted as mutual
 // friends.
 func (c *Client) Followers(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "me", "followers", nil, opts)
+	return c.users(ctx, "me", "followers", nil, PeopleListConfig{}, opts)
 }
 
 // Following returns users the caller follows. Unlike [Client.Friends], this
 // includes one-way relationships that may not have been accepted as mutual
 // friends.
 func (c *Client) Following(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "me", "social", nil, opts)
+	return c.users(ctx, "me", "social", nil, PeopleListConfig{}, opts)
 }
 
 // FriendsOf returns the friend list of the user identified by the given XUID.
 // This can be used to retrieve the friend list of any user, not just the caller.
 // See [Client.Friends] for details on how Xbox Live friend relationships work.
 func (c *Client) FriendsOf(ctx context.Context, xuid string, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "xuid("+xuid+")", "friends", nil, opts)
+	return c.users(ctx, "xuid("+xuid+")", "friends", nil, PeopleListConfig{}, opts)
 }
 
 // IncomingFriendRequests returns the list of users who have sent the caller a
 // pending friend request.
 func (c *Client) IncomingFriendRequests(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "me", "friendRequests(received)", nil, opts)
+	return c.users(ctx, "me", "friendRequests(received)", nil, PeopleListConfig{}, opts)
 }
 
 // OutgoingFriendRequests returns the list of users to whom the caller has sent
 // a pending friend request.
 func (c *Client) OutgoingFriendRequests(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "me", "friendRequests(sent)", nil, opts)
+	return c.users(ctx, "me", "friendRequests(sent)", nil, PeopleListConfig{}, opts)
 }
 
 // Recommendations returns the list of users recommended to the caller by Xbox
 // Live. These correspond to the "Suggested Friends" section in the social
 // widget and are primarily composed of friends of the caller's existing friends.
 func (c *Client) Recommendations(ctx context.Context, opts ...internal.RequestOption) ([]User, error) {
-	return c.users(ctx, "me", "recommendations", nil, opts)
+	return c.users(ctx, "me", "recommendations", nil, PeopleListConfig{}, opts)
+}
+
+// PeopleList identifies a people group that can be listed from the PeopleHub
+// API with [Client.People].
+type PeopleList string
+
+const (
+	PeopleListFriends                PeopleList = "friends"
+	PeopleListFollowers              PeopleList = "followers"
+	PeopleListFollowing              PeopleList = "social"
+	PeopleListIncomingFriendRequests PeopleList = "friendRequests(received)"
+	PeopleListOutgoingFriendRequests PeopleList = "friendRequests(sent)"
+	PeopleListRecommendations        PeopleList = "recommendations"
+)
+
+// PeopleListConfig customises how a people list is retrieved from PeopleHub.
+type PeopleListConfig struct {
+	// Undecorated requests the list without any profile decorations. Only the
+	// base profile fields (XUID, gamertags, and relationship flags) are
+	// populated on the returned users. This significantly shrinks the response
+	// for large friend lists and matches how the vanilla social widget polls
+	// followers.
+	Undecorated bool
+	// ContractVersion overrides the 'X-Xbl-Contract-Version' header sent with
+	// the request. If zero, the default version 7 is used. Undecorated list
+	// polling is typically served with version 5.
+	ContractVersion int
+}
+
+// People returns the users in the given people list. It behaves like the
+// corresponding convenience method ([Client.Followers], [Client.Following],
+// ...), but the fetch can be customised with a [PeopleListConfig].
+func (c *Client) People(ctx context.Context, list PeopleList, conf PeopleListConfig, opts ...internal.RequestOption) ([]User, error) {
+	return c.users(ctx, "me", string(list), nil, conf, opts)
 }
 
 // users is the shared implementation for querying multiple users via the
@@ -149,16 +183,22 @@ func (c *Client) Recommendations(ctx context.Context, opts ...internal.RequestOp
 // API, and selector corresponds to the "people group". If postBody is non-nil,
 // the request is sent as a POST with postBody JSON-encoded in the request body.
 // Otherwise, a GET request is made.
-func (c *Client) users(ctx context.Context, perspective, selector string, postBody any, opts []internal.RequestOption) ([]User, error) {
+func (c *Client) users(ctx context.Context, perspective, selector string, postBody any, conf PeopleListConfig, opts []internal.RequestOption) ([]User, error) {
+	segments := []string{
+		"users",
+		perspective,
+		"people",
+		selector,
+	}
+	if !conf.Undecorated {
+		segments = append(segments, "decoration", decorations)
+	}
+	contractVersion := peopleHubContractVersion
+	if conf.ContractVersion > 0 {
+		contractVersion = internal.ContractVersion(strconv.Itoa(conf.ContractVersion))
+	}
 	var (
-		requestURL = peopleHubEndpoint.JoinPath(
-			"users",
-			perspective,
-			"people",
-			selector,
-			"decoration",
-			decorations,
-		).String()
+		requestURL = peopleHubEndpoint.JoinPath(segments...).String()
 
 		reqBody io.Reader
 		method  string
@@ -175,7 +215,7 @@ func (c *Client) users(ctx context.Context, perspective, selector string, postBo
 	}
 
 	req, err := internal.NewRequest(ctx, method, requestURL, reqBody, append(opts,
-		peopleHubContractVersion,
+		contractVersion,
 		internal.RequestHeader("Accept", "application/json"),
 		internal.DefaultLanguage,
 	))
