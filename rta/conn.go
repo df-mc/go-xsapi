@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -432,6 +433,7 @@ func (c *Conn) ensureWebSocket(ctx context.Context) (*websocket.Conn, error) {
 // triggers a reconnect. If the Conn was closed by the user via [Conn.Close],
 // no reconnect is attempted.
 func (c *Conn) read(conn *websocket.Conn) {
+	go c.ping(conn)
 	for {
 		var payload []json.RawMessage
 		if err := wsjson.Read(context.Background(), conn, &payload); err != nil {
@@ -455,6 +457,28 @@ func (c *Conn) read(conn *websocket.Conn) {
 		if err := c.handleMessage(conn, typ, payload[1:]); err != nil {
 			c.log.Error("error handling message", slog.Any("error", err))
 			continue
+		}
+	}
+}
+
+// ping sends periodic WebSocket pings to keep the connection alive.
+func (c *Conn) ping(conn *websocket.Conn) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !c.isCurrentConn(conn) {
+				return
+			}
+			ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
+			err := conn.Ping(ctx)
+			cancel()
+			if err != nil {
+				return
+			}
+		case <-c.ctx.Done():
+			return
 		}
 	}
 }
