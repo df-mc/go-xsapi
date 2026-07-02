@@ -23,37 +23,6 @@ func (c *Client) Activities(ctx context.Context, scid uuid.UUID, opts ...interna
 // The Service Configuration ID (SCID) identifies the game to query.
 // If xuids is nil, it returns all open multiplayer sessions for the SCID.
 func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids []string, opts ...internal.RequestOption) ([]ActivityHandle, error) {
-	// searchRequestPeople specifies whose perspective is used when searching
-	// for activity handles to multiplayer sessions.
-	type searchRequestPeople struct {
-		// SocialGroup filters the results to users within the specified social group.
-		// It can be "people" or "favorites".
-		SocialGroup string `json:"moniker,omitempty"`
-		// SocialGroupXUID is the XUID of the user to whom the social group applies.
-		// In most cases, this is the caller's own XUID, since most games send search
-		// requests from the player's own perspective.
-		SocialGroupXUID string `json:"monikerXuid,omitempty"`
-	}
-	type searchRequestOwners struct {
-		// XUIDs is a list that specifies user IDs to find all activities for.
-		XUIDs  []string            `json:"xuids,omitempty"`
-		People searchRequestPeople `json:"people,omitempty"`
-	}
-	// searchRequest represents the on-wire format used for searching
-	// activity handles to open multiplayer sessions in the directory.
-	type searchRequest struct {
-		// Type indicates the type for the request.
-		// For searchRequest, this is always "activity".
-		Type string `json:"type"`
-		// ServiceConfigID is the service configuration ID for this request.
-		// A Service Configuration ID (SCID) may be shared by various titles
-		// available on many platforms.
-		ServiceConfigID uuid.UUID `json:"scid"`
-		// Owner includes parameters used for querying activity handles
-		// for multiplayer sessions in the directory.
-		Owners searchRequestOwners `json:"owners"`
-	}
-
 	var (
 		requestURL = endpoint.JoinPath("handles/query")
 		result     struct {
@@ -61,17 +30,7 @@ func (c *Client) ActivitiesForUsers(ctx context.Context, scid uuid.UUID, xuids [
 		}
 	)
 	requestURL.RawQuery = "include=relatedInfo,customProperties"
-	if err := internal.Do(ctx, c.client, http.MethodPost, requestURL.String(), searchRequest{
-		Type:            "activity",
-		ServiceConfigID: scid,
-		Owners: searchRequestOwners{
-			XUIDs: xuids,
-			People: searchRequestPeople{
-				SocialGroup:     "people",
-				SocialGroupXUID: c.userInfo.XUID,
-			},
-		},
-	}, &result, append(opts,
+	if err := internal.Do(ctx, c.client, http.MethodPost, requestURL.String(), activitySearchRequest(scid, xuids, c.userInfo.XUID), &result, append(opts,
 		internal.RequestHeader("Content-Type", "application/json"),
 		internal.ContractVersion(contractVersion),
 	)); err != nil {
@@ -300,4 +259,56 @@ type ActivityHandleRelatedInfo struct {
 
 	// Visibility specifies the visibility of the multiplayer session.
 	Visibility string `json:"visibility"`
+}
+
+// searchRequestPeople specifies whose perspective is used when searching
+// for activity handles to multiplayer sessions.
+type searchRequestPeople struct {
+	// SocialGroup filters the results to users within the specified social group.
+	// It can be "people" or "favorites".
+	SocialGroup string `json:"moniker,omitempty"`
+	// SocialGroupXUID is the XUID of the user to whom the social group applies.
+	// In most cases, this is the caller's own XUID, since most games send search
+	// requests from the player's own perspective.
+	SocialGroupXUID string `json:"monikerXuid,omitempty"`
+}
+
+type searchRequestOwners struct {
+	// XUIDs is a list that specifies user IDs to find all activities for.
+	XUIDs []string `json:"xuids,omitempty"`
+	// People filters results to a social group. It must be nil when XUIDs is
+	// set: the directory rejects requests carrying both with 400 Bad Request.
+	People *searchRequestPeople `json:"people,omitempty"`
+}
+
+// searchRequest represents the on-wire format used for searching
+// activity handles to open multiplayer sessions in the directory.
+type searchRequest struct {
+	// Type indicates the type for the request.
+	// For searchRequest, this is always "activity".
+	Type string `json:"type"`
+	// ServiceConfigID is the service configuration ID for this request.
+	// A Service Configuration ID (SCID) may be shared by various titles
+	// available on many platforms.
+	ServiceConfigID uuid.UUID `json:"scid"`
+	// Owners includes parameters used for querying activity handles
+	// for multiplayer sessions in the directory.
+	Owners searchRequestOwners `json:"owners"`
+}
+
+// activitySearchRequest builds the handle search body, querying either the
+// given explicit xuids or, when none are given, the caller's social group.
+func activitySearchRequest(scid uuid.UUID, xuids []string, callerXUID string) searchRequest {
+	req := searchRequest{
+		Type:            "activity",
+		ServiceConfigID: scid,
+		Owners:          searchRequestOwners{XUIDs: xuids},
+	}
+	if len(xuids) == 0 {
+		req.Owners.People = &searchRequestPeople{
+			SocialGroup:     "people",
+			SocialGroupXUID: callerXUID,
+		}
+	}
+	return req
 }
