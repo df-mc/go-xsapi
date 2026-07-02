@@ -3,7 +3,11 @@ package sisu
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"errors"
+	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,6 +16,9 @@ import (
 
 	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
+	"github.com/df-mc/go-xsapi/v2/xal/xast"
+	"github.com/df-mc/go-xsapi/v2/xal/xasu"
+	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 	"golang.org/x/oauth2"
 )
 
@@ -88,6 +95,75 @@ func TestSessionDefaultHTTPClientHasTimeout(t *testing.T) {
 	session := (Config{}).New(staticMSATokenSource{}, nil)
 	if session.client != xal.ContextClient(context.Background()) {
 		t.Fatalf("session client = %p, want XAL default client %p", session.client, xal.ContextClient(context.Background()))
+	}
+}
+
+func TestXSTSTokenDoesNotHoldCacheLockDuringTokenRequest(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate proof key: %v", err)
+	}
+	validUntil := time.Now().Add(time.Hour)
+	var session *Session
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://xsts.auth.xboxlive.com/xsts/authorize" {
+			return nil, errors.New("unexpected request URL: " + req.URL.String())
+		}
+		if _, err := session.XSTSToken(req.Context(), defaultRelyingParty); err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"IssueInstant":"2026-01-01T00:00:00Z",
+				"NotAfter":"` + validUntil.Format(time.RFC3339) + `",
+				"Token":"playfab-xsts",
+				"DisplayClaims":{"xui":[{"uhs":"user"}]}
+			}`)),
+			Request: req,
+		}, nil
+	})}
+	session = (Config{}).New(staticMSATokenSource{}, &SessionConfig{
+		DeviceTokenSource: staticDeviceTokenSource{
+			token: &xasd.Token{
+				Token:    "device-token",
+				NotAfter: validUntil,
+			},
+			proofKey: key,
+		},
+		HTTPClient: client,
+	})
+	session.title = &xast.Token{
+		Token:    "title-token",
+		NotAfter: validUntil,
+	}
+	session.user = &xasu.Token{
+		Token:    "user-token",
+		NotAfter: validUntil,
+	}
+	session.xsts[defaultRelyingParty] = &xsts.Token{
+		Token:    "default-xsts",
+		NotAfter: validUntil,
+		DisplayClaims: xsts.DisplayClaims{UserInfo: []xsts.UserInfo{{
+			UserInfo: xasu.UserInfo{UserHash: "user"},
+		}}},
+	}
+
+	ctx := context.WithValue(context.Background(), xal.HTTPClient, client)
+	done := make(chan error, 1)
+	go func() {
+		_, err := session.XSTSToken(ctx, "https://b980a380.minecraft.playfabapi.com/")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("XSTSToken: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("XSTSToken deadlocked while requesting a non-default relying party")
 	}
 }
 
