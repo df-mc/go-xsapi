@@ -151,6 +151,16 @@ type InviteAttributes struct {
 	Context string `json:"context,omitempty"`
 }
 
+// SetActivity publishes an activity handle owned by the calling user for the
+// multiplayer session, making it visible to users searching for open sessions
+// from the caller's perspective. Sessions published with [PublishConfig]
+// already have one for the publishing user; additional members that join an
+// existing session (such as secondary accounts) must call this themselves for
+// their own social graph to see the session.
+func (s *Session) SetActivity(ctx context.Context) error {
+	return s.writeActivity(ctx)
+}
+
 // writeActivity publishes an activity handle for the multiplayer session.
 //
 // Publishing an activity handle makes the session visible to users who are
