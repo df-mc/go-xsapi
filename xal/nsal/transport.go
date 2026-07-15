@@ -55,30 +55,78 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.baseTransport().RoundTrip(req)
 	}
 
-	token, policy, err := t.TokenAndSignature(ctx, req.URL)
-	if err != nil {
-		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
+	var data []byte
+	if req.Body != nil {
+		var err error
+		data, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
 	}
 
-	req2 := req.Clone(ctx)
-	token.SetAuthHeader(req2)
+	return t.roundTripAuthenticated(req, exclusion, data)
+}
 
-	if req2.Header.Get("Signature") == "" && !exclusion.signature() {
-		var data []byte
+// roundTripAuthenticated signs and sends req, retrying once when Xbox reports
+// that the XSTS token expired before its advertised lifetime.
+func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerExclusionSet, data []byte) (*http.Response, error) {
+	ctx := req.Context()
+	for attempt := 0; ; attempt++ {
+		token, policy, err := t.TokenAndSignature(ctx, req.URL)
+		if err != nil {
+			return nil, fmt.Errorf("request XSTS token and signature: %w", err)
+		}
+
+		req2 := req.Clone(ctx)
 		if req.Body != nil {
-			signingBuffer := &bytes.Buffer{}
-			if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
-				signingBuffer.Reset()
-				return nil, fmt.Errorf("clone request body: %w", err)
+			req2.Body = io.NopCloser(bytes.NewReader(data))
+			req2.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(data)), nil
 			}
-			data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 		}
-		if err := policy.Sign(req2, data, t.Resolver.src.ProofKey(), timestamp.Now()); err != nil {
-			return nil, fmt.Errorf("sign request: %w", err)
+		token.SetAuthHeader(req2)
+
+		if req2.Header.Get("Signature") == "" && !exclusion.signature() {
+			if err := policy.Sign(req2, data, t.Resolver.src.ProofKey(), timestamp.Now()); err != nil {
+				return nil, fmt.Errorf("sign request: %w", err)
+			}
+		}
+
+		resp, err := t.baseTransport().RoundTrip(req2)
+		if err != nil {
+			return nil, err
+		}
+		invalidator, ok := t.Resolver.src.(xstsTokenInvalidator)
+		if attempt > 0 || !ok || !tokenExpired(resp) {
+			return resp, nil
+		}
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		invalidator.InvalidateXSTSToken(token)
+	}
+}
+
+// tokenExpired reports whether Xbox explicitly rejected an expired token.
+func tokenExpired(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		return false
+	}
+	for _, value := range resp.Header.Values("WWW-Authenticate") {
+		for part := range strings.SplitSeq(value, ",") {
+			part = strings.TrimSpace(strings.ToLower(part))
+			part = strings.TrimSpace(strings.TrimPrefix(part, "token "))
+			if part == "error='token_expired'" {
+				return true
+			}
 		}
 	}
+	return false
+}
 
-	return t.baseTransport().RoundTrip(req2)
+// xstsTokenInvalidator lets token sources discard a token rejected upstream.
+type xstsTokenInvalidator interface {
+	InvalidateXSTSToken(*xsts.Token)
 }
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
