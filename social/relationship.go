@@ -36,14 +36,7 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 // Like [Client.Follow], it uses the legacy people endpoint: a DELETE mirrors
 // the PUT that established the relationship.
 func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	requestURL := socialEndpoint.JoinPath(
-		"users",
-		"me",
-		"people",
-		"xuid("+xuid+")",
-	).String()
-
-	return c.doRelationship(ctx, http.MethodDelete, requestURL, opts, http.StatusOK, http.StatusNoContent)
+	return c.deleteRelationships(ctx, xuid, "follows", opts)
 }
 
 // RemoveFollower removes the follow relationship the user identified by XUID
@@ -104,12 +97,12 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 	return c.doRelationship(ctx, http.MethodDelete, requestURL.String(), opts, http.StatusOK, http.StatusCreated)
 }
 
-// BulkAddFriends creates or accepts friend relationships with all users
+// AddFriends creates or accepts friend relationships with all users
 // identified by the given XUIDs in a single request, and returns the XUIDs
 // that Xbox Live reports as updated. It behaves like [Client.AddFriend] for
 // each user, but a single bulk call avoids per-user rate limits when
 // accepting many pending requests at once.
-func (c *Client) BulkAddFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
+func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
 	requestURL := socialEndpoint.JoinPath(
 		"bulk",
 		"users",
