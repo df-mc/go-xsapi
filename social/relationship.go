@@ -161,6 +161,8 @@ type (
 	bulkFriendsResponse struct {
 		// UpdatedPeople lists the XUIDs whose relationships were updated by the request.
 		UpdatedPeople []string `json:"updatedPeople"`
+		// FailedToUpdate lists the XUIDs whose relationships couldn't be updated by the request.
+		FailedToUpdate []string `json:"failedToUpdate"`
 	}
 )
 
