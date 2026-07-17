@@ -57,6 +57,41 @@ type Conn struct {
 	cancel context.CancelCauseFunc
 }
 
+// Provider is an interface that provides methods to subscribe/unsubscribe with RTA service.
+type Provider interface {
+	Subscriber
+	Unsubscriber
+}
+
+// NewProvider returns a no-op implementation of Provider if the given [Conn] is nil,
+// otherwise it returns the connection itself directly.
+func NewProvider(conn *Conn) Provider {
+	if conn == nil {
+		return nopProvider{}
+	}
+	return conn
+}
+
+type nopProvider struct{}
+
+func (nopProvider) Subscribe(context.Context, *Subscription) error {
+	return ErrUnavailable
+}
+
+func (nopProvider) Unsubscribe(context.Context, *Subscription) error {
+	return ErrUnavailable
+}
+
+// Subscriber is the part of [rta.Conn] needed to create subscriptions.
+type Subscriber interface {
+	Subscribe(ctx context.Context, subscription *Subscription) error
+}
+
+// Unsubscriber is the part of [rta.Conn] needed to remove subscriptions.
+type Unsubscriber interface {
+	Unsubscribe(ctx context.Context, sub *Subscription) error
+}
+
 // Subscribe attempts to subscribe using a caller-owned Subscription. It is
 // useful for services that need to preserve the same subscription object across
 // reconnects.

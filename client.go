@@ -95,9 +95,9 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	}
 
 	// Initialise API clients, each scoped to their respective endpoint.
-	rta := lazyRTA{client: c}
-	c.mpsd = mpsd.NewWithRTASubscriber(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "mpsd"))
-	c.social = social.NewWithRTASubscriber(c.HTTPClient(), rta, rta, c.UserInfo(), c.Log().With("src", "social"))
+	r := lazyRTA{client: c}
+	c.mpsd = mpsd.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "mpsd"))
+	c.social = social.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	return c, nil
 }

@@ -15,26 +15,14 @@ import (
 )
 
 // New returns a new [Client] using the provided components.
-func New(client *http.Client, conn *rta.Conn, userInfo xsts.UserInfo, log *slog.Logger) *Client {
-	return NewWithRTASubscriber(client, internal.Subscriber(conn), internal.Unsubscriber(conn), userInfo, log)
-}
-
-// NewWithRTASubscriber returns a new [Client] using the provided components and
-// RTA subscription transport.
-func NewWithRTASubscriber(client *http.Client, subscriber RTASubscriber, unsubscriber RTAUnsubscriber, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+func New(client *http.Client, conn rta.Provider, userInfo xsts.UserInfo, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
-	if subscriber == nil {
-		subscriber = internal.Subscriber(nil)
-	}
-	if unsubscriber == nil {
-		unsubscriber = internal.Unsubscriber(nil)
-	}
 	c := &Client{
 		client:       client,
-		subscriber:   subscriber,
-		unsubscriber: unsubscriber,
+		subscriber:   conn,
+		unsubscriber: conn,
 		userInfo:     userInfo,
 		log:          log,
 
@@ -47,25 +35,15 @@ func NewWithRTASubscriber(client *http.Client, subscriber RTASubscriber, unsubsc
 	return c
 }
 
-// RTASubscriber is the part of an RTA connection needed to create MPSD
-// subscriptions.
-type RTASubscriber interface {
-	Subscribe(context.Context, *rta.Subscription) error
-}
-
-// RTAUnsubscriber is the part of an RTA connection needed to remove MPSD
-// subscriptions.
-type RTAUnsubscriber interface {
-	Unsubscribe(context.Context, *rta.Subscription) error
-}
-
 // Client is an API client for Xbox Live's MPSD (Multiplayer Session Directory) API.
 type Client struct {
-	client       *http.Client
-	subscriber   RTASubscriber
-	unsubscriber RTAUnsubscriber
-	userInfo     xsts.UserInfo
-	log          *slog.Logger
+	client *http.Client
+
+	subscriber   rta.Subscriber
+	unsubscriber rta.Unsubscriber
+
+	userInfo xsts.UserInfo
+	log      *slog.Logger
 
 	// subscription is the Real-Time Activity (RTA) subscription used to
 	// receive notifications about changes to the session.
