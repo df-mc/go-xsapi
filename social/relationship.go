@@ -1,7 +1,6 @@
 package social
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,10 +18,7 @@ import (
 // updated accordingly.
 func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
-		"users",
-		"me",
-		"people",
-		"xuid("+xuid+")",
+		"/users/xuid(" + c.userInfo.XUID + ")/people/xuid(" + xuid + ")",
 	).String()
 
 	// Unlike [Client.AddFriend], this request call returns 204 No Content.
@@ -32,11 +28,8 @@ func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.Reque
 // Unfollow removes an existing follow relationship with the user identified by XUID.
 // If no follow relationship exists, an error will be returned. Therefore, it is recommended
 // to check if the caller has an existing follow relationship with [Client.UserByXUID].
-//
-// Like [Client.Follow], it uses the legacy people endpoint: a DELETE mirrors
-// the PUT that established the relationship.
 func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	return c.deleteRelationships(ctx, xuid, "follows", opts)
+	return c.deleteRelationship(ctx, xuid, "follows", opts)
 }
 
 // RemoveFollower removes the follow relationship the user identified by XUID
@@ -45,13 +38,8 @@ func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.Req
 // restrictions prevent a friendship from being established.
 func (c *Client) RemoveFollower(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
-		"users",
-		"me",
-		"people",
-		"follower",
-		"xuid("+xuid+")",
+		"/users/xuid(" + c.userInfo.XUID + ")/people/follower/xuid(" + xuid + ")",
 	).String()
-
 	return c.doRelationship(ctx, http.MethodDelete, requestURL, opts, http.StatusOK, http.StatusNoContent)
 }
 
@@ -80,18 +68,18 @@ func (c *Client) AddFriend(ctx context.Context, xuid string, opts ...internal.Re
 // If the users are already friends, the friendship is terminated. To become
 // friends again, a new friend request must be sent and approved.
 func (c *Client) RemoveFriend(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	return c.deleteRelationships(ctx, xuid, "friends", opts)
+	return c.deleteRelationship(ctx, xuid, "friends", opts)
 }
 
-// deleteRelationships removes a specific type of relationship with the user
+// deleteRelationship removes a specific type of relationship with the user
 // identified by XUID. The relationships can be "friends" or "follows".
-func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships string, opts []internal.RequestOption) error {
+func (c *Client) deleteRelationship(ctx context.Context, xuid, relationship string, opts []internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
 		"/users/me/people/friends/v2",
 		"xuid("+xuid+")",
 	)
 	q := requestURL.Query()
-	q.Set("deleteRelationships", relationships)
+	q.Set("deleteRelationships", relationship)
 	requestURL.RawQuery = q.Encode()
 
 	return c.doRelationship(ctx, http.MethodDelete, requestURL.String(), opts, http.StatusOK, http.StatusCreated)
@@ -104,22 +92,13 @@ func (c *Client) deleteRelationships(ctx context.Context, xuid, relationships st
 // accepting many pending requests at once.
 func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
 	requestURL := socialEndpoint.JoinPath(
-		"bulk",
-		"users",
-		"me",
-		"people",
-		"friends",
-		"v2",
+		"/bulk/users/xuid(" + c.userInfo.XUID + ")/people/friends/v2",
 	)
 	q := requestURL.Query()
 	q.Set("method", "add")
 	requestURL.RawQuery = q.Encode()
 
-	body, err := json.Marshal(bulkFriendsRequest{XUIDs: xuids})
-	if err != nil {
-		return nil, fmt.Errorf("encode request body: %w", err)
-	}
-	req, err := internal.NewRequest(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(body), append(
+	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL.String(), bulkFriendsRequest{XUIDs: xuids}, append(
 		opts,
 		socialContractVersion,
 		internal.RequestHeader("Accept", "application/json"),
@@ -138,6 +117,44 @@ func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...interna
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
+		var result bulkFriendsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, fmt.Errorf("decode response body: %w", err)
+		}
+		return result.UpdatedPeople, nil
+	default:
+		return nil, responseError(resp)
+	}
+}
+
+// RemoveFriends removes or denies friend relationships with all users identified
+// by XUIDs.
+func (c *Client) RemoveFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
+	requestURL := socialEndpoint.JoinPath(
+		"/bulk/users/xuid(" + c.userInfo.XUID + ")/people/friends/v2",
+	)
+	q := requestURL.Query()
+	q.Set("method", "remove")
+	q.Set("deleteRelationships", "friends")
+
+	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL.String(), bulkFriendsRequest{XUIDs: xuids}, append(
+		opts,
+		socialContractVersion,
+		internal.RequestHeader("Accept", "application/json"),
+		internal.RequestHeader("Cache-Control", "no-cache"),
+		internal.DefaultLanguage,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
 		var result bulkFriendsResponse
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return nil, fmt.Errorf("decode response body: %w", err)
