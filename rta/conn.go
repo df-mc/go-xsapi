@@ -65,21 +65,27 @@ type Provider interface {
 
 // NewProvider returns a no-op implementation of Provider if the given [Conn] is nil,
 // otherwise it returns the connection itself directly.
-func NewProvider(conn *Conn) Provider {
-	if conn == nil {
-		return nopProvider{}
+func NewProvider(sub Subscriber, unsub Unsubscriber) Provider {
+	return &provider{sub, unsub}
+}
+
+type provider struct {
+	sub   Subscriber
+	unsub Unsubscriber
+}
+
+func (p provider) Subscribe(ctx context.Context, sub *Subscription) error {
+	if p.sub == nil {
+		return ErrUnavailable
 	}
-	return conn
+	return p.sub.Subscribe(ctx, sub)
 }
 
-type nopProvider struct{}
-
-func (nopProvider) Subscribe(context.Context, *Subscription) error {
-	return ErrUnavailable
-}
-
-func (nopProvider) Unsubscribe(context.Context, *Subscription) error {
-	return ErrUnavailable
+func (p provider) Unsubscribe(ctx context.Context, sub *Subscription) error {
+	if p.unsub == nil {
+		return ErrUnavailable
+	}
+	return p.unsub.Unsubscribe(ctx, sub)
 }
 
 // Subscriber is the part of [rta.Conn] needed to create subscriptions.

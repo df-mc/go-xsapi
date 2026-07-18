@@ -166,59 +166,6 @@ type (
 	}
 )
 
-// Block blocks the user identified by the given XUID.
-func (c *Client) Block(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	return c.doPrivacy(ctx, http.MethodPut, xuid, opts)
-}
-
-// Unblock unblocks the user identified by the given XUID.
-func (c *Client) Unblock(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
-	return c.doPrivacy(ctx, http.MethodDelete, xuid, opts)
-}
-
-// doPrivacy sends a block/unblock request to the Privacy API using the given XUID.
-func (c *Client) doPrivacy(ctx context.Context, method, xuid string, opts []internal.RequestOption) error {
-	requestURL := socialEndpoint.JoinPath("/users/xuid(" + xuid + ")/people/never").String()
-	req, err := internal.WithJSONBody(ctx, method, requestURL, map[string]any{
-		"Xuid": xuid,
-	}, append(opts,
-		socialContractVersion,
-		internal.DefaultLanguage,
-		internal.RequestHeader("Content-Type", "application/json"),
-		internal.RequestHeader("Accept", "application/json"),
-		internal.RequestHeader("Cache-Control", "no-cache"),
-	))
-	if err != nil {
-		return fmt.Errorf("make request: %w", err)
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return internal.UnexpectedStatusCode(resp)
-	}
-	return nil
-}
-
-var (
-	// privacyEndpoint is the base URL used to make requests to the Xbox Live Privacy API.
-	//
-	// Requests sent to this endpoint must include the 'X-Xbl-Contract-Version'
-	// header set to '3'. The privacyContractVersion request option can be also
-	// used for this purpose.
-	privacyEndpoint = &url.URL{
-		Scheme: "https",
-		Host:   "privacy.xboxlive.com",
-	}
-	// socialContractVersion is an [internal.RequestOption] that sets the
-	// 'X-Xbl-Contract-Version' header to '3' for requests made to the
-	// privacyEndpoint.
-	privacyContractVersion = internal.ContractVersion("1")
-)
-
 // doRelationship sends a relationship mutation request and converts non-success
 // responses into ResponseError values.
 func (c *Client) doRelationship(ctx context.Context, method, requestURL string, opts []internal.RequestOption, successCodes ...int) error {

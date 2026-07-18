@@ -30,7 +30,7 @@ func (c *Client) Subscribe(ctx context.Context, h SubscriptionHandler) (err erro
 	defer c.subscriptionMu.Unlock()
 
 	if !c.subscription.Active() {
-		if err := c.subscriber.Subscribe(ctx, c.subscription); err != nil {
+		if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
 			return err
 		}
 	}

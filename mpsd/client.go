@@ -20,11 +20,10 @@ func New(client *http.Client, conn rta.Provider, userInfo xsts.UserInfo, log *sl
 		log = slog.Default()
 	}
 	c := &Client{
-		client:       client,
-		subscriber:   conn,
-		unsubscriber: conn,
-		userInfo:     userInfo,
-		log:          log,
+		client:   client,
+		rta:      rta.NewProvider(conn, conn),
+		userInfo: userInfo,
+		log:      log,
 
 		sessions: make(map[string]*Session),
 	}
@@ -39,8 +38,7 @@ func New(client *http.Client, conn rta.Provider, userInfo xsts.UserInfo, log *sl
 type Client struct {
 	client *http.Client
 
-	subscriber   rta.Subscriber
-	unsubscriber rta.Unsubscriber
+	rta rta.Provider
 
 	userInfo xsts.UserInfo
 	log      *slog.Logger
@@ -96,7 +94,7 @@ func (c *Client) Close() error {
 // It is recommended to use the client-set's [github.com/df-mc/go-xsapi.Client.CloseContext] method.
 func (c *Client) CloseContext(ctx context.Context) error {
 	if c.subscription.Active() {
-		if err := c.unsubscriber.Unsubscribe(ctx, c.subscription); err != nil {
+		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("mpsd: unsubscribe: %w", err)
 		}
 	}

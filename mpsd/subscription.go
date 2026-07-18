@@ -23,7 +23,7 @@ func (c *Client) subscribe(ctx context.Context) (uuid.UUID, error) {
 	c.subscribeMu.Lock()
 	defer c.subscribeMu.Unlock()
 
-	if err := c.subscriber.Subscribe(ctx, c.subscription); err != nil {
+	if err := c.rta.Subscribe(ctx, c.subscription); err != nil {
 		return uuid.Nil, fmt.Errorf("mpsd: subscribe to %q: %w", resourceURI, err)
 	}
 	if data := c.subscriptionData.Load(); data != nil && data.ConnectionID != uuid.Nil {

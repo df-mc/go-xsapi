@@ -523,7 +523,7 @@ func TestSubscribeSerializesInFlightSubscribe(t *testing.T) {
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	client := NewWithRTASubscriber(nil, subscriber, nil, xsts.UserInfo{}, nil)
+	client := New(nil, rta.NewProvider(subscriber, nil), xsts.UserInfo{}, nil)
 
 	firstDone := make(chan error, 1)
 	go func() {
@@ -610,7 +610,7 @@ func TestSessionConnectionReconcileSerializesWithReconnect(t *testing.T) {
 
 	client := &Client{
 		client:       httpClient,
-		subscriber:   subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }),
+		rta:          rta.NewProvider(subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }), nil),
 		subscription: rta.NewSubscription(resourceURI, nil),
 		sessions:     map[string]*Session{},
 	}
@@ -734,7 +734,7 @@ func TestSubscriptionHandlerCallbackRunsAfterReconcileLock(t *testing.T) {
 
 	client := &Client{
 		client:       httpClient,
-		subscriber:   subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }),
+		rta:          rta.NewProvider(subscriberFunc(func(context.Context, *rta.Subscription) error { return nil }), nil),
 		subscription: rta.NewSubscription(resourceURI, nil),
 		sessions:     map[string]*Session{},
 	}

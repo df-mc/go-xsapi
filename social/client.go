@@ -18,11 +18,10 @@ func New(client *http.Client, conn rta.Provider, userInfo xsts.UserInfo, log *sl
 		log = slog.Default()
 	}
 	c := &Client{
-		client:       client,
-		subscriber:   conn,
-		unsubscriber: conn,
-		userInfo:     userInfo,
-		log:          log,
+		client:   client,
+		rta:      rta.NewProvider(conn, conn),
+		userInfo: userInfo,
+		log:      log,
 	}
 	c.subscription = rta.NewSubscription(socialEndpoint.JoinPath(
 		"users",
@@ -35,28 +34,16 @@ func New(client *http.Client, conn rta.Provider, userInfo xsts.UserInfo, log *sl
 	return c
 }
 
-// RTASubscriber is the part of an RTA connection needed to create Social
-// subscriptions.
-type RTASubscriber interface {
-	Subscribe(context.Context, *rta.Subscription) error
-}
-
-// RTAUnsubscriber is the part of an RTA connection needed to remove Social
-// subscriptions.
-type RTAUnsubscriber interface {
-	Unsubscribe(context.Context, *rta.Subscription) error
-}
-
 // Client is an API client for Xbox Live Social APIs. It communicates
 // with two endpoints available on Xbox Live:
 //   - social.xboxlive.com for relationship management, such as adding or removing friends.
 //   - peoplehub.xboxlive.com for querying user profiles.
 type Client struct {
-	client       *http.Client
-	subscriber   rta.Subscriber
-	unsubscriber rta.Unsubscriber
-	userInfo     xsts.UserInfo
-	log          *slog.Logger
+	client *http.Client
+	rta    rta.Provider
+
+	userInfo xsts.UserInfo
+	log      *slog.Logger
 
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
@@ -85,7 +72,7 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	defer c.subscriptionMu.Unlock()
 
 	if c.subscription.Active() {
-		if err := c.unsubscriber.Unsubscribe(ctx, c.subscription); err != nil {
+		if err := c.rta.Unsubscribe(ctx, c.subscription); err != nil {
 			return fmt.Errorf("xsapi/social: unsubscribe RTA: %w", err)
 		}
 	}
