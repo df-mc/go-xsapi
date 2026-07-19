@@ -136,6 +136,7 @@ func (c *Client) RemoveFriends(ctx context.Context, xuids []string, opts ...inte
 	q := requestURL.Query()
 	q.Set("method", "remove")
 	q.Set("deleteRelationships", "friends")
+	requestURL.RawQuery = q.Encode()
 
 	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL.String(), bulkFriendsRequest{XUIDs: xuids}, append(
 		opts,
