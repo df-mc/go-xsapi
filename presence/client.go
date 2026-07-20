@@ -159,20 +159,7 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 }
 
 // Update updates the presence of the authenticated user's current title.
-func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (UpdateResult, error) {
-	resp, err := c.update(ctx, request, opts)
-	if err != nil {
-		return UpdateResult{}, err
-	}
-	_ = resp.Body.Close()
-	return UpdateResult{
-		HeartbeatAfter: heartbeatAfter(resp.Header.Get("X-Heartbeat-After")),
-	}, nil
-}
-
-// update sends the shared title-presence update request and leaves the
-// successful response body open for callers that need response metadata.
-func (c *Client) update(ctx context.Context, request TitleRequest, opts []internal.RequestOption) (*http.Response, error) {
+func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (*UpdateResult, error) {
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
@@ -192,12 +179,15 @@ func (c *Client) update(ctx context.Context, request TitleRequest, opts []intern
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		err := internal.UnexpectedStatusCode(resp)
-		_ = resp.Body.Close()
-		return nil, err
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		return &UpdateResult{
+			HeartbeatAfter: heartbeatAfter(resp.Header.Get("X-Heartbeat-After")),
+		}, nil
+	default:
+		return nil, internal.UnexpectedStatusCode(resp)
 	}
-	return resp, nil
 }
 
 // heartbeatAfter parses the X-Heartbeat-After header value as seconds.
