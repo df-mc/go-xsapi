@@ -18,7 +18,7 @@ import (
 // updated accordingly.
 func (c *Client) Follow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
-		"/users/xuid(" + c.userInfo.XUID + ")/people/xuid(" + xuid + ")",
+		"/users/me/people/xuid(" + xuid + ")",
 	).String()
 
 	// Unlike [Client.AddFriend], this request call returns 204 No Content.
@@ -38,7 +38,7 @@ func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.Req
 // restrictions prevent a friendship from being established.
 func (c *Client) RemoveFollower(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
-		"/users/xuid(" + c.userInfo.XUID + ")/people/follower/xuid(" + xuid + ")",
+		"/users/me/people/follower/xuid(" + xuid + ")",
 	).String()
 	return c.doRelationship(ctx, http.MethodDelete, requestURL, opts, http.StatusOK, http.StatusNoContent)
 }
@@ -92,7 +92,7 @@ func (c *Client) deleteRelationship(ctx context.Context, xuid, relationship stri
 // accepting many pending requests at once.
 func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
 	requestURL := socialEndpoint.JoinPath(
-		"/bulk/users/xuid(" + c.userInfo.XUID + ")/people/friends/v2",
+		"/bulk/users/me/people/friends/v2",
 	)
 	q := requestURL.Query()
 	q.Set("method", "add")
@@ -131,7 +131,7 @@ func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...interna
 // by XUIDs.
 func (c *Client) RemoveFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
 	requestURL := socialEndpoint.JoinPath(
-		"/bulk/users/xuid(" + c.userInfo.XUID + ")/people/friends/v2",
+		"/bulk/users/me/people/friends/v2",
 	)
 	q := requestURL.Query()
 	q.Set("method", "remove")
