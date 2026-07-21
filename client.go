@@ -14,6 +14,7 @@ import (
 
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/mpsd"
+	"github.com/df-mc/go-xsapi/v2/notification"
 	"github.com/df-mc/go-xsapi/v2/presence"
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/social"
@@ -99,6 +100,7 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	c.mpsd = mpsd.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "mpsd"))
 	c.social = social.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
+	c.notification = notification.New(c.HTTPClient(), c.UserInfo(), c.Log())
 	return c, nil
 }
 
@@ -181,9 +183,10 @@ type Client struct {
 	rtaDialing chan struct{}
 	rta        *rta.Conn
 
-	mpsd     *mpsd.Client
-	social   *social.Client
-	presence *presence.Client
+	mpsd         *mpsd.Client
+	social       *social.Client
+	presence     *presence.Client
+	notification *notification.Client
 
 	closeMu  sync.Mutex
 	closed   atomic.Bool
@@ -286,6 +289,11 @@ func (c *Client) MPSD() *mpsd.Client {
 // Social returns the API client for the Xbox Live Social APIs.
 func (c *Client) Social() *social.Client {
 	return c.social
+}
+
+// Notification returns the API client for the Xbox Live Notification API.
+func (c *Client) Notification() *notification.Client {
+	return c.notification
 }
 
 // Presence returns the API client for the Xbox Live Presence API.
