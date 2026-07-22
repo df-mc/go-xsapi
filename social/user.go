@@ -144,6 +144,11 @@ func (c *Client) Recommendations(ctx context.Context, opts ...internal.RequestOp
 	return c.users(ctx, "me", "recommendations", nil, PeopleListConfig{}, opts)
 }
 
+// PlayedTitle returns the list of friends who have played the title identified by the given ID.
+func (c *Client) PlayedTitle(ctx context.Context, titleID string, opts ...internal.RequestOption) ([]User, error) {
+	return c.users(ctx, "me", "playedTitle("+titleID+")", nil, PeopleListConfig{}, opts)
+}
+
 // PeopleList identifies a people group that can be listed from the PeopleHub
 // API with [Client.People].
 type PeopleList string
