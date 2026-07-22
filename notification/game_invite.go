@@ -6,7 +6,10 @@ type (
 	// GameInvite represents a notification received when the caller is invited
 	// to a game. The caller can join the multiplayer session by using the HandleID
 	// contained in its Actions.
-	GameInvite = notification[GameInviteAction]
+	GameInvite struct {
+		notification[GameInviteAction]
+		Options GameInviteOptions `json:"NotificationOptions"`
+	}
 
 	// GameInviteAction represents an action that can be taken on a GameInvite
 	// notification.
@@ -15,6 +18,14 @@ type (
 
 		// LaunchInfo contains information for launching/activating the title with the invite.
 		LaunchInfo GameInviteLaunchInfo
+	}
+
+	// GameInviteOptions represents the options for a GameInvite notification.
+	GameInviteOptions struct {
+		// Location describes the title ta which the invite could be accepted.
+		Location Location
+		// Platforms lists the platforms supported by the game.
+		Platforms []string
 	}
 
 	// GameInviteLaunchInfo holds the parameter required to launch the title

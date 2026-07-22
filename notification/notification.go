@@ -234,6 +234,30 @@ func (n *notification[A]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// Location represents the location at which an action would be invoked.
+type Location struct {
+	// PackageFamilyName is the package family name of the title.
+	// It is only populated when [Location.Type] is [LocationTypeTitle].
+	PackageFamilyName string `json:"Pfn"`
+	// DisplayName is the display name of the title.
+	// It is only populated when [Location.Type] is [LocationTypeTitle].
+	DisplayName string
+
+	// Name is the name of the location.
+	Name string
+	// ID is the unique ID assigned to this Location.
+	// When [Location.Type] is [LocationTypeTitle], this represents the title ID.
+	ID string `json:"Id"`
+	// Type indicates the type of the location.
+	// It is one of the constants below.
+	Type int
+}
+
+const (
+	// LocationTypeTitle indicates that the Location is a title.
+	LocationTypeTitle = 3
+)
+
 // Action represents an action that can be taken on a notification.
 type Action struct {
 	// Actor is the user associated with this action.
