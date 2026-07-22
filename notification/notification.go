@@ -239,9 +239,9 @@ type Location struct {
 	// PackageFamilyName is the package family name of the title.
 	// It is only populated when [Location.Type] is [LocationTypeTitle].
 	PackageFamilyName string `json:"Pfn"`
-	// DisplayName is the display name of the title.
+	// DisplayImage is the URL used as the thumbnail for the title.
 	// It is only populated when [Location.Type] is [LocationTypeTitle].
-	DisplayName string
+	DisplayImage string
 
 	// Name is the name of the location.
 	Name string
