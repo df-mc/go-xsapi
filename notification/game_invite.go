@@ -60,11 +60,11 @@ type (
 // UnmarshalJSON decodes the given JSON data into GameInviteLaunchInfo.
 func (i *GameInviteLaunchInfo) UnmarshalJSON(b []byte) error {
 	type Alias GameInviteLaunchInfo
-	var data struct {
+	data := struct {
 		*Alias
 		// GameTypes contains an escaped-JSON struct that can be decoded to [mpsd.GameTypes].
 		GameTypes string `json:"gameTypes"`
-	}
+	}{Alias: (*Alias)(i)}
 	if err := json.Unmarshal(b, &data); err != nil {
 		return err
 	}
