@@ -33,6 +33,27 @@ func TestOAuth2ClientPreservesConfiguredTimeout(t *testing.T) {
 	}
 }
 
+func TestDeviceAccessTokenPollsOncePerInterval(t *testing.T) {
+	var calls int
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return response(http.StatusBadRequest, `{"error":"authorization_pending"}`), nil
+	})}
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), oauth2.HTTPClient, client), 1500*time.Millisecond)
+	defer cancel()
+
+	_, err := (Config{ClientID: "client"}).DeviceAccessToken(ctx, &oauth2.DeviceAuthResponse{
+		DeviceCode: "device-code",
+		Interval:   1,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("DeviceAccessToken() error = %v, want context deadline exceeded", err)
+	}
+	if calls != 1 {
+		t.Fatalf("token requests = %d, want one request per polling interval", calls)
+	}
+}
+
 func TestTokenSourceRefreshErrorIncludesOAuthBody(t *testing.T) {
 	base := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return response(http.StatusBadRequest, `{"error":"invalid_grant","error_description":"refresh expired"}`), nil
