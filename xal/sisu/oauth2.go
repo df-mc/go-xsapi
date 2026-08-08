@@ -63,6 +63,7 @@ func (conf Config) DeviceAccessToken(ctx context.Context, da *oauth2.DeviceAuthR
 func (conf Config) oauth2() *oauth2.Config {
 	endpoint := microsoft.LiveConnectEndpoint
 	endpoint.DeviceAuthURL = "https://login.live.com/oauth20_connect.srf"
+	endpoint.AuthStyle = oauth2.AuthStyleInParams
 
 	return &oauth2.Config{
 		Endpoint: endpoint,
