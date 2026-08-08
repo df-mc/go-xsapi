@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -23,8 +24,9 @@ func New(client *http.Client, userInfo xsts.UserInfo) *Client {
 
 // Client implements API client for Xbox Live Presence API.
 type Client struct {
-	client   *http.Client
-	userInfo xsts.UserInfo
+	client        *http.Client
+	userInfo      xsts.UserInfo
+	shouldCleanup atomic.Bool
 }
 
 // Current returns the caller's current presence. Unlike [PresenceByXUID],
@@ -104,7 +106,10 @@ func (c *Client) Close() error {
 // In most cases, [github.com/df-mc/go-xsapi.Client.CloseContext] should be preferred
 // over calling this method directly.
 func (c *Client) CloseContext(ctx context.Context) error {
-	return c.Remove(ctx)
+	if c.shouldCleanup.Load() {
+		return c.Remove(ctx)
+	}
+	return nil
 }
 
 // BatchRequest describes the on-wire format for a batch presence query.
@@ -150,12 +155,16 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 	).String()
 
 	// This request is a DELETE call but returns 200 OK instead of 204 No Content.
-	return internal.Do(ctx, c.client, http.MethodDelete, requestURL, nil, nil, append(opts,
+	if err := internal.Do(ctx, c.client, http.MethodDelete, requestURL, nil, nil, append(opts,
 		contractVersion,
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.RequestHeader("Content-Type", "application/json"),
 		internal.DefaultLanguage,
-	))
+	)); err != nil {
+		return err
+	}
+	c.shouldCleanup.Store(false)
+	return nil
 }
 
 // Update updates the presence of the authenticated user's current title.
@@ -182,6 +191,7 @@ func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...inter
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
+		c.shouldCleanup.Store(true)
 		return &UpdateResult{
 			HeartbeatAfter: heartbeatAfter(resp.Header.Get("X-Heartbeat-After")),
 		}, nil
