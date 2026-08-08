@@ -68,8 +68,10 @@ func (i *GameInviteLaunchInfo) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &data); err != nil {
 		return err
 	}
-	if err := json.Unmarshal([]byte(data.GameTypes), &i.GameTypes); err != nil {
-		return fmt.Errorf("notification: decode GameInviteLaunchInfo.GameTypes: %w", err)
+	if data.GameTypes != "" {
+		if err := json.Unmarshal([]byte(data.GameTypes), &i.GameTypes); err != nil {
+			return fmt.Errorf("notification: decode GameInviteLaunchInfo.GameTypes: %w", err)
+		}
 	}
 	if i.GameTypes == nil {
 		i.GameTypes = make(map[string]mpsd.GameType)

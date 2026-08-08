@@ -63,8 +63,8 @@ type Provider interface {
 	Unsubscriber
 }
 
-// NewProvider returns a no-op implementation of Provider if the given [Conn] is nil,
-// otherwise it returns the connection itself directly.
+// NewProvider returns a Provider that dispatches to sub and unsub. Operations
+// whose component is nil fail with [ErrUnavailable].
 func NewProvider(sub Subscriber, unsub Unsubscriber) Provider {
 	return &provider{sub, unsub}
 }
@@ -102,6 +102,11 @@ type Unsubscriber interface {
 // useful for services that need to preserve the same subscription object across
 // reconnects.
 func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
+	// A nil Conn reports ErrUnavailable so that a nil *Conn passed to a
+	// Provider behaves like a missing connection instead of panicking.
+	if c == nil {
+		return ErrUnavailable
+	}
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
@@ -173,6 +178,10 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 // Unsubscribe attempts to unsubscribe with a Subscription associated with an ID, with
 // the [context.Context] to be used during the handshake. An error may be returned.
 func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
+	// See Subscribe for why a nil Conn is tolerated.
+	if c == nil {
+		return ErrUnavailable
+	}
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}

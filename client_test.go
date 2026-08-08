@@ -136,19 +136,28 @@ func TestClientConfigNewRejectsInvalidRTAMode(t *testing.T) {
 func TestClientCloseContextRetriesAfterSubclientFailure(t *testing.T) {
 	userInfo := xsts.UserInfo{XUID: "2533274799999999"}
 	presenceErr := errors.New("presence remove failed")
-	var requests atomic.Int32
+	var removes atomic.Int32
 	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requests.Add(1)
-		if req.Method != http.MethodDelete {
-			t.Fatalf("request method = %s, want DELETE", req.Method)
+		switch req.Method {
+		case http.MethodPost:
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+		case http.MethodDelete:
+			removes.Add(1)
+			return nil, presenceErr
+		default:
+			return nil, fmt.Errorf("unexpected request method %s", req.Method)
 		}
-		return nil, presenceErr
 	})}
 
 	client := &Client{
 		mpsd:     mpsd.New(httpClient, nil, userInfo, nil),
 		social:   social.New(httpClient, nil, userInfo, nil),
 		presence: presence.New(httpClient, userInfo),
+	}
+
+	// Presence cleanup only runs on close after a successful update.
+	if _, err := client.Presence().Update(context.Background(), presence.TitleRequest{}); err != nil {
+		t.Fatalf("presence update: %v", err)
 	}
 
 	if err := client.CloseContext(context.Background()); !errors.Is(err, presenceErr) {
@@ -161,7 +170,7 @@ func TestClientCloseContextRetriesAfterSubclientFailure(t *testing.T) {
 	if err := client.CloseContext(context.Background()); !errors.Is(err, presenceErr) {
 		t.Fatalf("second close error = %v, want %v", err, presenceErr)
 	}
-	if got := requests.Load(); got != 2 {
+	if got := removes.Load(); got != 2 {
 		t.Fatalf("presence close attempts = %d, want 2", got)
 	}
 }

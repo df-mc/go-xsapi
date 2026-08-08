@@ -17,6 +17,9 @@ import (
 
 // New returns a Client using the given components.
 func New(client *http.Client, userInfo xsts.UserInfo, log *slog.Logger) *Client {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Client{
 		client:   client,
 		userInfo: userInfo,
@@ -64,6 +67,9 @@ func (c *Client) Inbox(ctx context.Context, filter InboxFilter, opts ...internal
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, internal.UnexpectedStatusCode(resp)
+	}
 
 	var result struct {
 		Items []json.RawMessage `json:"items"`
