@@ -147,6 +147,9 @@ type Session struct {
 	xsts map[string]*xsts.Token
 	// xstsMu guards xsts tokens from concurrent read-write access.
 	xstsMu sync.Mutex
+	// xstsGeneration changes whenever a relying party rejects a token. Token
+	// acquisitions use it to avoid restoring a token fetched before invalidation.
+	xstsGeneration uint64
 
 	// resp is the last known response for SISU authorization request.
 	// It contains title, user, and an XSTS token that relies on the
@@ -242,30 +245,73 @@ func (s *Session) Snapshot() *Snapshot {
 //
 // XSTS tokens are cached per relying party and reused until expiration.
 func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Token, error) {
-	s.xstsMu.Lock()
-	token, ok := s.xsts[relyingParty]
-	if ok && token.Valid() {
-		// Re-use the cached XSTS token as possible.
+	return s.xstsToken(ctx, relyingParty, s.requestXSTS)
+}
+
+// xstsToken avoids caching an acquisition that overlaps an invalidation.
+func (s *Session) xstsToken(ctx context.Context, relyingParty string, request func(context.Context, string) (*xsts.Token, error)) (*xsts.Token, error) {
+	for {
+		s.xstsMu.Lock()
+		token, ok := s.xsts[relyingParty]
+		if ok && token.Valid() {
+			// Re-use the cached XSTS token as possible.
+			s.xstsMu.Unlock()
+			return token, nil
+		}
+		generation := s.xstsGeneration
+		s.xstsMu.Unlock()
+
+		token, err := request(ctx, relyingParty)
+		if err != nil {
+			return nil, err
+		}
+		if !token.Valid() {
+			return nil, errors.New("xal/sisu: invalid XSTS token data")
+		}
+
+		s.xstsMu.Lock()
+		if cached, ok := s.xsts[relyingParty]; ok && cached.Valid() {
+			s.xstsMu.Unlock()
+			return cached, nil
+		}
+		if s.xstsGeneration != generation {
+			s.xstsMu.Unlock()
+			continue
+		}
+		s.xsts[relyingParty] = token
 		s.xstsMu.Unlock()
 		return token, nil
 	}
-	s.xstsMu.Unlock()
+}
 
-	token, err := s.requestXSTS(ctx, relyingParty)
-	if err != nil {
-		return nil, err
-	}
-	if !token.Valid() {
-		return nil, errors.New("xal/sisu: invalid XSTS token data")
+// InvalidateXSTSToken removes a rejected XSTS token from the session caches if
+// it has not already been replaced. Xbox services may invalidate a token before
+// its signed NotAfter time.
+func (s *Session) InvalidateXSTSToken(rejected *xsts.Token) {
+	if rejected == nil {
+		return
 	}
 
+	// Keep both caches behind one invalidation boundary. Otherwise a default-RP
+	// acquisition can observe the new generation while still reusing s.resp.
 	s.xstsMu.Lock()
+	s.respMu.Lock()
+	defer s.respMu.Unlock()
 	defer s.xstsMu.Unlock()
-	if cached, ok := s.xsts[relyingParty]; ok && cached.Valid() {
-		return cached, nil
+	s.xstsGeneration++
+
+	for relyingParty, token := range s.xsts {
+		if sameXSTSToken(token, rejected) {
+			delete(s.xsts, relyingParty)
+		}
 	}
-	s.xsts[relyingParty] = token
-	return token, nil
+	if s.resp != nil && sameXSTSToken(s.resp.AuthorizationToken, rejected) {
+		s.resp = nil
+	}
+}
+
+func sameXSTSToken(a, b *xsts.Token) bool {
+	return a != nil && b != nil && a.Token == b.Token
 }
 
 // requestXSTS obtains a new XSTS token for the relying party.

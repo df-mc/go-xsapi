@@ -70,6 +70,98 @@ func TestTransportRoundTripSignsRequest(t *testing.T) {
 	}
 }
 
+func TestTransportRoundTripWithNilResolverReturnsError(t *testing.T) {
+	transport := &Transport{}
+	req, err := http.NewRequest(http.MethodGet, "https://multiplayer.minecraft.net/authentication", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	_, err = transport.RoundTrip(req)
+	if err == nil || !strings.Contains(err.Error(), "xal/nsal: nil Resolver") {
+		t.Fatalf("RoundTrip error = %v, want nil Resolver error", err)
+	}
+}
+
+func TestTransportRoundTripRefreshesExpiredXSTSToken(t *testing.T) {
+	key := mustGenerateKey(t)
+	stale := authorizationToken("stale")
+	fresh := authorizationToken("fresh")
+	src := &refreshingTransportTokenSource{
+		transportTokenSource: transportTokenSource{token: stale, proofKey: key},
+		fresh:                fresh,
+	}
+	firstResponseBody := &trackingBody{ReadCloser: http.NoBody}
+	var requests int
+	transport := &Transport{
+		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests++
+			body, err := io.ReadAll(req.Body)
+			if err != nil || string(body) != "payload" {
+				t.Fatalf("request %d body = %q, err = %v", requests, body, err)
+			}
+			if requests == 1 {
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Header:     http.Header{"Www-Authenticate": {"Token error='token_expired'"}},
+					Body:       firstResponseBody,
+				}, nil
+			}
+			if requests != 2 {
+				t.Fatalf("unexpected request %d", requests)
+			}
+			if req.GetBody == nil {
+				t.Fatal("retried request is not replayable")
+			}
+			if got := req.Header.Get("Authorization"); got != "XBL3.0 x=uhs;fresh" {
+				t.Fatalf("Authorization = %q, want fresh token", got)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		}),
+		Resolver: testResolver(src),
+	}
+
+	req, err := http.NewRequest(http.MethodPut, "https://multiplayer.minecraft.net/authentication", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.GetBody = nil
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if src.invalidated != stale {
+		t.Fatal("invalidated token was not the rejected token")
+	}
+	if !firstResponseBody.closed {
+		t.Fatal("first response body was not closed before retry")
+	}
+}
+
+func TestTokenExpired(t *testing.T) {
+	for name, tc := range map[string]struct {
+		headers []string
+		want    bool
+	}{
+		"first parameter": {[]string{"Token error='token_expired'"}, true},
+		"no comma space":  {[]string{"Token realm='xboxlive.com',error='token_expired'"}, true},
+		"later header":    {[]string{"Token error='token_required'", "Token error='token_expired'"}, true},
+		"other error":     {[]string{"Token error='token_required'"}, false},
+		"provider error":  {[]string{"Token provider_error='token_expired'"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{"Www-Authenticate": tc.headers}}
+			if got := tokenExpired(resp); got != tc.want {
+				t.Fatalf("tokenExpired = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTransportRoundTripUsesExistingAuthorization(t *testing.T) {
 	src := &transportTokenSource{token: authorizationToken("unexpected")}
 	transport := &Transport{
@@ -191,6 +283,19 @@ type transportTokenSource struct {
 	token        *xsts.Token
 	proofKey     *ecdsa.PrivateKey
 	err          error
+}
+
+type refreshingTransportTokenSource struct {
+	transportTokenSource
+	fresh       *xsts.Token
+	invalidated *xsts.Token
+}
+
+func (src *refreshingTransportTokenSource) InvalidateXSTSToken(token *xsts.Token) {
+	src.invalidated = token
+	if src.token == token {
+		src.token = src.fresh
+	}
 }
 
 func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {

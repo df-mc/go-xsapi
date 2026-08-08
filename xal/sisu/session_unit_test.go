@@ -167,6 +167,78 @@ func TestXSTSTokenDoesNotHoldCacheLockDuringTokenRequest(t *testing.T) {
 	}
 }
 
+func TestSessionInvalidatesOnlyRejectedXSTSToken(t *testing.T) {
+	rejected := &xsts.Token{Token: "rejected"}
+	replacement := &xsts.Token{Token: "replacement"}
+	session := (Config{}).New(staticMSATokenSource{}, nil)
+	session.xsts[defaultRelyingParty] = rejected
+	session.resp = &authorizationResponse{AuthorizationToken: rejected}
+
+	session.InvalidateXSTSToken(rejected)
+	if _, ok := session.xsts[defaultRelyingParty]; ok {
+		t.Fatal("rejected token remained cached")
+	}
+	if session.resp != nil {
+		t.Fatal("response containing rejected token remained cached")
+	}
+
+	session.xsts[defaultRelyingParty] = replacement
+	session.resp = &authorizationResponse{AuthorizationToken: replacement}
+	session.InvalidateXSTSToken(rejected)
+	if session.xsts[defaultRelyingParty] != replacement || session.resp == nil || session.resp.AuthorizationToken != replacement {
+		t.Fatal("replacement token was removed")
+	}
+}
+
+func TestSessionDoesNotCacheTokenFetchedDuringInvalidation(t *testing.T) {
+	rejected := validXSTSToken("rejected")
+	replacement := validXSTSToken("replacement")
+	session := (Config{}).New(staticMSATokenSource{}, nil)
+	fetchStarted, allowFetch := make(chan struct{}), make(chan struct{})
+	var calls int
+	fetch := func(context.Context, string) (*xsts.Token, error) {
+		calls++
+		if calls == 1 {
+			close(fetchStarted)
+			<-allowFetch
+			return rejected, nil
+		}
+		return replacement, nil
+	}
+
+	type result struct {
+		token *xsts.Token
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		token, err := session.xstsToken(context.Background(), defaultRelyingParty, fetch)
+		done <- result{token: token, err: err}
+	}()
+
+	<-fetchStarted
+	session.InvalidateXSTSToken(rejected)
+	close(allowFetch)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("XSTSToken: %v", got.err)
+	}
+	if got.token != replacement {
+		t.Fatal("XSTSToken returned the token fetched before invalidation")
+	}
+	if cached := session.xsts[defaultRelyingParty]; cached != replacement {
+		t.Fatal("token fetched before invalidation was restored to the cache")
+	}
+}
+
+func validXSTSToken(value string) *xsts.Token {
+	return &xsts.Token{
+		Token:         value,
+		NotAfter:      time.Now().Add(time.Hour),
+		DisplayClaims: xsts.DisplayClaims{UserInfo: []xsts.UserInfo{{}}},
+	}
+}
+
 type staticMSATokenSource struct{}
 
 func (staticMSATokenSource) Token() (*oauth2.Token, error) {
