@@ -142,6 +142,7 @@ func (c *Client) RemoveFriends(ctx context.Context, xuids []string, opts ...inte
 		opts,
 		socialContractVersion,
 		internal.RequestHeader("Accept", "application/json"),
+		internal.RequestHeader("Content-Type", "application/json"),
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.DefaultLanguage,
 	))
