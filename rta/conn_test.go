@@ -654,3 +654,16 @@ func assertAtomicUint32Stays(t *testing.T, counter *atomic.Uint32, want uint32, 
 		}
 	}
 }
+
+// A nil *Conn passed through a Provider must fail with ErrUnavailable, not panic.
+func TestNilConnReportsUnavailable(t *testing.T) {
+	var conn *Conn
+	p := NewProvider(conn, conn)
+	sub := NewSubscription("test-resource", nil)
+	if err := p.Subscribe(context.Background(), sub); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Subscribe error = %v, want %v", err, ErrUnavailable)
+	}
+	if err := p.Unsubscribe(context.Background(), sub); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Unsubscribe error = %v, want %v", err, ErrUnavailable)
+	}
+}
