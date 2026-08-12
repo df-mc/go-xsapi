@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	socialCodeFriendListFull    = 1028 // Observed when the People list limit would be exceeded.
-	socialCodeRestricted        = 1011 // Observed for forbidden relationship operations.
-	socialCodeRestrictedPrivacy = 1049 // Observed for target-user privacy restrictions.
+	socialCodeFriendListFull     = 1028 // Observed when the People list limit would be exceeded.
+	socialCodeRestricted         = 1011 // Observed for forbidden relationship operations.
+	socialCodeRestrictedPrivacy  = 1049 // Observed for target-user privacy restrictions.
+	socialCodeBulkOperationLimit = 1050 // Observed when a bulk relationship request contains too many users.
 )
 
 var (
@@ -23,6 +24,9 @@ var (
 	ErrFriendListFull = errors.New("xsapi/social: friend list full")
 	// ErrFriendRestricted matches privacy, enforcement, or relationship restriction responses.
 	ErrFriendRestricted = errors.New("xsapi/social: friend restricted")
+	// ErrBulkOperationLimit matches responses indicating a bulk relationship
+	// request contains more users than the service accepts.
+	ErrBulkOperationLimit = errors.New("xsapi/social: bulk operation limit")
 )
 
 // ResponseError carries error details returned by the Xbox Live Social and
@@ -71,6 +75,8 @@ func (e *ResponseError) Is(target error) bool {
 		return e.Code == socialCodeFriendListFull
 	case ErrFriendRestricted:
 		return e.Code == socialCodeRestricted || e.Code == socialCodeRestrictedPrivacy
+	case ErrBulkOperationLimit:
+		return e.Code == socialCodeBulkOperationLimit
 	default:
 		return false
 	}
