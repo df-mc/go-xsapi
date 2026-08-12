@@ -163,6 +163,7 @@ func TestResponseErrorMatchesCategories(t *testing.T) {
 		{name: "rate limited", err: &ResponseError{StatusCode: http.StatusTooManyRequests}, target: ErrRateLimited, want: true},
 		{name: "retry after without rate limit", err: &ResponseError{StatusCode: http.StatusInternalServerError, RetryAfter: time.Second}, target: ErrRateLimited},
 		{name: "friend list full", err: &ResponseError{Code: 1028}, target: ErrFriendListFull, want: true},
+		{name: "bulk operation limit", err: &ResponseError{Code: 1050}, target: ErrBulkOperationLimit, want: true},
 		{name: "restricted", err: &ResponseError{Code: 1011}, target: ErrFriendRestricted, want: true},
 		{name: "restricted alternate", err: &ResponseError{Code: 1049}, target: ErrFriendRestricted, want: true},
 	}
@@ -172,6 +173,20 @@ func TestResponseErrorMatchesCategories(t *testing.T) {
 				t.Fatalf("errors.Is(%v) = %t, want %t", tt.target, errors.Is(tt.err, tt.target), tt.want)
 			}
 		})
+	}
+}
+
+func TestAddFriendsReturnsBulkOperationLimit(t *testing.T) {
+	client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return response(req, http.StatusBadRequest, `{"code":1050,"description":"too many users"}`), nil
+	})}, nil, xsts.UserInfo{}, nil)
+
+	_, err := client.AddFriends(context.Background(), []string{"123", "456"})
+	if err == nil {
+		t.Fatal("AddFriends returned nil error")
+	}
+	if !errors.Is(err, ErrBulkOperationLimit) {
+		t.Fatalf("errors.Is(ErrBulkOperationLimit) = false for %T: %v", err, err)
 	}
 }
 
