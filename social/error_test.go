@@ -85,6 +85,25 @@ func TestFollowReturnsResponseError(t *testing.T) {
 	}
 }
 
+func TestRemoveMutualFollowMirrorsFollowEndpoint(t *testing.T) {
+	client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodDelete {
+			t.Fatalf("Method = %q, want DELETE", req.Method)
+		}
+		if req.URL.Path != "/users/me/people/xuid(123)" {
+			t.Fatalf("Path = %q, want legacy people path", req.URL.Path)
+		}
+		if req.URL.RawQuery != "" {
+			t.Fatalf("RawQuery = %q, want none", req.URL.RawQuery)
+		}
+		return response(req, http.StatusNoContent, ""), nil
+	})}, nil, xsts.UserInfo{}, nil)
+
+	if err := client.RemoveMutualFollow(context.Background(), "123"); err != nil {
+		t.Fatalf("RemoveMutualFollow returned error: %v", err)
+	}
+}
+
 func TestAddFriendReturnsFriendListFull(t *testing.T) {
 	client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method != http.MethodPut {

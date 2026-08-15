@@ -32,6 +32,16 @@ func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.Req
 	return c.deleteRelationship(ctx, xuid, "follows", opts)
 }
 
+// RemoveMutualFollow removes the mutual follow relationship with the user
+// identified by XUID using the people endpoint.
+func (c *Client) RemoveMutualFollow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
+	requestURL := socialEndpoint.JoinPath(
+		"/users/me/people/xuid(" + xuid + ")",
+	).String()
+
+	return c.doRelationship(ctx, http.MethodDelete, requestURL, opts, http.StatusOK, http.StatusNoContent)
+}
+
 // RemoveFollower removes the follow relationship the user identified by XUID
 // has towards the caller, so the user no longer follows the caller. It is
 // primarily useful for dropping followers whose privacy or enforcement
