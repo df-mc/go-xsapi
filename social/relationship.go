@@ -32,10 +32,9 @@ func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.Req
 	return c.deleteRelationship(ctx, xuid, "follows", opts)
 }
 
-// UnfollowLegacy removes an existing follow relationship using the legacy
-// people endpoint. It mirrors [Client.Follow] with a DELETE request instead of
-// using the friends/v2 endpoint used by [Client.Unfollow].
-func (c *Client) UnfollowLegacy(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
+// RemoveMutualFollow removes the mutual follow relationship with the user
+// identified by XUID using the people endpoint.
+func (c *Client) RemoveMutualFollow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
 		"/users/me/people/xuid(" + xuid + ")",
 	).String()

@@ -85,7 +85,7 @@ func TestFollowReturnsResponseError(t *testing.T) {
 	}
 }
 
-func TestUnfollowLegacyMirrorsFollowEndpoint(t *testing.T) {
+func TestRemoveMutualFollowMirrorsFollowEndpoint(t *testing.T) {
 	client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method != http.MethodDelete {
 			t.Fatalf("Method = %q, want DELETE", req.Method)
@@ -99,8 +99,8 @@ func TestUnfollowLegacyMirrorsFollowEndpoint(t *testing.T) {
 		return response(req, http.StatusNoContent, ""), nil
 	})}, nil, xsts.UserInfo{}, nil)
 
-	if err := client.UnfollowLegacy(context.Background(), "123"); err != nil {
-		t.Fatalf("UnfollowLegacy returned error: %v", err)
+	if err := client.RemoveMutualFollow(context.Background(), "123"); err != nil {
+		t.Fatalf("RemoveMutualFollow returned error: %v", err)
 	}
 }
 
