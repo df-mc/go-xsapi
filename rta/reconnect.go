@@ -106,7 +106,7 @@ func (c *Conn) runReconnect(done chan struct{}) {
 			_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
 			return
 		}
-		conn, err := c.dialer.dialWithBackoff(c.ctx)
+		conn, err := c.dialer.reconnect(c.ctx)
 		if err != nil {
 			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
 			for _, subscription := range subscriptions {

@@ -3,7 +3,6 @@ package rta
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -66,22 +65,18 @@ func newDialer(client *http.Client, log *slog.Logger) *dialer {
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 	options := *d.options
 	options.Subprotocols = slices.Clone(d.options.Subprotocols)
-	c, resp, err := websocket.Dial(ctx, connectURLString(), &options)
+	c, _, err := websocket.Dial(ctx, connectURLString(), &options)
 	if err != nil {
-		if resp != nil && resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}
 		return nil, err
 	}
 	return c, nil
 }
 
-// dialWithBackoff attempts to establish a WebSocket connection with the RTA service.
+// reconnect attempts to establish a WebSocket connection with the RTA service.
 // It retries up to maxDialAttempts times, waiting between each attempt with
 // exponential backoff and jitter. If the context is canceled, it returns the
 // context error immediately.
-func (d *dialer) dialWithBackoff(ctx context.Context) (*websocket.Conn, error) {
+func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
 	for attempt := range maxDialAttempts {
 		c, err := d.dial(ctx)
 		if err != nil {
