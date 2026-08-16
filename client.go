@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/chat"
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/notification"
@@ -101,6 +102,7 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	c.social = social.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	c.notification = notification.New(c.HTTPClient(), c.UserInfo(), c.Log())
+	c.chat = chat.New(c.HTTPClient(), c.UserInfo(), c.Log())
 	return c, nil
 }
 
@@ -187,6 +189,7 @@ type Client struct {
 	social       *social.Client
 	presence     *presence.Client
 	notification *notification.Client
+	chat         *chat.Client
 
 	closeMu  sync.Mutex
 	closed   atomic.Bool
@@ -294,6 +297,11 @@ func (c *Client) Social() *social.Client {
 // Notification returns the API client for the Xbox Live Notification API.
 func (c *Client) Notification() *notification.Client {
 	return c.notification
+}
+
+// Chat returns an API client for the Xbox Live Chat API.
+func (c *Client) Chat() *chat.Client {
+	return c.chat
 }
 
 // Presence returns the API client for the Xbox Live Presence API.

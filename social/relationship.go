@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
 )
@@ -214,10 +215,9 @@ func (c *Client) doRelationship(ctx context.Context, method, requestURL string, 
 		return err
 	}
 	defer resp.Body.Close()
-	for _, code := range successCodes {
-		if resp.StatusCode == code {
-			return nil
-		}
+
+	if slices.Contains(successCodes, resp.StatusCode) {
+		return nil
 	}
 	return responseError(resp)
 }
