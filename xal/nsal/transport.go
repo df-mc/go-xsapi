@@ -106,14 +106,13 @@ func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerEx
 		if err != nil {
 			return nil, err
 		}
-		invalidator, ok := t.Resolver.src.(xstsTokenInvalidator)
-		if attempt > 0 || !ok || !tokenExpired(resp) {
+		if attempt > 0 || !tokenExpired(resp) {
 			return resp, nil
 		}
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		invalidator.InvalidateXSTSToken(endpoint.RelyingParty, token)
+		t.Resolver.src.InvalidateXSTSToken(endpoint.RelyingParty, token)
 	}
 }
 
@@ -136,12 +135,6 @@ func tokenExpired(resp *http.Response) bool {
 		}
 	}
 	return false
-}
-
-// xstsTokenInvalidator lets token sources discard a token rejected by its
-// relying party.
-type xstsTokenInvalidator interface {
-	InvalidateXSTSToken(string, *xsts.Token)
 }
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.

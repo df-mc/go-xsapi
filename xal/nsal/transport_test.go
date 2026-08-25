@@ -359,6 +359,9 @@ func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty strin
 	return src.token, nil
 }
 
+// InvalidateXSTSToken leaves the static test token unchanged.
+func (*transportTokenSource) InvalidateXSTSToken(string, *xsts.Token) {}
+
 func (src *transportTokenSource) ProofKey() *ecdsa.PrivateKey {
 	return src.proofKey
 }

@@ -105,7 +105,7 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 // TokenSource is the interface that supplies XSTS tokens and device tokens
 // with the private key used to sign requests.
 type TokenSource interface {
-	xsts.TokenSource
+	nsal.TokenSource
 	xasd.TokenSource
 }
 

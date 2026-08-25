@@ -275,6 +275,9 @@ func (stubTokenSource) XSTSToken(context.Context, string) (*xsts.Token, error) {
 	return nil, errors.New("unexpected XSTS request")
 }
 
+// InvalidateXSTSToken leaves the stub token source unchanged.
+func (stubTokenSource) InvalidateXSTSToken(string, *xsts.Token) {}
+
 func (stubTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
 	return nil, errors.New("unexpected device token request")
 }
@@ -293,6 +296,9 @@ func (src *recordingTokenSource) XSTSToken(_ context.Context, relyingParty strin
 	src.relyingParty = relyingParty
 	return src.token, nil
 }
+
+// InvalidateXSTSToken leaves the recording token source unchanged.
+func (*recordingTokenSource) InvalidateXSTSToken(string, *xsts.Token) {}
 
 func (*recordingTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
 	return nil, errors.New("unexpected device token request")
@@ -348,6 +354,9 @@ func (validTokenSource) XSTSToken(context.Context, string) (*xsts.Token, error) 
 		}}},
 	}, nil
 }
+
+// InvalidateXSTSToken leaves the static valid token unchanged.
+func (validTokenSource) InvalidateXSTSToken(string, *xsts.Token) {}
 
 func (validTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
 	return nil, errors.New("unexpected device token request")
