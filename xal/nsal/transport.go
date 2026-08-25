@@ -55,66 +55,47 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.baseTransport().RoundTrip(req)
 	}
 
-	var data []byte
-	if req.Body != nil {
-		var err error
-		data, err = io.ReadAll(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("read request body: %w", err)
-		}
-	}
-
-	return t.roundTripAuthenticated(req, exclusion, data)
-}
-
-// roundTripAuthenticated signs and sends req, retrying once when Xbox reports
-// that the XSTS token expired before its advertised lifetime.
-func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerExclusionSet, data []byte) (*http.Response, error) {
-	ctx := req.Context()
 	if t == nil {
 		return nil, errors.New("xal/nsal: nil Transport")
 	}
 	if t.Resolver == nil {
 		return nil, errors.New("xal/nsal: nil Resolver")
 	}
-	for attempt := 0; ; attempt++ {
-		endpoint, policy, err := t.Resolver.Resolve(ctx, req.URL)
-		if err != nil {
-			return nil, fmt.Errorf("request XSTS token and signature: %w", err)
-		}
-		token, err := t.Resolver.src.XSTSToken(ctx, endpoint.RelyingParty)
-		if err != nil {
-			return nil, fmt.Errorf("request XSTS token and signature: request XSTS token: %w", err)
-		}
+	endpoint, policy, err := t.Resolver.Resolve(ctx, req.URL)
+	if err != nil {
+		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
+	}
+	token, err := t.Resolver.src.XSTSToken(ctx, endpoint.RelyingParty)
+	if err != nil {
+		return nil, fmt.Errorf("request XSTS token and signature: request XSTS token: %w", err)
+	}
 
-		req2 := req.Clone(ctx)
+	req2 := req.Clone(ctx)
+	token.SetAuthHeader(req2)
+
+	if req2.Header.Get("Signature") == "" && !exclusion.signature() {
+		var data []byte
 		if req.Body != nil {
-			req2.Body = io.NopCloser(bytes.NewReader(data))
-			req2.GetBody = func() (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(data)), nil
+			signingBuffer := &bytes.Buffer{}
+			if _, err := signingBuffer.ReadFrom(req.Body); err != nil {
+				signingBuffer.Reset()
+				return nil, fmt.Errorf("clone request body: %w", err)
 			}
+			data, req2.Body = signingBuffer.Bytes(), io.NopCloser(signingBuffer)
 		}
-		token.SetAuthHeader(req2)
+		if err := policy.Sign(req2, data, t.Resolver.src.ProofKey(), timestamp.Now()); err != nil {
+			return nil, fmt.Errorf("sign request: %w", err)
+		}
+	}
 
-		if req2.Header.Get("Signature") == "" && !exclusion.signature() {
-			if err := policy.Sign(req2, data, t.Resolver.src.ProofKey(), timestamp.Now()); err != nil {
-				return nil, fmt.Errorf("sign request: %w", err)
-			}
-		}
-
-		resp, err := t.baseTransport().RoundTrip(req2)
-		if err != nil {
-			return nil, err
-		}
-		invalidator, ok := t.Resolver.src.(TokenInvalidator)
-		if attempt > 0 || !ok || !tokenExpired(resp) {
-			return resp, nil
-		}
-		if resp.Body != nil {
-			_ = resp.Body.Close()
-		}
+	resp, err := t.baseTransport().RoundTrip(req2)
+	if err != nil {
+		return nil, err
+	}
+	if invalidator, ok := t.Resolver.src.(TokenInvalidator); ok && tokenExpired(resp) {
 		invalidator.InvalidateXSTSToken(endpoint.RelyingParty, token)
 	}
+	return resp, nil
 }
 
 // tokenExpired reports whether Xbox explicitly rejected an expired token.

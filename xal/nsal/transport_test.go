@@ -83,40 +83,32 @@ func TestTransportRoundTripWithNilResolverReturnsError(t *testing.T) {
 	}
 }
 
-func TestTransportRoundTripRefreshesExpiredXSTSToken(t *testing.T) {
+func TestTransportRoundTripInvalidatesExpiredXSTSToken(t *testing.T) {
 	key := mustGenerateKey(t)
 	stale := authorizationToken("stale")
-	fresh := authorizationToken("fresh")
-	src := &refreshingTransportTokenSource{
+	src := &invalidatingTransportTokenSource{
 		transportTokenSource: transportTokenSource{token: stale, proofKey: key},
-		fresh:                fresh,
 	}
-	firstResponseBody := &trackingBody{ReadCloser: http.NoBody}
+	responseBody := &trackingBody{ReadCloser: http.NoBody}
 	var requests int
 	transport := &Transport{
 		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			requests++
+			if requests > 1 {
+				t.Fatalf("unexpected request %d", requests)
+			}
 			body, err := io.ReadAll(req.Body)
 			if err != nil || string(body) != "payload" {
 				t.Fatalf("request %d body = %q, err = %v", requests, body, err)
 			}
-			if requests == 1 {
-				return &http.Response{
-					StatusCode: http.StatusUnauthorized,
-					Header:     http.Header{"Www-Authenticate": {"Token error='token_expired'"}},
-					Body:       firstResponseBody,
-				}, nil
+			if got := req.Header.Get("Authorization"); got != "XBL3.0 x=uhs;stale" {
+				t.Fatalf("Authorization = %q, want stale token", got)
 			}
-			if requests != 2 {
-				t.Fatalf("unexpected request %d", requests)
-			}
-			if req.GetBody == nil {
-				t.Fatal("retried request is not replayable")
-			}
-			if got := req.Header.Get("Authorization"); got != "XBL3.0 x=uhs;fresh" {
-				t.Fatalf("Authorization = %q, want fresh token", got)
-			}
-			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     http.Header{"Www-Authenticate": {"Token error='token_expired'"}},
+				Body:       responseBody,
+			}, nil
 		}),
 		Resolver: testResolver(src),
 	}
@@ -131,8 +123,8 @@ func TestTransportRoundTripRefreshesExpiredXSTSToken(t *testing.T) {
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 	if src.invalidated != stale {
 		t.Fatal("invalidated token was not the rejected token")
@@ -140,50 +132,14 @@ func TestTransportRoundTripRefreshesExpiredXSTSToken(t *testing.T) {
 	if src.invalidationRelyingParty != "https://multiplayer.minecraft.net/" {
 		t.Fatalf("invalidation relying party = %q, want https://multiplayer.minecraft.net/", src.invalidationRelyingParty)
 	}
-	if src.calls != 2 {
-		t.Fatalf("XSTSToken calls = %d, want 2", src.calls)
+	if src.calls != 1 {
+		t.Fatalf("XSTSToken calls = %d, want 1", src.calls)
 	}
 	if src.invalidationCalls != 1 {
 		t.Fatalf("InvalidateXSTSToken calls = %d, want 1", src.invalidationCalls)
 	}
-	if !firstResponseBody.closed {
-		t.Fatal("first response body was not closed before retry")
-	}
-}
-
-func TestTransportRoundTripRetriesExpiredXSTSTokenOnlyOnce(t *testing.T) {
-	key := mustGenerateKey(t)
-	src := &refreshingTransportTokenSource{
-		transportTokenSource: transportTokenSource{token: authorizationToken("stale"), proofKey: key},
-		fresh:                authorizationToken("fresh"),
-	}
-	var requests int
-	transport := &Transport{
-		Base: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			requests++
-			return &http.Response{
-				StatusCode: http.StatusUnauthorized,
-				Header:     http.Header{"Www-Authenticate": {"Token error='token_expired'"}},
-				Body:       http.NoBody,
-			}, nil
-		}),
-		Resolver: testResolver(src),
-	}
-
-	req, err := http.NewRequest(http.MethodGet, "https://multiplayer.minecraft.net/authentication", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	resp, err := transport.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	defer resp.Body.Close()
-	if requests != 2 {
-		t.Fatalf("requests = %d, want 2", requests)
-	}
-	if src.invalidationCalls != 1 {
-		t.Fatalf("InvalidateXSTSToken calls = %d, want 1", src.invalidationCalls)
+	if responseBody.closed {
+		t.Fatal("response body was closed before being returned")
 	}
 }
 
@@ -379,21 +335,17 @@ func (src *nonInvalidatingTransportTokenSource) ProofKey() *ecdsa.PrivateKey {
 	return src.proofKey
 }
 
-type refreshingTransportTokenSource struct {
+type invalidatingTransportTokenSource struct {
 	transportTokenSource
-	fresh                    *xsts.Token
 	invalidated              *xsts.Token
 	invalidationRelyingParty string
 	invalidationCalls        int
 }
 
-func (src *refreshingTransportTokenSource) InvalidateXSTSToken(relyingParty string, rejected *xsts.Token) {
+func (src *invalidatingTransportTokenSource) InvalidateXSTSToken(relyingParty string, rejected *xsts.Token) {
 	src.invalidated = rejected
 	src.invalidationRelyingParty = relyingParty
 	src.invalidationCalls++
-	if src.token == rejected {
-		src.token = src.fresh
-	}
 }
 
 func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {
