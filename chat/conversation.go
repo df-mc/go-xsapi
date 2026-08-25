@@ -76,7 +76,7 @@ type conversation struct {
 	Folder        string    `json:"folder"`
 }
 
-func (c conversation) UserID(selfXUID string) (string, error) {
+func (c conversation) UserID(selfXUID string) (participantID string, _ error) {
 	if c.Type != ConversationTypeUser {
 		return "", fmt.Errorf("chat: Conversation.UserID can only be used within user conversation")
 	}

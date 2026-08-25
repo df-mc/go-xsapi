@@ -1,6 +1,9 @@
 package chat
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type (
 	MessageContent interface {
@@ -11,13 +14,13 @@ type (
 	TextContent struct {
 		messageContent
 		Text          string   `json:"text"`
-		UnsuitableFor []string `json:"unsuitableFor"`
+		UnsuitableFor []string `json:"unsuitableFor,omitempty"`
 	}
 	DeepLinkContent struct {
 		messageContent
 		ButtonText string  `json:"buttonText"`
-		AppURI     *string `json:"appUri"`
-		WebURI     *string `json:"webUri"`
+		AppURI     *string `json:"appUri,omitzero"`
+		WebURI     *string `json:"webUri,omitzero"`
 	}
 
 	messageContentKey struct {
@@ -46,6 +49,18 @@ func (t *TextContent) String() string {
 	return t.Text
 }
 
+func (t *TextContent) MarshalJSON() ([]byte, error) {
+	type Alias TextContent
+	return json.Marshal(struct {
+		ContentType string `json:"contentType"`
+		Version     int    `json:"version"`
+		*Alias
+	}{
+		ContentType: t.ContentType(),
+		Alias:       (*Alias)(t),
+	})
+}
+
 func (d *DeepLinkContent) ContentType() string {
 	return ContentTypeDeepLink
 }
@@ -58,6 +73,18 @@ func (d *DeepLinkContent) String() string {
 		}
 	}
 	return d.ButtonText + " (" + *u + ")"
+}
+
+func (d *DeepLinkContent) MarshalJSON() ([]byte, error) {
+	type Alias DeepLinkContent
+	return json.Marshal(struct {
+		ContentType string `json:"contentType"`
+		Version     int    `json:"version"`
+		*Alias
+	}{
+		ContentType: d.ContentType(),
+		Alias:       (*Alias)(d),
+	})
 }
 
 type UnknownContent struct {

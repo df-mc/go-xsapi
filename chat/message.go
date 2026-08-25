@@ -10,6 +10,7 @@ import (
 type Message interface {
 	MessageType() string
 	MessageID() string
+	MessageClock() string
 }
 
 type ContentMessage struct {
@@ -95,6 +96,10 @@ func (m *message) MessageID() string {
 	return m.ID
 }
 
+func (m *message) MessageClock() string {
+	return m.Clock
+}
+
 const (
 	MessageTypeContent              = "ContentMessage"
 	MessageTypeAddGroupParticipants = "AddGroupParticipants"
@@ -110,8 +115,9 @@ func (k messageKey) Type() string {
 }
 
 type UnknownMessage struct {
-	Type string `json:"type"`
-	ID   string `json:"messageId"`
+	Type  string `json:"type"`
+	ID    string `json:"messageId"`
+	Clock string `json:"clock"`
 
 	Raw []byte `json:"-"`
 }
@@ -122,6 +128,10 @@ func (m *UnknownMessage) MessageType() string {
 
 func (m *UnknownMessage) MessageID() string {
 	return m.ID
+}
+
+func (m *UnknownMessage) MessageClock() string {
+	return m.Clock
 }
 
 func (m *UnknownMessage) UnmarshalJSON(b []byte) error {

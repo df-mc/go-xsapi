@@ -2,10 +2,13 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -62,12 +65,56 @@ func (c *Client) InboxFolder(ctx context.Context, name string, opts ...internal.
 	return folder, nil
 }
 
-func (c *Client) MarkRead(ctx context.Context, conversations []Conversation, opts ...internal.RequestOption) error {
+func (c *Client) SendUserMessage(ctx context.Context, xuid string, parts []MessageContent, opts ...internal.RequestOption) (*SendMessageResult, error) {
+	return c.sendMessage(ctx, "/network/xbox/users/me/conversations/users/xuid("+xuid+")", parts, opts)
+}
 
+func (c *Client) sendMessage(ctx context.Context, path string, parts []MessageContent, opts []internal.RequestOption) (*SendMessageResult, error) {
+	requestURL := endpointURL.JoinPath(path).String()
+	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL, map[string]any{
+		"parts": parts,
+	}, append(opts,
+		internal.RequestHeader("Accept", "application/json"),
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.DefaultLanguage,
+		contractVersion,
+	))
+	if err != nil {
+		return nil, fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var result *SendMessageResult
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, fmt.Errorf("decode response body: %w", err)
+		}
+		if result == nil {
+			return nil, errors.New("chat: invalid send message response")
+		}
+		return result, nil
+	default:
+		return nil, internal.UnexpectedStatusCode(resp)
+	}
+}
+
+type SendMessageResult struct {
+	MessageID      string `json:"messageId"`
+	ConversationID string `json:"conversationId"`
 }
 
 func (c *Client) UserConversation(ctx context.Context, xuid string, filter ConversationFilter, opts ...internal.RequestOption) (*ConversationResult, error) {
 	return c.conversation(ctx, "/users/xuid("+xuid+")", filter, opts)
+}
+
+func (c *Client) Conversation(ctx context.Context, typ, id string, filter ConversationFilter, opts ...internal.RequestOption) (*ConversationResult, error) {
+	return c.conversation(ctx, path.Join(typ, id), filter, opts)
 }
 
 func (c *Client) conversation(ctx context.Context, path string, filter ConversationFilter, opts []internal.RequestOption) (*ConversationResult, error) {
@@ -82,7 +129,9 @@ func (c *Client) conversation(ctx context.Context, path string, filter Conversat
 	)
 	q := requestURL.Query()
 	q.Set("maxItems", strconv.Itoa(filter.MaxItems))
-	q.Set("continuationToken", filter.ContinuationToken)
+	if filter.ContinuationToken != "" {
+		q.Set("continuationToken", filter.ContinuationToken)
+	}
 	requestURL.RawQuery = q.Encode()
 
 	if err := internal.Do(ctx, c.client, http.MethodGet, requestURL.String(), nil, &result, append(opts,
