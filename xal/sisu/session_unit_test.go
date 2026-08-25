@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -168,7 +167,7 @@ func TestXSTSTokenDoesNotHoldCacheLockDuringTokenRequest(t *testing.T) {
 	}
 }
 
-func TestSessionRefreshesOnlyRejectedRelyingParty(t *testing.T) {
+func TestSessionInvalidatesOnlyRejectedRelyingParty(t *testing.T) {
 	rejected := validXSTSToken("rejected")
 	replacement := validXSTSToken("replacement")
 	other := validXSTSToken("other")
@@ -176,163 +175,110 @@ func TestSessionRefreshesOnlyRejectedRelyingParty(t *testing.T) {
 	session.xsts[defaultRelyingParty] = rejected
 	session.xsts["https://example.com/"] = other
 	session.resp = &authorizationResponse{AuthorizationToken: rejected}
-	var calls int
-	request := func(_ context.Context, relyingParty string) (*xsts.Token, error) {
-		calls++
-		if relyingParty != defaultRelyingParty {
-			t.Fatalf("relying party = %q, want %q", relyingParty, defaultRelyingParty)
-		}
-		session.respMu.Lock()
-		defer session.respMu.Unlock()
-		if session.resp != nil {
-			t.Fatal("SISU response was not cleared before refresh")
-		}
-		return replacement, nil
-	}
 
-	got, err := session.refreshXSTSToken(context.Background(), defaultRelyingParty, rejected, request)
-	if err != nil {
-		t.Fatalf("refresh XSTS token: %v", err)
+	session.InvalidateXSTSToken(defaultRelyingParty, rejected)
+	if _, ok := session.xsts[defaultRelyingParty]; ok {
+		t.Fatal("rejected token remained cached")
 	}
-	if got != replacement || session.xsts[defaultRelyingParty] != replacement {
-		t.Fatal("replacement token was not returned and cached")
+	if session.resp != nil {
+		t.Fatal("SISU response containing rejected token remained cached")
 	}
 	if session.xsts["https://example.com/"] != other {
-		t.Fatal("token for another relying party was replaced")
+		t.Fatal("token for another relying party was invalidated")
 	}
 
-	got, err = session.refreshXSTSToken(context.Background(), defaultRelyingParty, rejected, request)
-	if err != nil {
-		t.Fatalf("reuse replacement XSTS token: %v", err)
-	}
-	if got != replacement {
-		t.Fatal("late rejection did not reuse the replacement token")
-	}
-	if calls != 1 {
-		t.Fatalf("refresh calls = %d, want 1", calls)
+	session.xsts[defaultRelyingParty] = replacement
+	session.resp = &authorizationResponse{AuthorizationToken: replacement}
+	session.InvalidateXSTSToken(defaultRelyingParty, rejected)
+	if session.xsts[defaultRelyingParty] != replacement || session.resp.AuthorizationToken != replacement {
+		t.Fatal("late rejection removed the replacement token")
 	}
 }
 
-func TestSessionSharesConcurrentXSTSTokenRefresh(t *testing.T) {
+func TestSessionDoesNotCacheTokenFetchedDuringSameRelyingPartyInvalidation(t *testing.T) {
 	rejected := validXSTSToken("rejected")
 	replacement := validXSTSToken("replacement")
 	session := (Config{}).New(staticMSATokenSource{}, nil)
-	session.xsts[defaultRelyingParty] = rejected
-	refreshStarted, allowRefresh := make(chan struct{}), make(chan struct{})
-	var calls atomic.Int32
+	fetchStarted, allowFetch := make(chan struct{}), make(chan struct{})
+	var calls int
 	request := func(context.Context, string) (*xsts.Token, error) {
-		if calls.Add(1) == 1 {
-			close(refreshStarted)
+		calls++
+		if calls == 1 {
+			close(fetchStarted)
+			<-allowFetch
+			return rejected, nil
 		}
-		<-allowRefresh
 		return replacement, nil
 	}
 
-	type refreshResult struct {
+	type result struct {
 		token *xsts.Token
 		err   error
 	}
-	done := make(chan refreshResult, 2)
+	done := make(chan result, 1)
 	go func() {
-		token, err := session.refreshXSTSToken(context.Background(), defaultRelyingParty, rejected, request)
-		done <- refreshResult{token: token, err: err}
+		token, err := session.xstsToken(context.Background(), defaultRelyingParty, request)
+		done <- result{token: token, err: err}
 	}()
-	<-refreshStarted
-	go func() {
-		token, err := session.refreshXSTSToken(context.Background(), defaultRelyingParty, rejected, request)
-		done <- refreshResult{token: token, err: err}
-	}()
-	close(allowRefresh)
 
-	for range 2 {
-		got := <-done
-		if got.err != nil {
-			t.Fatalf("refresh XSTS token: %v", got.err)
-		}
-		if got.token != replacement {
-			t.Fatal("refresh did not return the replacement token")
-		}
+	<-fetchStarted
+	session.InvalidateXSTSToken(defaultRelyingParty, rejected)
+	close(allowFetch)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("XSTSToken: %v", got.err)
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	if got.token != replacement {
+		t.Fatal("XSTSToken returned the token fetched before invalidation")
+	}
+	if calls != 2 {
+		t.Fatalf("token requests = %d, want 2", calls)
 	}
 	if cached := session.xsts[defaultRelyingParty]; cached != replacement {
-		t.Fatal("replacement token was not cached")
+		t.Fatal("token fetched before invalidation was restored to the cache")
 	}
 }
 
-func TestSessionNormalAcquisitionWaitsForOverlappingRefresh(t *testing.T) {
-	rejected := validXSTSToken("rejected")
-	replacement := validXSTSToken("replacement")
-	session := (Config{}).New(staticMSATokenSource{}, nil)
-	normalStarted, allowNormal := make(chan struct{}), make(chan struct{})
-	normalRequest := func(context.Context, string) (*xsts.Token, error) {
-		close(normalStarted)
-		<-allowNormal
-		return rejected, nil
-	}
-
-	done := make(chan *xsts.Token, 1)
-	go func() {
-		token, _ := session.xstsToken(context.Background(), defaultRelyingParty, normalRequest)
-		done <- token
-	}()
-	<-normalStarted
-
-	got, err := session.refreshXSTSToken(context.Background(), defaultRelyingParty, rejected, func(context.Context, string) (*xsts.Token, error) {
-		return replacement, nil
-	})
-	if err != nil {
-		t.Fatalf("refresh XSTS token: %v", err)
-	}
-	if got != replacement {
-		t.Fatal("refresh did not return the replacement token")
-	}
-	close(allowNormal)
-	if got := <-done; got != replacement {
-		t.Fatal("normal acquisition restored the rejected token")
-	}
-}
-
-func TestSessionRejectsUnchangedRefreshedXSTSToken(t *testing.T) {
+func TestSessionOtherRelyingPartyInvalidationDoesNotRestartAcquisition(t *testing.T) {
+	const acquiringRelyingParty = "https://example.com/acquiring"
+	const invalidatedRelyingParty = "https://example.com/invalidated"
+	acquired := validXSTSToken("acquired")
 	rejected := validXSTSToken("rejected")
 	session := (Config{}).New(staticMSATokenSource{}, nil)
-	session.xsts[defaultRelyingParty] = rejected
-
-	_, err := session.refreshXSTSToken(context.Background(), defaultRelyingParty, rejected, func(context.Context, string) (*xsts.Token, error) {
-		return rejected, nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "matches rejected token") {
-		t.Fatalf("refresh error = %v, want unchanged-token error", err)
-	}
-	if _, ok := session.xsts[defaultRelyingParty]; ok {
-		t.Fatal("rejected token was restored to the cache")
-	}
-}
-
-func TestSessionRefreshRetriesAfterSharedCallerCancellation(t *testing.T) {
-	rejected := validXSTSToken("rejected")
-	replacement := validXSTSToken("replacement")
-	session := (Config{}).New(staticMSATokenSource{}, nil)
-	session.xsts[defaultRelyingParty] = rejected
-	shared := &xstsRefresh{done: make(chan struct{}), err: context.Canceled}
-	close(shared.done)
-	session.xstsRefreshes[defaultRelyingParty] = shared
-	var calls atomic.Int32
+	session.xsts[invalidatedRelyingParty] = rejected
+	fetchStarted, allowFetch := make(chan struct{}), make(chan struct{})
+	var calls int
 	request := func(context.Context, string) (*xsts.Token, error) {
-		calls.Add(1)
-		return replacement, nil
+		calls++
+		close(fetchStarted)
+		<-allowFetch
+		return acquired, nil
 	}
 
-	got, err := session.refreshXSTSToken(context.Background(), defaultRelyingParty, rejected, request)
-	if err != nil {
-		t.Fatalf("waiting refresh: %v", err)
+	done := make(chan struct {
+		token *xsts.Token
+		err   error
+	}, 1)
+	go func() {
+		token, err := session.xstsToken(context.Background(), acquiringRelyingParty, request)
+		done <- struct {
+			token *xsts.Token
+			err   error
+		}{token: token, err: err}
+	}()
+
+	<-fetchStarted
+	session.InvalidateXSTSToken(invalidatedRelyingParty, rejected)
+	close(allowFetch)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("XSTSToken: %v", got.err)
 	}
-	if got != replacement {
-		t.Fatal("waiting refresh did not retry with its live context")
+	if got.token != acquired {
+		t.Fatal("unrelated invalidation changed the acquired token")
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	if calls != 1 {
+		t.Fatalf("token requests = %d, want 1", calls)
 	}
 }
 

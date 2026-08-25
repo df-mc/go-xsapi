@@ -137,14 +137,14 @@ func TestTransportRoundTripRefreshesExpiredXSTSToken(t *testing.T) {
 	if src.invalidated != stale {
 		t.Fatal("invalidated token was not the rejected token")
 	}
-	if src.refreshRelyingParty != "https://multiplayer.minecraft.net/" {
-		t.Fatalf("refresh relying party = %q, want https://multiplayer.minecraft.net/", src.refreshRelyingParty)
+	if src.invalidationRelyingParty != "https://multiplayer.minecraft.net/" {
+		t.Fatalf("invalidation relying party = %q, want https://multiplayer.minecraft.net/", src.invalidationRelyingParty)
 	}
-	if src.calls != 1 {
-		t.Fatalf("XSTSToken calls = %d, want 1", src.calls)
+	if src.calls != 2 {
+		t.Fatalf("XSTSToken calls = %d, want 2", src.calls)
 	}
-	if src.refreshCalls != 1 {
-		t.Fatalf("RefreshXSTSToken calls = %d, want 1", src.refreshCalls)
+	if src.invalidationCalls != 1 {
+		t.Fatalf("InvalidateXSTSToken calls = %d, want 1", src.invalidationCalls)
 	}
 	if !firstResponseBody.closed {
 		t.Fatal("first response body was not closed before retry")
@@ -182,8 +182,8 @@ func TestTransportRoundTripRetriesExpiredXSTSTokenOnlyOnce(t *testing.T) {
 	if requests != 2 {
 		t.Fatalf("requests = %d, want 2", requests)
 	}
-	if src.refreshCalls != 1 {
-		t.Fatalf("RefreshXSTSToken calls = %d, want 1", src.refreshCalls)
+	if src.invalidationCalls != 1 {
+		t.Fatalf("InvalidateXSTSToken calls = %d, want 1", src.invalidationCalls)
 	}
 }
 
@@ -334,17 +334,19 @@ type transportTokenSource struct {
 
 type refreshingTransportTokenSource struct {
 	transportTokenSource
-	fresh               *xsts.Token
-	invalidated         *xsts.Token
-	refreshRelyingParty string
-	refreshCalls        int
+	fresh                    *xsts.Token
+	invalidated              *xsts.Token
+	invalidationRelyingParty string
+	invalidationCalls        int
 }
 
-func (src *refreshingTransportTokenSource) RefreshXSTSToken(_ context.Context, relyingParty string, rejected *xsts.Token) (*xsts.Token, error) {
+func (src *refreshingTransportTokenSource) InvalidateXSTSToken(relyingParty string, rejected *xsts.Token) {
 	src.invalidated = rejected
-	src.refreshRelyingParty = relyingParty
-	src.refreshCalls++
-	return src.fresh, nil
+	src.invalidationRelyingParty = relyingParty
+	src.invalidationCalls++
+	if src.token == rejected {
+		src.token = src.fresh
+	}
 }
 
 func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {

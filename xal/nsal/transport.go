@@ -71,11 +71,12 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 // that the XSTS token expired before its advertised lifetime.
 func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerExclusionSet, data []byte) (*http.Response, error) {
 	ctx := req.Context()
-	token, policy, relyingParty, err := t.resolveTokenAndSignature(ctx, req.URL)
-	if err != nil {
-		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
-	}
 	for attempt := 0; ; attempt++ {
+		token, policy, relyingParty, err := t.resolveTokenAndSignature(ctx, req.URL)
+		if err != nil {
+			return nil, fmt.Errorf("request XSTS token and signature: %w", err)
+		}
+
 		req2 := req.Clone(ctx)
 		if req.Body != nil {
 			req2.Body = io.NopCloser(bytes.NewReader(data))
@@ -95,17 +96,14 @@ func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerEx
 		if err != nil {
 			return nil, err
 		}
-		refresher, ok := t.Resolver.src.(xstsTokenRefresher)
+		invalidator, ok := t.Resolver.src.(xstsTokenInvalidator)
 		if attempt > 0 || !ok || !tokenExpired(resp) {
 			return resp, nil
 		}
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		token, err = refresher.RefreshXSTSToken(ctx, relyingParty, token)
-		if err != nil {
-			return nil, fmt.Errorf("refresh rejected XSTS token: %w", err)
-		}
+		invalidator.InvalidateXSTSToken(relyingParty, token)
 	}
 }
 
@@ -130,10 +128,10 @@ func tokenExpired(resp *http.Response) bool {
 	return false
 }
 
-// xstsTokenRefresher lets token sources atomically replace a token rejected by
-// its relying party.
-type xstsTokenRefresher interface {
-	RefreshXSTSToken(context.Context, string, *xsts.Token) (*xsts.Token, error)
+// xstsTokenInvalidator lets token sources discard a token rejected by its
+// relying party.
+type xstsTokenInvalidator interface {
+	InvalidateXSTSToken(string, *xsts.Token)
 }
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.

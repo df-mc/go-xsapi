@@ -58,7 +58,7 @@ func (conf Config) New(src oauth2.TokenSource, sc *SessionConfig) *Session {
 	if s.xsts == nil {
 		s.xsts = make(map[string]*xsts.Token)
 	}
-	s.xstsRefreshes = make(map[string]*xstsRefresh)
+	s.xstsGenerations = make(map[string]uint64)
 	return s
 }
 
@@ -148,8 +148,9 @@ type Session struct {
 	xsts map[string]*xsts.Token
 	// xstsMu guards xsts tokens from concurrent read-write access.
 	xstsMu sync.Mutex
-	// xstsRefreshes tracks forced refreshes in progress by relying party.
-	xstsRefreshes map[string]*xstsRefresh
+	// xstsGenerations tracks invalidations by relying party so an overlapping
+	// acquisition cannot restore a rejected token.
+	xstsGenerations map[string]uint64
 
 	// resp is the last known response for SISU authorization request.
 	// It contains title, user, and an XSTS token that relies on the
@@ -162,14 +163,6 @@ type Session struct {
 
 	// client is the HTTP client used to make authentication requests.
 	client *http.Client
-}
-
-// xstsRefresh records the result of a forced XSTS token refresh shared by
-// concurrent callers for one relying party.
-type xstsRefresh struct {
-	done  chan struct{}
-	token *xsts.Token
-	err   error
 }
 
 // DeviceToken returns an XASD (Xbox Authentication Services for Device) token.
@@ -256,7 +249,8 @@ func (s *Session) XSTSToken(ctx context.Context, relyingParty string) (*xsts.Tok
 	return s.xstsToken(ctx, relyingParty, s.requestXSTS)
 }
 
-// xstsToken avoids caching an acquisition that overlaps a forced refresh.
+// xstsToken avoids caching an acquisition that overlaps an invalidation for the
+// same relying party.
 func (s *Session) xstsToken(ctx context.Context, relyingParty string, request func(context.Context, string) (*xsts.Token, error)) (*xsts.Token, error) {
 	for {
 		s.xstsMu.Lock()
@@ -265,14 +259,7 @@ func (s *Session) xstsToken(ctx context.Context, relyingParty string, request fu
 			s.xstsMu.Unlock()
 			return token, nil
 		}
-		if refresh := s.xstsRefreshes[relyingParty]; refresh != nil {
-			s.xstsMu.Unlock()
-			token, err := waitForXSTSRefresh(ctx, refresh)
-			if retryCanceledXSTSRefresh(ctx, err) {
-				continue
-			}
-			return token, err
-		}
+		generation := s.xstsGenerations[relyingParty]
 		s.xstsMu.Unlock()
 
 		token, err := request(ctx, relyingParty)
@@ -288,13 +275,9 @@ func (s *Session) xstsToken(ctx context.Context, relyingParty string, request fu
 			s.xstsMu.Unlock()
 			return cached, nil
 		}
-		if refresh := s.xstsRefreshes[relyingParty]; refresh != nil {
+		if s.xstsGenerations[relyingParty] != generation {
 			s.xstsMu.Unlock()
-			token, err := waitForXSTSRefresh(ctx, refresh)
-			if retryCanceledXSTSRefresh(ctx, err) {
-				continue
-			}
-			return token, err
+			continue
 		}
 		s.xsts[relyingParty] = token
 		s.xstsMu.Unlock()
@@ -302,92 +285,27 @@ func (s *Session) xstsToken(ctx context.Context, relyingParty string, request fu
 	}
 }
 
-// RefreshXSTSToken atomically replaces an XSTS token rejected by its relying
-// party. Concurrent refreshes for the same token share one acquisition.
-func (s *Session) RefreshXSTSToken(ctx context.Context, relyingParty string, rejected *xsts.Token) (*xsts.Token, error) {
-	return s.refreshXSTSToken(ctx, relyingParty, rejected, s.requestXSTS)
-}
-
-// refreshXSTSToken replaces rejected using request and coordinates concurrent
-// refresh and normal acquisition calls for relyingParty.
-func (s *Session) refreshXSTSToken(ctx context.Context, relyingParty string, rejected *xsts.Token, request func(context.Context, string) (*xsts.Token, error)) (*xsts.Token, error) {
+// InvalidateXSTSToken removes rejected from the caches for relyingParty if it
+// has not already been replaced. A subsequent XSTSToken call acquires a new
+// token through the normal cache path.
+func (s *Session) InvalidateXSTSToken(relyingParty string, rejected *xsts.Token) {
 	if rejected == nil || rejected.Token == "" {
-		return nil, errors.New("xal/sisu: rejected XSTS token is invalid")
+		return
 	}
 
-	var refresh *xstsRefresh
-	for {
-		s.xstsMu.Lock()
-		if cached := s.xsts[relyingParty]; cached.Valid() && !sameXSTSToken(cached, rejected) {
-			s.xstsMu.Unlock()
-			return cached, nil
-		}
-		if current := s.xstsRefreshes[relyingParty]; current != nil {
-			s.xstsMu.Unlock()
-			token, err := waitForXSTSRefresh(ctx, current)
-			if !retryCanceledXSTSRefresh(ctx, err) {
-				return token, err
-			}
-			s.xstsMu.Lock()
-			if s.xstsRefreshes[relyingParty] == current {
-				delete(s.xstsRefreshes, relyingParty)
-			}
-			s.xstsMu.Unlock()
-			continue
-		}
-
-		// Keep both caches behind one invalidation boundary so a normal acquisition
-		// cannot reuse the rejected SISU response while the refresh is registered.
-		s.respMu.Lock()
-		if sameXSTSToken(s.xsts[relyingParty], rejected) {
-			delete(s.xsts, relyingParty)
-		}
-		if s.resp != nil && sameXSTSToken(s.resp.AuthorizationToken, rejected) {
-			s.resp = nil
-		}
-		refresh = &xstsRefresh{done: make(chan struct{})}
-		s.xstsRefreshes[relyingParty] = refresh
-		s.respMu.Unlock()
-		s.xstsMu.Unlock()
-		break
-	}
-
-	token, err := request(ctx, relyingParty)
-	if err == nil && !token.Valid() {
-		err = errors.New("xal/sisu: invalid refreshed XSTS token data")
-	}
-	if err == nil && sameXSTSToken(token, rejected) {
-		err = errors.New("xal/sisu: refreshed XSTS token matches rejected token")
-	}
+	// Keep both caches behind one invalidation boundary so a default-RP
+	// acquisition cannot observe the new generation while still reusing s.resp.
 	s.xstsMu.Lock()
-	if err == nil {
-		if cached := s.xsts[relyingParty]; cached.Valid() && !sameXSTSToken(cached, rejected) {
-			token = cached
-		} else {
-			s.xsts[relyingParty] = token
-		}
+	s.respMu.Lock()
+	s.xstsGenerations[relyingParty]++
+	if sameXSTSToken(s.xsts[relyingParty], rejected) {
+		delete(s.xsts, relyingParty)
 	}
-	refresh.token, refresh.err = token, err
-	delete(s.xstsRefreshes, relyingParty)
-	close(refresh.done)
+	if s.resp != nil && sameXSTSToken(s.resp.AuthorizationToken, rejected) {
+		s.resp = nil
+	}
+	s.respMu.Unlock()
 	s.xstsMu.Unlock()
-	return token, err
-}
-
-// waitForXSTSRefresh waits for a shared forced refresh or for ctx cancellation.
-func waitForXSTSRefresh(ctx context.Context, refresh *xstsRefresh) (*xsts.Token, error) {
-	select {
-	case <-refresh.done:
-		return refresh.token, refresh.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// retryCanceledXSTSRefresh reports whether a live caller should replace a
-// shared refresh whose initiating context was canceled.
-func retryCanceledXSTSRefresh(ctx context.Context, err error) bool {
-	return ctx.Err() == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 }
 
 // sameXSTSToken reports whether a and b contain the same serialized token.
