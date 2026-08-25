@@ -137,22 +137,15 @@ func (r *Resolver) Resolve(ctx context.Context, u *url.URL) (endpoint Endpoint, 
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
 func (r *Resolver) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, _ error) {
-	token, policy, _, err := r.tokenAndSignature(ctx, u)
-	return token, policy, err
-}
-
-// tokenAndSignature resolves an XSTS token, signature policy, and relying party
-// for the given URL.
-func (r *Resolver) tokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, relyingParty string, _ error) {
 	endpoint, policy, err := r.Resolve(ctx, u)
 	if err != nil {
-		return nil, policy, "", err
+		return nil, policy, err
 	}
 	token, err := r.src.XSTSToken(ctx, endpoint.RelyingParty)
 	if err != nil {
-		return nil, policy, endpoint.RelyingParty, fmt.Errorf("request XSTS token: %w", err)
+		return nil, policy, fmt.Errorf("request XSTS token: %w", err)
 	}
-	return token, policy, endpoint.RelyingParty, nil
+	return token, policy, nil
 }
 
 // title returns cached title data or starts a single shared load for titleID.

@@ -71,10 +71,20 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 // that the XSTS token expired before its advertised lifetime.
 func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerExclusionSet, data []byte) (*http.Response, error) {
 	ctx := req.Context()
+	if t == nil {
+		return nil, errors.New("xal/nsal: nil Transport")
+	}
+	if t.Resolver == nil {
+		return nil, errors.New("xal/nsal: nil Resolver")
+	}
 	for attempt := 0; ; attempt++ {
-		token, policy, relyingParty, err := t.resolveTokenAndSignature(ctx, req.URL)
+		endpoint, policy, err := t.Resolver.Resolve(ctx, req.URL)
 		if err != nil {
 			return nil, fmt.Errorf("request XSTS token and signature: %w", err)
+		}
+		token, err := t.Resolver.src.XSTSToken(ctx, endpoint.RelyingParty)
+		if err != nil {
+			return nil, fmt.Errorf("request XSTS token and signature: request XSTS token: %w", err)
 		}
 
 		req2 := req.Clone(ctx)
@@ -103,7 +113,7 @@ func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerEx
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		invalidator.InvalidateXSTSToken(relyingParty, token)
+		invalidator.InvalidateXSTSToken(endpoint.RelyingParty, token)
 	}
 }
 
@@ -136,20 +146,13 @@ type xstsTokenInvalidator interface {
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
 func (t *Transport) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, _ error) {
-	token, policy, _, err := t.resolveTokenAndSignature(ctx, u)
-	return token, policy, err
-}
-
-// resolveTokenAndSignature validates the transport and resolves the XSTS token,
-// signature policy, and relying party for u.
-func (t *Transport) resolveTokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, relyingParty string, _ error) {
 	if t == nil {
-		return nil, policy, "", errors.New("xal/nsal: nil Transport")
+		return nil, policy, errors.New("xal/nsal: nil Transport")
 	}
 	if t.Resolver == nil {
-		return nil, policy, "", errors.New("xal/nsal: nil Resolver")
+		return nil, policy, errors.New("xal/nsal: nil Resolver")
 	}
-	return t.Resolver.tokenAndSignature(ctx, u)
+	return t.Resolver.TokenAndSignature(ctx, u)
 }
 
 func (t *Transport) baseTransport() http.RoundTripper {
