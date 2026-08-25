@@ -106,13 +106,14 @@ func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerEx
 		if err != nil {
 			return nil, err
 		}
-		if attempt > 0 || !tokenExpired(resp) {
+		invalidator, ok := t.Resolver.src.(TokenInvalidator)
+		if attempt > 0 || !ok || !tokenExpired(resp) {
 			return resp, nil
 		}
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		t.Resolver.src.InvalidateXSTSToken(endpoint.RelyingParty, token)
+		invalidator.InvalidateXSTSToken(endpoint.RelyingParty, token)
 	}
 }
 

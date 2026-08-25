@@ -24,10 +24,14 @@ var defaultTitleIDs = []string{"current", "default"}
 // NSAL title data, XSTS tokens, and request signatures.
 type TokenSource interface {
 	xsts.TokenSource
+	ProofKey() *ecdsa.PrivateKey
+}
+
+// TokenInvalidator discards XSTS tokens rejected by a relying party.
+type TokenInvalidator interface {
 	// InvalidateXSTSToken discards rejected for relyingParty if it is still
 	// cached. The next XSTSToken call must not reuse that token.
 	InvalidateXSTSToken(relyingParty string, rejected *xsts.Token)
-	ProofKey() *ecdsa.PrivateKey
 }
 
 // ResolverConfig configures a [Resolver].

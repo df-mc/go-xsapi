@@ -187,6 +187,38 @@ func TestTransportRoundTripRetriesExpiredXSTSTokenOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestTransportRoundTripDoesNotRetryWithoutTokenInvalidator(t *testing.T) {
+	src := &nonInvalidatingTransportTokenSource{
+		token:    authorizationToken("stale"),
+		proofKey: mustGenerateKey(t),
+	}
+	var requests int
+	transport := &Transport{
+		Base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			requests++
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     http.Header{"Www-Authenticate": {"Token error='token_expired'"}},
+				Body:       http.NoBody,
+			}, nil
+		}),
+		Resolver: testResolver(src),
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://multiplayer.minecraft.net/authentication", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
 func TestTokenExpired(t *testing.T) {
 	for name, tc := range map[string]struct {
 		headers []string
@@ -332,6 +364,21 @@ type transportTokenSource struct {
 	err          error
 }
 
+type nonInvalidatingTransportTokenSource struct {
+	token    *xsts.Token
+	proofKey *ecdsa.PrivateKey
+}
+
+// XSTSToken returns the static token without supporting invalidation.
+func (src *nonInvalidatingTransportTokenSource) XSTSToken(context.Context, string) (*xsts.Token, error) {
+	return src.token, nil
+}
+
+// ProofKey returns the static source proof key.
+func (src *nonInvalidatingTransportTokenSource) ProofKey() *ecdsa.PrivateKey {
+	return src.proofKey
+}
+
 type refreshingTransportTokenSource struct {
 	transportTokenSource
 	fresh                    *xsts.Token
@@ -358,9 +405,6 @@ func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty strin
 	}
 	return src.token, nil
 }
-
-// InvalidateXSTSToken leaves the static test token unchanged.
-func (*transportTokenSource) InvalidateXSTSToken(string, *xsts.Token) {}
 
 func (src *transportTokenSource) ProofKey() *ecdsa.PrivateKey {
 	return src.proofKey
