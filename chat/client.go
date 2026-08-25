@@ -109,6 +109,63 @@ type SendMessageResult struct {
 	ConversationID string `json:"conversationId"`
 }
 
+func (c *Client) MarkRead(ctx context.Context, conversation Conversation, message Message, opts ...internal.RequestOption) error {
+	return c.updateHorizon(ctx, []horizonUpdate{
+		{
+			ConversationID:   conversation.ID,
+			ConversationType: conversation.Type,
+			HorizonType:      "Read",
+			MessageClock:     message.MessageClock(),
+		},
+	}, opts)
+}
+
+func (c *Client) ClearConversation(ctx context.Context, conversation ConversationResult, before Message, opts ...internal.RequestOption) error {
+	return c.updateHorizon(ctx, []horizonUpdate{
+		{
+			ConversationID:   conversation.ID,
+			ConversationType: conversation.Type,
+			HorizonType:      "Delete",
+			MessageClock:     before.MessageClock(),
+		},
+	}, opts)
+}
+
+func (c *Client) updateHorizon(ctx context.Context, updates []horizonUpdate, opts []internal.RequestOption) error {
+	requestURL := endpointURL.JoinPath("/network/xbox/users/me/conversations/horizon").String()
+	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL, map[string]any{
+		"conversations": updates,
+	}, append(opts,
+		internal.RequestHeader("Accept", "application/json"),
+		internal.RequestHeader("Content-Type", "application/json"),
+		internal.DefaultLanguage,
+		contractVersion,
+	))
+	if err != nil {
+		return fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	default:
+		return internal.UnexpectedStatusCode(resp)
+	}
+}
+
+type horizonUpdate struct {
+	ConversationID   string `json:"conversationId"`
+	ConversationType string `json:"conversationType"`
+	HorizonType      string `json:"horizonType"`
+	MessageClock     string `json:"horizon"`
+}
+
 func (c *Client) UserConversation(ctx context.Context, xuid string, filter ConversationFilter, opts ...internal.RequestOption) (*ConversationResult, error) {
 	return c.conversation(ctx, "/users/xuid("+xuid+")", filter, opts)
 }
