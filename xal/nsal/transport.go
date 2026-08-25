@@ -71,12 +71,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 // that the XSTS token expired before its advertised lifetime.
 func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerExclusionSet, data []byte) (*http.Response, error) {
 	ctx := req.Context()
+	token, policy, relyingParty, err := t.resolveTokenAndSignature(ctx, req.URL)
+	if err != nil {
+		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
+	}
 	for attempt := 0; ; attempt++ {
-		token, policy, err := t.TokenAndSignature(ctx, req.URL)
-		if err != nil {
-			return nil, fmt.Errorf("request XSTS token and signature: %w", err)
-		}
-
 		req2 := req.Clone(ctx)
 		if req.Body != nil {
 			req2.Body = io.NopCloser(bytes.NewReader(data))
@@ -96,14 +95,17 @@ func (t *Transport) roundTripAuthenticated(req *http.Request, exclusion headerEx
 		if err != nil {
 			return nil, err
 		}
-		invalidator, ok := t.Resolver.src.(xstsTokenInvalidator)
+		refresher, ok := t.Resolver.src.(xstsTokenRefresher)
 		if attempt > 0 || !ok || !tokenExpired(resp) {
 			return resp, nil
 		}
 		if resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		invalidator.InvalidateXSTSToken(token)
+		token, err = refresher.RefreshXSTSToken(ctx, relyingParty, token)
+		if err != nil {
+			return nil, fmt.Errorf("refresh rejected XSTS token: %w", err)
+		}
 	}
 }
 
@@ -114,9 +116,13 @@ func tokenExpired(resp *http.Response) bool {
 	}
 	for _, value := range resp.Header.Values("WWW-Authenticate") {
 		for part := range strings.SplitSeq(value, ",") {
-			part = strings.TrimSpace(strings.ToLower(part))
-			part = strings.TrimSpace(strings.TrimPrefix(part, "token "))
-			if part == "error='token_expired'" {
+			part = strings.TrimSpace(part)
+			if len(part) >= len("token ") && strings.EqualFold(part[:len("token ")], "token ") {
+				part = strings.TrimSpace(part[len("token "):])
+			}
+			name, value, ok := strings.Cut(part, "=")
+			if ok && strings.EqualFold(strings.TrimSpace(name), "error") &&
+				strings.EqualFold(strings.Trim(strings.TrimSpace(value), "\"'"), "token_expired") {
 				return true
 			}
 		}
@@ -124,20 +130,28 @@ func tokenExpired(resp *http.Response) bool {
 	return false
 }
 
-// xstsTokenInvalidator lets token sources discard a token rejected upstream.
-type xstsTokenInvalidator interface {
-	InvalidateXSTSToken(*xsts.Token)
+// xstsTokenRefresher lets token sources atomically replace a token rejected by
+// its relying party.
+type xstsTokenRefresher interface {
+	RefreshXSTSToken(context.Context, string, *xsts.Token) (*xsts.Token, error)
 }
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
 func (t *Transport) TokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, _ error) {
+	token, policy, _, err := t.resolveTokenAndSignature(ctx, u)
+	return token, policy, err
+}
+
+// resolveTokenAndSignature validates the transport and resolves the XSTS token,
+// signature policy, and relying party for u.
+func (t *Transport) resolveTokenAndSignature(ctx context.Context, u *url.URL) (_ *xsts.Token, policy SignaturePolicy, relyingParty string, _ error) {
 	if t == nil {
-		return nil, policy, errors.New("xal/nsal: nil Transport")
+		return nil, policy, "", errors.New("xal/nsal: nil Transport")
 	}
 	if t.Resolver == nil {
-		return nil, policy, errors.New("xal/nsal: nil Resolver")
+		return nil, policy, "", errors.New("xal/nsal: nil Resolver")
 	}
-	return t.Resolver.TokenAndSignature(ctx, u)
+	return t.Resolver.tokenAndSignature(ctx, u)
 }
 
 func (t *Transport) baseTransport() http.RoundTripper {

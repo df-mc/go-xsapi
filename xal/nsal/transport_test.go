@@ -137,8 +137,53 @@ func TestTransportRoundTripRefreshesExpiredXSTSToken(t *testing.T) {
 	if src.invalidated != stale {
 		t.Fatal("invalidated token was not the rejected token")
 	}
+	if src.refreshRelyingParty != "https://multiplayer.minecraft.net/" {
+		t.Fatalf("refresh relying party = %q, want https://multiplayer.minecraft.net/", src.refreshRelyingParty)
+	}
+	if src.calls != 1 {
+		t.Fatalf("XSTSToken calls = %d, want 1", src.calls)
+	}
+	if src.refreshCalls != 1 {
+		t.Fatalf("RefreshXSTSToken calls = %d, want 1", src.refreshCalls)
+	}
 	if !firstResponseBody.closed {
 		t.Fatal("first response body was not closed before retry")
+	}
+}
+
+func TestTransportRoundTripRetriesExpiredXSTSTokenOnlyOnce(t *testing.T) {
+	key := mustGenerateKey(t)
+	src := &refreshingTransportTokenSource{
+		transportTokenSource: transportTokenSource{token: authorizationToken("stale"), proofKey: key},
+		fresh:                authorizationToken("fresh"),
+	}
+	var requests int
+	transport := &Transport{
+		Base: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			requests++
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     http.Header{"Www-Authenticate": {"Token error='token_expired'"}},
+				Body:       http.NoBody,
+			}, nil
+		}),
+		Resolver: testResolver(src),
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "https://multiplayer.minecraft.net/authentication", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+	if src.refreshCalls != 1 {
+		t.Fatalf("RefreshXSTSToken calls = %d, want 1", src.refreshCalls)
 	}
 }
 
@@ -148,6 +193,8 @@ func TestTokenExpired(t *testing.T) {
 		want    bool
 	}{
 		"first parameter": {[]string{"Token error='token_expired'"}, true},
+		"double quoted":   {[]string{`Token error="token_expired"`}, true},
+		"spaced equals":   {[]string{`Token error = "token_expired"`}, true},
 		"no comma space":  {[]string{"Token realm='xboxlive.com',error='token_expired'"}, true},
 		"later header":    {[]string{"Token error='token_required'", "Token error='token_expired'"}, true},
 		"other error":     {[]string{"Token error='token_required'"}, false},
@@ -287,15 +334,17 @@ type transportTokenSource struct {
 
 type refreshingTransportTokenSource struct {
 	transportTokenSource
-	fresh       *xsts.Token
-	invalidated *xsts.Token
+	fresh               *xsts.Token
+	invalidated         *xsts.Token
+	refreshRelyingParty string
+	refreshCalls        int
 }
 
-func (src *refreshingTransportTokenSource) InvalidateXSTSToken(token *xsts.Token) {
-	src.invalidated = token
-	if src.token == token {
-		src.token = src.fresh
-	}
+func (src *refreshingTransportTokenSource) RefreshXSTSToken(_ context.Context, relyingParty string, rejected *xsts.Token) (*xsts.Token, error) {
+	src.invalidated = rejected
+	src.refreshRelyingParty = relyingParty
+	src.refreshCalls++
+	return src.fresh, nil
 }
 
 func (src *transportTokenSource) XSTSToken(_ context.Context, relyingParty string) (*xsts.Token, error) {
