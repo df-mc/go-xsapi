@@ -1,10 +1,13 @@
 package chat
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -12,6 +15,7 @@ import (
 	"strconv"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
+	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
@@ -107,6 +111,129 @@ func (c *Client) sendMessage(ctx context.Context, path string, parts []MessageCo
 type SendMessageResult struct {
 	MessageID      string `json:"messageId"`
 	ConversationID string `json:"conversationId"`
+}
+
+func (c *Client) UploadImage(ctx context.Context, request *UploadImageRequest, opts ...internal.RequestOption) (*ImageContent, error) {
+	attachmentID, uploadURL, err := c.uploadURL(ctx, request.FileType, opts)
+	if err != nil {
+		return nil, fmt.Errorf("resolve upload URL: %w", err)
+	}
+
+	// Pre-calculate the hash before reading it all.
+	// I don't know if there's a good way to calculate the hash for the image.
+	buf := &bytes.Buffer{}
+	if _, err := buf.ReadFrom(request.Body); err != nil {
+		return nil, fmt.Errorf("read image body: %w", err)
+	}
+	hash := md5.New()
+	_, _ = hash.Write(buf.Bytes()) // hash.Hash states that Write should never return an error
+	sum := hash.Sum(nil)
+	size := buf.Len()
+
+	req, err := internal.NewRequest(ctx, http.MethodPut, uploadURL, buf, append(opts,
+		internal.ContractVersion("3"),
+		internal.RequestHeader("Accept", "application/json"),
+		internal.RequestHeader("x-ms-blob-type", "BlockBlob"),
+		internal.RequestHeader("Content-Type", "application/octet-stream"),
+		internal.RequestHeader("Cache-Control", "no-cache"),
+	))
+	if err != nil {
+		return nil, fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(nsal.WithoutAuthHeaders(req))
+	if err != nil {
+		return nil, fmt.Errorf("upload image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		return &ImageContent{
+			AttachmentID: attachmentID,
+			FileType:     request.FileType,
+			Size:         int64(size),
+			Hash:         sum,
+			Height:       request.Height,
+			Width:        request.Width,
+		}, nil
+	default:
+		return nil, internal.UnexpectedStatusCode(resp)
+	}
+}
+
+type UploadImageRequest struct {
+	FileType string
+	Height   int
+	Width    int
+	Body     io.Reader
+}
+
+func (c *Client) uploadURL(ctx context.Context, fileType string, opts []internal.RequestOption) (uri string, attachmentID string, err error) {
+	requestURL := endpointURL.JoinPath("/network/xbox/users/me/upload", fileType).String()
+	req, err := internal.NewRequest(ctx, http.MethodGet, requestURL, nil, append(opts,
+		internal.RequestHeader("Accept", "application/json"),
+		internal.DefaultLanguage,
+		contractVersion,
+	))
+	if err != nil {
+		return "", "", fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var result struct {
+			AttachmentID string `json:"attachmentId"`
+			UploadURI    string `json:"uploadUri"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", "", fmt.Errorf("decode response body: %w", err)
+		}
+		if result.AttachmentID == "" || result.UploadURI == "" {
+			return "", "", fmt.Errorf("chat: invalid image upload URL response")
+		}
+		return result.AttachmentID, result.UploadURI, nil
+	default:
+		return "", "", internal.UnexpectedStatusCode(resp)
+	}
+}
+
+const (
+	FileTypeJPEG = "jpg"
+	FileTypePNG  = "png"
+)
+
+func (c *Client) DeleteMessage(ctx context.Context, conversation Conversation, message Message, opts ...internal.RequestOption) error {
+	requestURL := endpointURL.JoinPath(
+		"/network/xbox/users/me/conversations/", conversation.ID, "/messages/", message.MessageID(),
+	).String()
+	req, err := internal.NewRequest(ctx, http.MethodDelete, requestURL, nil, append(opts,
+		internal.RequestHeader("Accept", "application/json"),
+		internal.DefaultLanguage,
+		contractVersion,
+	))
+	if err != nil {
+		return fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	default:
+		return internal.UnexpectedStatusCode(resp)
+	}
 }
 
 func (c *Client) MarkRead(ctx context.Context, conversation Conversation, message Message, opts ...internal.RequestOption) error {
