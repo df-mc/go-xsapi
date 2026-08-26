@@ -28,6 +28,7 @@ type TokenSource interface {
 }
 
 // TokenInvalidator discards XSTS tokens rejected by a relying party.
+// It is implemented by TokenSource that supports token caching.
 type TokenInvalidator interface {
 	// InvalidateXSTSToken discards rejected for relyingParty if it is still
 	// cached. The next XSTSToken call must not reuse that token.
