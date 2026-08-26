@@ -3,6 +3,7 @@ package presence
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -165,6 +166,44 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 	}
 	c.shouldCleanup.Store(false)
 	return nil
+}
+
+// SetCloaked updates whether the caller's presence is hidden from other users,
+// including friends. It is only functional when signed in to an Xbox app, otherwise
+// an error will be returned.
+func (c *Client) SetCloaked(ctx context.Context, v bool, opts ...internal.RequestOption) error {
+	requestURL := endpoint.JoinPath(
+		"/users/xuid(" + c.userInfo.XUID + ")/state",
+	).String()
+	var state string
+	if v {
+		state = "Cloaked"
+	} else {
+		state = "Active"
+	}
+	req, err := internal.WithJSONBody(ctx, http.MethodPut, requestURL, map[string]any{
+		"state": state,
+	}, append(opts,
+		contractVersion,
+		internal.RequestHeader("Accept", "application/json"),
+		internal.RequestHeader("Content-Type", "application/json"),
+	))
+	if err != nil {
+		return fmt.Errorf("make request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	default:
+		return internal.UnexpectedStatusCode(resp)
+	}
 }
 
 // Update updates the presence of the authenticated user's current title.
