@@ -27,6 +27,14 @@ type TokenSource interface {
 	ProofKey() *ecdsa.PrivateKey
 }
 
+// TokenInvalidator discards XSTS tokens rejected by a relying party.
+// It is implemented by TokenSource that supports token caching.
+type TokenInvalidator interface {
+	// InvalidateXSTSToken discards rejected for relyingParty if it is still
+	// cached. The next XSTSToken call must not reuse that token.
+	InvalidateXSTSToken(relyingParty string, rejected *xsts.Token)
+}
+
 // ResolverConfig configures a [Resolver].
 type ResolverConfig struct {
 	// TitleIDs lists title data sources to resolve lazily in precedence order.

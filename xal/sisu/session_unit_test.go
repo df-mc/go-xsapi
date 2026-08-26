@@ -167,6 +167,129 @@ func TestXSTSTokenDoesNotHoldCacheLockDuringTokenRequest(t *testing.T) {
 	}
 }
 
+func TestSessionInvalidatesOnlyRejectedRelyingParty(t *testing.T) {
+	rejected := validXSTSToken("rejected")
+	replacement := validXSTSToken("replacement")
+	other := validXSTSToken("other")
+	session := (Config{}).New(staticMSATokenSource{}, nil)
+	session.xsts[defaultRelyingParty] = rejected
+	session.xsts["https://example.com/"] = other
+	session.resp = &authorizationResponse{AuthorizationToken: rejected}
+
+	session.InvalidateXSTSToken(defaultRelyingParty, rejected)
+	if _, ok := session.xsts[defaultRelyingParty]; ok {
+		t.Fatal("rejected token remained cached")
+	}
+	if session.resp != nil {
+		t.Fatal("SISU response containing rejected token remained cached")
+	}
+	if session.xsts["https://example.com/"] != other {
+		t.Fatal("token for another relying party was invalidated")
+	}
+
+	session.xsts[defaultRelyingParty] = replacement
+	session.resp = &authorizationResponse{AuthorizationToken: replacement}
+	session.InvalidateXSTSToken(defaultRelyingParty, rejected)
+	if session.xsts[defaultRelyingParty] != replacement || session.resp.AuthorizationToken != replacement {
+		t.Fatal("late rejection removed the replacement token")
+	}
+}
+
+func TestSessionDoesNotCacheTokenFetchedDuringSameRelyingPartyInvalidation(t *testing.T) {
+	rejected := validXSTSToken("rejected")
+	replacement := validXSTSToken("replacement")
+	session := (Config{}).New(staticMSATokenSource{}, nil)
+	fetchStarted, allowFetch := make(chan struct{}), make(chan struct{})
+	var calls int
+	request := func(context.Context, string) (*xsts.Token, error) {
+		calls++
+		if calls == 1 {
+			close(fetchStarted)
+			<-allowFetch
+			return rejected, nil
+		}
+		return replacement, nil
+	}
+
+	type result struct {
+		token *xsts.Token
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		token, err := session.xstsToken(context.Background(), defaultRelyingParty, request)
+		done <- result{token: token, err: err}
+	}()
+
+	<-fetchStarted
+	session.InvalidateXSTSToken(defaultRelyingParty, rejected)
+	close(allowFetch)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("XSTSToken: %v", got.err)
+	}
+	if got.token != replacement {
+		t.Fatal("XSTSToken returned the token fetched before invalidation")
+	}
+	if calls != 2 {
+		t.Fatalf("token requests = %d, want 2", calls)
+	}
+	if cached := session.xsts[defaultRelyingParty]; cached != replacement {
+		t.Fatal("token fetched before invalidation was restored to the cache")
+	}
+}
+
+func TestSessionOtherRelyingPartyInvalidationDoesNotRestartAcquisition(t *testing.T) {
+	const acquiringRelyingParty = "https://example.com/acquiring"
+	const invalidatedRelyingParty = "https://example.com/invalidated"
+	acquired := validXSTSToken("acquired")
+	rejected := validXSTSToken("rejected")
+	session := (Config{}).New(staticMSATokenSource{}, nil)
+	session.xsts[invalidatedRelyingParty] = rejected
+	fetchStarted, allowFetch := make(chan struct{}), make(chan struct{})
+	var calls int
+	request := func(context.Context, string) (*xsts.Token, error) {
+		calls++
+		close(fetchStarted)
+		<-allowFetch
+		return acquired, nil
+	}
+
+	done := make(chan struct {
+		token *xsts.Token
+		err   error
+	}, 1)
+	go func() {
+		token, err := session.xstsToken(context.Background(), acquiringRelyingParty, request)
+		done <- struct {
+			token *xsts.Token
+			err   error
+		}{token: token, err: err}
+	}()
+
+	<-fetchStarted
+	session.InvalidateXSTSToken(invalidatedRelyingParty, rejected)
+	close(allowFetch)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("XSTSToken: %v", got.err)
+	}
+	if got.token != acquired {
+		t.Fatal("unrelated invalidation changed the acquired token")
+	}
+	if calls != 1 {
+		t.Fatalf("token requests = %d, want 1", calls)
+	}
+}
+
+func validXSTSToken(value string) *xsts.Token {
+	return &xsts.Token{
+		Token:         value,
+		NotAfter:      time.Now().Add(time.Hour),
+		DisplayClaims: xsts.DisplayClaims{UserInfo: []xsts.UserInfo{{}}},
+	}
+}
+
 type staticMSATokenSource struct{}
 
 func (staticMSATokenSource) Token() (*oauth2.Token, error) {

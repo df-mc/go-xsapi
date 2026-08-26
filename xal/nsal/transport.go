@@ -34,6 +34,10 @@ type Transport struct {
 
 // RoundTrip implements [http.RoundTripper].
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.Resolver == nil {
+		return nil, errors.New("xal/nsal: Transport.RoundTrip: nil Resolver")
+	}
+
 	var reqBodyClosed bool
 	if req.Body != nil {
 		defer func() {
@@ -55,9 +59,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.baseTransport().RoundTrip(req)
 	}
 
-	token, policy, err := t.TokenAndSignature(ctx, req.URL)
+	endpoint, policy, err := t.Resolver.Resolve(ctx, req.URL)
 	if err != nil {
 		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
+	}
+	token, err := t.Resolver.src.XSTSToken(ctx, endpoint.RelyingParty)
+	if err != nil {
+		return nil, fmt.Errorf("request XSTS token and signature: request XSTS token: %w", err)
 	}
 
 	req2 := req.Clone(ctx)
@@ -78,7 +86,35 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	return t.baseTransport().RoundTrip(req2)
+	resp, err := t.baseTransport().RoundTrip(req2)
+	if err != nil {
+		return nil, err
+	}
+	if invalidator, ok := t.Resolver.src.(TokenInvalidator); ok && tokenExpired(resp) {
+		invalidator.InvalidateXSTSToken(endpoint.RelyingParty, token)
+	}
+	return resp, nil
+}
+
+// tokenExpired reports whether Xbox explicitly rejected an expired token.
+func tokenExpired(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		return false
+	}
+	for _, value := range resp.Header.Values("WWW-Authenticate") {
+		for part := range strings.SplitSeq(value, ",") {
+			part = strings.TrimSpace(part)
+			if len(part) >= len("token ") && strings.EqualFold(part[:len("token ")], "token ") {
+				part = strings.TrimSpace(part[len("token "):])
+			}
+			name, value, ok := strings.Cut(part, "=")
+			if ok && strings.EqualFold(strings.TrimSpace(name), "error") &&
+				strings.EqualFold(strings.Trim(strings.TrimSpace(value), "\"'"), "token_expired") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TokenAndSignature resolves an XSTS token and signature policy for the given URL.
