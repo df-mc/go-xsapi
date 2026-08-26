@@ -23,3 +23,19 @@ type Config struct {
 	// to handle redirections in the WebView displayed to sign in to the user.
 	RedirectURI string
 }
+
+// AndroidAppConfig is the configuration used in Xbox App for Android devices.
+var AndroidAppConfig = Config{
+	Config: xal.Config{
+		// This indicates the device is running Android 13.
+		Device: xal.Device{
+			Type:    xal.DeviceTypeAndroid,
+			Version: "13",
+		},
+		UserAgent: "XAL Android 2025.04.20250326.000",
+		TitleID:   328178078,
+		Sandbox:   "RETAIL",
+	},
+	ClientID:    "000000004c12ae6f",
+	RedirectURI: "ms-xal-000000004c12ae6f://auth",
+}
