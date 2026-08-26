@@ -34,6 +34,10 @@ type Transport struct {
 
 // RoundTrip implements [http.RoundTripper].
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.Resolver == nil {
+		return nil, errors.New("xal/nsal: Transport.RoundTrip: nil Resolver")
+	}
+
 	var reqBodyClosed bool
 	if req.Body != nil {
 		defer func() {
@@ -54,7 +58,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		reqBodyClosed = true
 		return t.baseTransport().RoundTrip(req)
 	}
-	
+
 	endpoint, policy, err := t.Resolver.Resolve(ctx, req.URL)
 	if err != nil {
 		return nil, fmt.Errorf("request XSTS token and signature: %w", err)

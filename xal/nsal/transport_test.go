@@ -78,7 +78,7 @@ func TestTransportRoundTripWithNilResolverReturnsError(t *testing.T) {
 	}
 
 	_, err = transport.RoundTrip(req)
-	if err == nil || !strings.Contains(err.Error(), "xal/nsal: nil Resolver") {
+	if err == nil || !strings.Contains(err.Error(), "xal/nsal: Transport.RoundTrip: nil Resolver") {
 		t.Fatalf("RoundTrip error = %v, want nil Resolver error", err)
 	}
 }
