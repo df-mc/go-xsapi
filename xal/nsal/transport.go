@@ -54,13 +54,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		reqBodyClosed = true
 		return t.baseTransport().RoundTrip(req)
 	}
-
-	if t == nil {
-		return nil, errors.New("xal/nsal: nil Transport")
-	}
-	if t.Resolver == nil {
-		return nil, errors.New("xal/nsal: nil Resolver")
-	}
+	
 	endpoint, policy, err := t.Resolver.Resolve(ctx, req.URL)
 	if err != nil {
 		return nil, fmt.Errorf("request XSTS token and signature: %w", err)
