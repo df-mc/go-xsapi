@@ -8,18 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 )
 
-// UpdateProfile updates the profile settings of the caller. Only non-nil field values
+// UpdateProfileSettings updates the profile settings of the caller. Only non-nil field values
 // specified in the given ProfileSettings are applied.
-func (c *Client) UpdateProfile(ctx context.Context, settings ProfileSettings, opts ...internal.RequestOption) error {
+func (c *Client) UpdateProfileSettings(ctx context.Context, settings ProfileSettings, opts ...internal.RequestOption) error {
 	buf := &bytes.Buffer{}
 	if err := json.NewEncoder(buf).Encode(settings); err != nil {
 		return fmt.Errorf("encode request body: %w", err)
@@ -51,92 +51,89 @@ func (c *Client) UpdateProfile(ctx context.Context, settings ProfileSettings, op
 	}
 }
 
-// ProfileSettings describes the settings to commit to the user's profile.
-// Each field can be nil if the user has not specified the setting.
-type ProfileSettings struct {
-	// Bio is the user's profile description.
-	Bio *string
-	// Location is the location displayed on the user's profile.
-	// It can be any arbitrary string specified by the user.
-	Location *string
-	// ShowUserAsAvatar indicates whether to display the user's Xbox Live
-	// Avatar when viewing their profile. This feature is no longer available
-	// in the Xbox app.
-	ShowUserAsAvatar *bool
-	// PreferredPlatforms lists the platforms preferred by the user.
-	// Known values are listed below as constants.
-	PreferredPlatforms *[]string
-	// WebColorTheme specifies the theme applied to the user's profile.
-	// Setting it to 'gamerpicblur' displays a blurred version of the user's profile image
-	// as the background. Other supported themes are defined in the manifest file
-	// that can be found here:
-	//   https://dlassets-ssl.xboxlive.com/public/content/ppl/profilethemes/v2/manifests/en-US.json
-	WebColorTheme *string
-	// Custom specifies the list of profile setting that was not described/implemented in
-	// this struct. It allows caller to set unknown setting with an ID and the value.
-	Custom []ProfileSetting
+// ProfileSettings describes the settings of the user profile.
+// Known keys are listed below as constants. Use methods implemented
+// in this type to query/mutate values for settings with special format,
+// such as boolean ('0' or '1') and comma-separated []string.
+type ProfileSettings map[string]string
+
+// ShowUserAsAvatar returns a boolean indicating whether to display the user's
+// Xbox Live Avatar when viewing their profile. This feature is no longer available
+// in the Xbox app, but can be still set by old apps, including Xbox Original Avatar.
+func (prof ProfileSettings) ShowUserAsAvatar() bool {
+	v, _ := prof[ProfileSettingShowUserAsAvatar]
+	return v == "1"
+}
+
+// WithShowUserAsAvatar specifies whether to display the user's Xbox Live Avatar
+// when viewing their profile. This feature is no longer available in the Xbox app
+// but can be still modified by old apps, including Xbox Original Avatar.
+func (prof ProfileSettings) WithShowUserAsAvatar(value bool) ProfileSettings {
+	var v string
+	if value {
+		v = "1"
+	} else {
+		v = "0"
+	}
+	return prof.with(ProfileSettingShowUserAsAvatar, v)
+}
+
+// PreferredPlatforms returns the list of the platforms preferred by the user.
+// Known values are listed below as constants.
+func (prof ProfileSettings) PreferredPlatforms() []string {
+	v, _ := prof[ProfileSettingPreferredPlatforms]
+	return strings.Split(v, ",")
+}
+
+// WithPreferredPlatforms specifies the given list of the platforms preferred by the user.
+// Known values are listed below as constants.
+func (prof ProfileSettings) WithPreferredPlatforms(value []string) ProfileSettings {
+	return prof.with(ProfileSettingPreferredPlatforms, strings.Join(value, ","))
+}
+
+// with returns a clone of ProfileSettings with the key and the value set.
+func (prof ProfileSettings) with(key, value string) ProfileSettings {
+	clone := maps.Clone(prof)
+	clone[key] = value
+	return clone
 }
 
 // MarshalJSON implements [json.Marshaler].
-func (s *ProfileSettings) MarshalJSON() ([]byte, error) {
-	var settings []ProfileSetting
-	for key, value := range s.stringFields() {
-		if value != nil {
-			settings = append(settings, ProfileSetting{
-				ID:    key,
-				Value: *value,
-			})
-		}
+func (prof ProfileSettings) MarshalJSON() ([]byte, error) {
+	if prof == nil {
+		return nil, errors.New("social: unable to encode a nil ProfileSettings")
 	}
-	if s.PreferredPlatforms != nil {
-		settings = append(settings, ProfileSetting{
-			ID:    ProfileSettingPreferredPlatforms,
-			Value: strings.Join(*s.PreferredPlatforms, ","),
-		})
+	var settings []profileSetting
+	for key, value := range prof {
+		settings = append(settings, profileSetting{ID: key, Value: value})
 	}
-	if s.ShowUserAsAvatar != nil {
-		var value string
-		if *s.ShowUserAsAvatar {
-			value = "1"
-		} else {
-			value = "0"
-		}
-		settings = append(settings, ProfileSetting{
-			ID:    ProfileSettingShowUserAsAvatar,
-			Value: value,
-		})
-	}
-
-	settings = slices.Concat(slices.DeleteFunc(settings, func(left ProfileSetting) bool {
-		return slices.ContainsFunc(s.Custom, func(right ProfileSetting) bool {
-			return left.ID == right.ID
-		})
-	}), s.Custom)
-
-	var data struct {
+	data := struct {
 		Settings []settingsEnvelope `json:"settings"`
-	}
-	data.Settings = make([]settingsEnvelope, len(settings))
+	}{Settings: make([]settingsEnvelope, len(settings))}
 	for i, setting := range settings {
 		data.Settings[i].ProfileSetting = setting
 	}
 	return json.Marshal(data)
 }
 
-// stringFields returns a map whose key is the ID of the profile setting
-// and the value is a *string which may be non-nil if the caller has specified
-// a value for it.
-func (s *ProfileSettings) stringFields() map[string]*string {
-	return map[string]*string{
-		ProfileSettingBio:           s.Bio,
-		ProfileSettingLocation:      s.Location,
-		ProfileSettingWebColorTheme: s.WebColorTheme,
+// UnmarshalJSON implements [json.Marshaler].
+func (prof *ProfileSettings) UnmarshalJSON(b []byte) error {
+	var data struct {
+		Settings []settingsEnvelope `json:"settings"`
 	}
+	if err := json.Unmarshal(b, &data); err != nil {
+		return err
+	}
+	for _, envelope := range data.Settings {
+		setting := envelope.ProfileSetting
+		(*prof)[setting.ID] = setting.Value
+	}
+	return nil
 }
 
 type (
-	// ProfileSetting represents a single setting in the user profile.
-	ProfileSetting struct {
+	// profileSetting represents a single setting in the user profile.
+	profileSetting struct {
 		// ID is the name of the profile setting.
 		// It is one of the constants listed below.
 		ID string `json:"id"`
@@ -144,11 +141,11 @@ type (
 		Value string `json:"value"`
 	}
 
-	// settingsEnvelope is a struct that encapsulates ProfileSetting. It is used
+	// settingsEnvelope is a struct that encapsulates profileSetting. It is used
 	// for updating user profiles.
 	settingsEnvelope struct {
 		// ProfileSetting is the profile setting to be applied for the user.
-		ProfileSetting ProfileSetting `json:"userSetting"`
+		ProfileSetting profileSetting `json:"userSetting"`
 	}
 )
 
