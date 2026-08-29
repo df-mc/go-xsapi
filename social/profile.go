@@ -167,6 +167,8 @@ const (
 	ProfileSettingPreferredPlatforms = "PreferredPlatforms"
 	// ProfileSettingWebColorTheme is the profile setting name used to
 	// specify the theme configured for the user's profile.
+	// Other supported themes are defined in the manifest file that can be found here:
+	//   https://dlassets-ssl.xboxlive.com/public/content/ppl/profilethemes/v2/manifests/en-US.json
 	ProfileSettingWebColorTheme = "WebColorTheme"
 )
 
