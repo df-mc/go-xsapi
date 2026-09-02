@@ -59,9 +59,12 @@ func newDialer(client *http.Client, log *slog.Logger) *dialer {
 			Subprotocols: []string{subprotocol},
 			HTTPClient:   client,
 		},
-		backoff: backoffDuration,
+		backoff: reconnectBackoff,
 	}
 }
+
+// reconnectBackoff is the backoff schedule new dialers use; tests shorten it.
+var reconnectBackoff = backoffDuration
 
 // dial establishes a new WebSocket connection.
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
@@ -86,7 +89,12 @@ func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
 			return c, nil
 		}
 		sleep := d.backoff(attempt)
-		d.log.Error("error re-establishing WebSocket connection",
+		// The first failure is news; a long outage should not be an Error stream.
+		level := slog.LevelWarn
+		if attempt == 0 {
+			level = slog.LevelError
+		}
+		d.log.Log(ctx, level, "error re-establishing WebSocket connection",
 			slog.Any("error", err), slog.Int("attempt", attempt), slog.Duration("sleep", sleep),
 		)
 		select {

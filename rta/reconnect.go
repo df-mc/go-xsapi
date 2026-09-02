@@ -122,6 +122,11 @@ func (c *Conn) runReconnect(done chan struct{}) {
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 		if !c.resubscribe(subscriptions) {
+			// A handshake that landed after Close ran its deactivation loop
+			// re-tracked an active subscription on a closed Conn; finish it here.
+			if c.ctx.Err() != nil {
+				c.deactivateAll(c.takeSubscriptionsForReconnect())
+			}
 			return
 		}
 		_ = conn.Close(websocket.StatusGoingAway, "resubscribe interrupted")

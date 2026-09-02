@@ -340,12 +340,12 @@ func TestReconnectRetriesInterruptedResubscribe(t *testing.T) {
 // A socket that keeps dropping mid-handshake must not turn into a closed Conn;
 // the reconnect keeps going until a handshake lands.
 func TestReconnectOutlastsPersistentInterruptedResubscribe(t *testing.T) {
+	shortBackoff(t)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
 	conn := srv.Dial(t)
 	defer conn.Close()
-	conn.dialer.backoff = func(int) time.Duration { return time.Millisecond }
 
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -387,12 +387,12 @@ func TestReconnectOutlastsPersistentInterruptedResubscribe(t *testing.T) {
 // An outage longer than any fixed dial budget must be waited out, not turned
 // into a closed Conn with dead subscriptions.
 func TestReconnectKeepsDialingThroughOutage(t *testing.T) {
+	shortBackoff(t)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
 	conn := srv.Dial(t)
 	defer conn.Close()
-	conn.dialer.backoff = func(int) time.Duration { return time.Millisecond }
 
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -430,11 +430,11 @@ func TestReconnectKeepsDialingThroughOutage(t *testing.T) {
 // Closing the Conn during an outage ends the retries and reports the close
 // cause to the subscriptions the reconnect was holding.
 func TestCloseDuringOutageStopsReconnectAndDeactivates(t *testing.T) {
+	shortBackoff(t)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
 	conn := srv.Dial(t)
-	conn.dialer.backoff = func(int) time.Duration { return time.Millisecond }
 
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -462,6 +462,61 @@ func TestCloseDuringOutageStopsReconnectAndDeactivates(t *testing.T) {
 	if sub.Active() {
 		t.Fatal("subscription is still active after Close")
 	}
+}
+
+// A Close that lands while a resubscribe handshake is in flight must still
+// end with the subscription deactivated, even though the handshake re-tracks
+// it after Close's own deactivation loop has run.
+func TestCloseDuringResubscribeHandshakeDeactivates(t *testing.T) {
+	shortBackoff(t)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	handler := newBlockingSubscribeHandler(2)
+	sub := NewSubscription("test-resource", handler)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(done)
+	}()
+	select {
+	case <-handler.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resubscribe handshake did not reach the handler")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	close(handler.unblock)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconnect did not finish after Close")
+	}
+	if sub.Active() {
+		t.Fatal("subscription is still active on a closed Conn")
+	}
+	conn.subscriptionsMu.RLock()
+	_, tracked := conn.subscriptions[sub.ID()]
+	conn.subscriptionsMu.RUnlock()
+	if tracked {
+		t.Fatal("subscription is still tracked on a closed Conn")
+	}
+}
+
+// shortBackoff makes reconnect attempts immediate for the rest of the test.
+func shortBackoff(t *testing.T) {
+	t.Helper()
+	old := reconnectBackoff
+	reconnectBackoff = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { reconnectBackoff = old })
 }
 
 func TestZeroValueSubscriptionUsesNopHandler(t *testing.T) {
