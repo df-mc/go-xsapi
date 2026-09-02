@@ -2,7 +2,6 @@ package rta
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -46,6 +45,8 @@ func newConn(c *websocket.Conn, d *dialer) *Conn {
 type dialer struct {
 	log     *slog.Logger
 	options *websocket.DialOptions
+	// backoff returns the wait before reconnect attempt n. Tests shorten it.
+	backoff func(attempt int) time.Duration
 }
 
 func newDialer(client *http.Client, log *slog.Logger) *dialer {
@@ -58,6 +59,7 @@ func newDialer(client *http.Client, log *slog.Logger) *dialer {
 			Subprotocols: []string{subprotocol},
 			HTTPClient:   client,
 		},
+		backoff: backoffDuration,
 	}
 }
 
@@ -72,43 +74,42 @@ func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 	return c, nil
 }
 
-// reconnect attempts to establish a WebSocket connection with the RTA service.
-// It retries up to maxDialAttempts times, waiting between each attempt with
-// exponential backoff and jitter. If the context is canceled, it returns the
-// context error immediately.
+// reconnect re-establishes the WebSocket connection, retrying with capped
+// exponential backoff until it succeeds or ctx is done. A service outage can
+// outlast any fixed attempt budget, and a Conn that gave up would strand every
+// subscription until the caller noticed, so only ctx ends the retries.
 func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
-	for attempt := range maxDialAttempts {
+	for attempt := 0; ; attempt++ {
 		c, err := d.dial(ctx)
-		if err != nil {
-			sleep := backoffDuration(attempt)
-			d.log.Error("error re-establishing WebSocket connection",
-				slog.Int("attempt", attempt), slog.Int("maxAttempts", maxDialAttempts),
-				slog.Duration("sleep", sleep),
-			)
-			select {
-			case <-time.After(sleep):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+		if err == nil {
+			d.log.Debug("reconnected to RTA service", slog.Int("attempt", attempt))
+			return c, nil
 		}
-		d.log.Debug("reconnected to RTA service", slog.Int("attempt", attempt))
-		return c, nil
+		sleep := d.backoff(attempt)
+		d.log.Error("error re-establishing WebSocket connection",
+			slog.Any("error", err), slog.Int("attempt", attempt), slog.Duration("sleep", sleep),
+		)
+		select {
+		case <-time.After(sleep):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	return nil, fmt.Errorf("max reconnect attempt (%d) reached", maxDialAttempts)
 }
 
-// backoffDuration returns the duration to wait before the next reconnect attempt.
-// The base duration doubles with each attempt with up to 50% additional jitter.
+// backoffDuration returns the wait before reconnect attempt n: one second
+// doubling per attempt up to maxReconnectBackoff, plus up to 50% jitter.
 func backoffDuration(attempt int) time.Duration {
-	base := time.Second << attempt
+	base := min(time.Second<<min(attempt, maxBackoffShift), maxReconnectBackoff)
 	jitter := time.Duration(rand.Int63n(int64(base / 2)))
 	return base + jitter
 }
 
-// maxDialAttempts is the maximum number of reconnect attempts before
-// [dialer.dialWithBackoff] gives up and returns an error.
-const maxDialAttempts = 4
+const (
+	maxReconnectBackoff = time.Minute
+	// maxBackoffShift bounds the doubling before the cap so the shift never overflows.
+	maxBackoffShift = 6
+)
 
 // subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
 const subprotocol = "rta.xboxlive.com.V2"

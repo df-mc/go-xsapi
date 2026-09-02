@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -338,12 +337,15 @@ func TestReconnectRetriesInterruptedResubscribe(t *testing.T) {
 	}
 }
 
-func TestReconnectClosesAfterPersistentInterruptedResubscribe(t *testing.T) {
+// A socket that keeps dropping mid-handshake must not turn into a closed Conn;
+// the reconnect keeps going until a handshake lands.
+func TestReconnectOutlastsPersistentInterruptedResubscribe(t *testing.T) {
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
 	conn := srv.Dial(t)
 	defer conn.Close()
+	conn.dialer.backoff = func(int) time.Duration { return time.Millisecond }
 
 	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -359,19 +361,106 @@ func TestReconnectClosesAfterPersistentInterruptedResubscribe(t *testing.T) {
 		close(done)
 	}()
 
+	// Well past the handful of rounds a bounded budget would allow.
+	waitAtomicUint32(t, &srv.subscribeCount, 8, "subscribe count")
+	if conn.ctx.Err() != nil {
+		t.Fatalf("connection closed during interrupted resubscribes: %v", context.Cause(conn.ctx))
+	}
+	srv.closeSubscribesFrom(0)
+
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("reconnect did not finish after persistent interrupted resubscribe")
+		t.Fatal("reconnect did not finish once the handshake stopped being interrupted")
 	}
-	if got, want := srv.subscribeCount.Load(), uint32(1+maxResubscribeAttempts); got != want {
-		t.Fatalf("subscribe count = %d, want %d", got, want)
+	if !sub.Active() {
+		t.Fatal("subscription is inactive after the reconnect finally landed")
 	}
-	if err := context.Cause(conn.ctx); err == nil || !strings.Contains(err.Error(), "resubscribe interrupted") {
-		t.Fatalf("connection cause = %v, want resubscribe interrupted", err)
+	conn.subscriptionsMu.RLock()
+	_, tracked := conn.subscriptions[sub.ID()]
+	conn.subscriptionsMu.RUnlock()
+	if !tracked {
+		t.Fatal("subscription was not tracked after the reconnect landed")
+	}
+}
+
+// An outage longer than any fixed dial budget must be waited out, not turned
+// into a closed Conn with dead subscriptions.
+func TestReconnectKeepsDialingThroughOutage(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+	conn.dialer.backoff = func(int) time.Duration { return time.Millisecond }
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.rejectDials.Store(true)
+	done := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(done)
+	}()
+
+	waitAtomicUint32(t, &srv.rejectedDials, 10, "rejected dial count")
+	if conn.ctx.Err() != nil {
+		t.Fatalf("connection closed during the outage: %v", context.Cause(conn.ctx))
+	}
+	srv.rejectDials.Store(false)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconnect did not finish once dials were accepted again")
+	}
+	if got := srv.subscribeCount.Load(); got != 2 {
+		t.Fatalf("subscribe count = %d, want 2 (initial + one resubscribe)", got)
+	}
+	if !sub.Active() {
+		t.Fatal("subscription is inactive after the outage ended")
+	}
+}
+
+// Closing the Conn during an outage ends the retries and reports the close
+// cause to the subscriptions the reconnect was holding.
+func TestCloseDuringOutageStopsReconnectAndDeactivates(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	conn.dialer.backoff = func(int) time.Duration { return time.Millisecond }
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.rejectDials.Store(true)
+	done := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(done)
+	}()
+	waitAtomicUint32(t, &srv.rejectedDials, 3, "rejected dial count")
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconnect kept running after Close")
 	}
 	if sub.Active() {
-		t.Fatal("subscription is still active after reconnect failure")
+		t.Fatal("subscription is still active after Close")
 	}
 }
 
@@ -486,6 +575,9 @@ type connTestServer struct {
 	closeSubscribeMin atomic.Uint32
 	closeUnsubscribe  atomic.Bool
 	closeAfterUnsub   atomic.Bool
+	// rejectDials refuses WebSocket upgrades, simulating a service outage.
+	rejectDials   atomic.Bool
+	rejectedDials atomic.Uint32
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
@@ -543,6 +635,11 @@ func (s *connTestServer) closeAfterUnsubscribeResponse() {
 }
 
 func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
+	if s.rejectDials.Load() {
+		s.rejectedDials.Add(1)
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{subprotocol},
 	})
