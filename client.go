@@ -18,6 +18,7 @@ import (
 	"github.com/df-mc/go-xsapi/v2/presence"
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/social"
+	"github.com/df-mc/go-xsapi/v2/titlestorage"
 	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
@@ -101,6 +102,7 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	c.social = social.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	c.notification = notification.New(c.HTTPClient(), c.UserInfo(), c.Log())
+	c.titleStorage = titlestorage.New(c.HTTPClient(), c.userInfo, c.Log())
 	return c, nil
 }
 
@@ -187,6 +189,7 @@ type Client struct {
 	social       *social.Client
 	presence     *presence.Client
 	notification *notification.Client
+	titleStorage *titlestorage.Client
 
 	closeMu  sync.Mutex
 	closed   atomic.Bool
@@ -299,6 +302,11 @@ func (c *Client) Notification() *notification.Client {
 // Presence returns the API client for the Xbox Live Presence API.
 func (c *Client) Presence() *presence.Client {
 	return c.presence
+}
+
+// TitleStorage returns the API client for the Xbox Live Title Storage API.
+func (c *Client) TitleStorage() *titlestorage.Client {
+	return c.titleStorage
 }
 
 // RTA returns the connection to Xbox Live RTA (Real-Time Activity) services.
