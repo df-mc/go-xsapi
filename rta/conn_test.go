@@ -511,6 +511,42 @@ func TestCloseDuringResubscribeHandshakeDeactivates(t *testing.T) {
 	}
 }
 
+// Close racing a reconnect must never leave a freshly dialed socket open:
+// every socket the server accepted is closed once Close has returned.
+func TestCloseRacingReconnectLeavesNoOpenSocket(t *testing.T) {
+	shortBackoff(t)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	for range 50 {
+		conn := srv.Dial(t)
+		sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := conn.Subscribe(ctx, sub); err != nil {
+			cancel()
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+		cancel()
+		done := make(chan struct{})
+		go func() {
+			conn.reconnect()
+			close(done)
+		}()
+		if err := conn.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("reconnect did not finish after Close")
+		}
+		if sub.Active() {
+			t.Fatal("subscription is still active after Close")
+		}
+	}
+	waitAtomicUint32(t, &srv.closeCount, srv.dialCount.Load(), "closed socket count")
+}
+
 // shortBackoff makes reconnect attempts immediate for the rest of the test.
 func shortBackoff(t *testing.T) {
 	t.Helper()

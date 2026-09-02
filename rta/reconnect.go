@@ -115,7 +115,16 @@ func (c *Conn) runReconnect(done chan struct{}) {
 			c.deactivateAll(subscriptions)
 			return
 		}
+		// Publish under connMu with a ctx check so a dial that lands as Close
+		// runs cannot slip in after Close swept c.conn: either Close sees this
+		// socket, or this sees the cancelled ctx and closes it.
 		c.connMu.Lock()
+		if c.ctx.Err() != nil {
+			c.connMu.Unlock()
+			_ = conn.Close(websocket.StatusGoingAway, "connection closed")
+			c.deactivateAll(subscriptions)
+			return
+		}
 		c.conn = conn
 		c.connMu.Unlock()
 		go c.read(conn)
