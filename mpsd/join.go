@@ -6,9 +6,15 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/google/uuid"
+)
+
+const (
+	joinMaxAttempts = 3
+	joinRetryDelay  = 250 * time.Millisecond
 )
 
 // JoinConfig describes a configuration for joining a multiplayer session in the directory.
@@ -75,33 +81,69 @@ func (c *Client) Join(ctx context.Context, handleID uuid.UUID, config JoinConfig
 	// Join the multiplayer session by updating the members field to add the caller as participant.
 	// This request call will fail if the multiplayer session does not exist.
 	requestURL := endpoint.JoinPath("handles", handleID.String(), "session").String()
-	req, err := internal.WithJSONBody(ctx, http.MethodPut, requestURL, d, append(opts,
-		internal.RequestHeader("Content-Type", "application/json"),
-		internal.RequestHeader("If-Match", "*"),
-		internal.ContractVersion(contractVersion),
-	))
-	if err != nil {
-		return nil, fmt.Errorf("make request: %w", err)
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		loc := resp.Header.Get("Content-Location")
-		if loc == "" {
-			return nil, fmt.Errorf("Content-Location header is absent from response")
-		}
-		ref, err := parseSessionReference(loc)
+	ifMatch := "*"
+	for attempt := 1; attempt <= joinMaxAttempts; attempt++ {
+		requestOpts := append([]internal.RequestOption(nil), opts...)
+		requestOpts = append(requestOpts,
+			internal.RequestHeader("Content-Type", "application/json"),
+			internal.RequestHeader("If-Match", ifMatch),
+			internal.ContractVersion(contractVersion),
+		)
+		req, err := internal.WithJSONBody(ctx, http.MethodPut, requestURL, d, requestOpts)
 		if err != nil {
-			return nil, fmt.Errorf("parse session reference from Content-Location header: %w", err)
+			return nil, fmt.Errorf("make request: %w", err)
 		}
-		return c.createSession(ctx, ref, resp)
-	default:
-		return nil, internal.UnexpectedStatusCode(resp)
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		switch resp.StatusCode {
+		case http.StatusOK:
+			defer resp.Body.Close()
+			loc := resp.Header.Get("Content-Location")
+			if loc == "" {
+				return nil, fmt.Errorf("Content-Location header is absent from response")
+			}
+			ref, err := parseSessionReference(loc)
+			if err != nil {
+				return nil, fmt.Errorf("parse session reference from Content-Location header: %w", err)
+			}
+			return c.createSession(ctx, ref, resp)
+		case http.StatusPreconditionFailed:
+			// MPSD returns the current ETag when a concurrent session update
+			// races this join. Reuse it for a bounded retry instead of making
+			// callers rediscover and retry this request themselves.
+			ifMatch = resp.Header.Get("ETag")
+			if ifMatch == "" {
+				ifMatch = "*"
+			}
+			err := internal.UnexpectedStatusCode(resp)
+			resp.Body.Close()
+			if attempt == joinMaxAttempts {
+				return nil, err
+			}
+			if err := waitForJoinRetry(ctx, attempt); err != nil {
+				return nil, err
+			}
+		default:
+			err := internal.UnexpectedStatusCode(resp)
+			resp.Body.Close()
+			return nil, err
+		}
+	}
+	panic("unreachable")
+}
+
+func waitForJoinRetry(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(time.Duration(attempt) * joinRetryDelay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
