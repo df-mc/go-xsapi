@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"github.com/coder/websocket"
 )
 
@@ -82,8 +83,8 @@ func (c *Conn) startReconnect() {
 }
 
 // reconnect re-establishes the WebSocket connection. Only one reconnect may
-// run at a time. Concurrent calls after the first are no-ops. If establishment fails,
-// the Conn is closed with the error as the cause.
+// run at a time. Concurrent calls after the first are no-ops. It keeps retrying
+// until the connection is back or the Conn is closed.
 func (c *Conn) reconnect() {
 	done, ok := c.beginReconnect()
 	if !ok {
@@ -93,55 +94,68 @@ func (c *Conn) reconnect() {
 }
 
 // runReconnect redials RTA and restores active subscriptions until reconnect
-// succeeds, no subscriptions remain, or the Conn must close.
+// succeeds, no subscriptions remain, or the Conn is closed. Neither a long
+// outage nor a socket that keeps dropping mid-handshake ends the attempt: the
+// subscriptions stay owned by the reconnect until it lands or the Conn closes.
 func (c *Conn) runReconnect(done chan struct{}) {
 	defer c.finishReconnect(done)
 
 	c.log.Info("re-establishing WebSocket connection...")
 
 	interruptedAttempts := 0
-	for {
+	_, _ = backoff.Retry(c.ctx, func() (struct{}, error) {
 		subscriptions := c.takeSubscriptionsForReconnect()
 		if len(subscriptions) == 0 {
 			_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
-			return
+			return struct{}{}, nil
 		}
 		conn, err := c.dialer.reconnect(c.ctx)
 		if err != nil {
-			c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
-			for _, subscription := range subscriptions {
-				if subscription.Active() {
-					c.trackSubscription(subscription)
-				}
-			}
-			_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
-			return
+			// Only a closed Conn stops the dialer. Close has already run its
+			// deactivation over the tracked set, so finish it for the ones we hold.
+			c.deactivateAll(subscriptions)
+			return struct{}{}, nil
 		}
+		// Publish under connMu with a ctx check so a dial that lands as Close
+		// runs cannot slip in after Close swept c.conn: either Close sees this
+		// socket, or this sees the cancelled ctx and closes it.
 		c.connMu.Lock()
+		if c.ctx.Err() != nil {
+			c.connMu.Unlock()
+			_ = conn.Close(websocket.StatusGoingAway, "connection closed")
+			c.deactivateAll(subscriptions)
+			return struct{}{}, nil
+		}
 		c.conn = conn
 		c.connMu.Unlock()
 		go c.read(conn)
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
-		if c.resubscribe(subscriptions) {
-			interruptedAttempts++
-			if interruptedAttempts >= maxResubscribeAttempts {
-				err := fmt.Errorf("resubscribe interrupted after %d reconnect attempts", interruptedAttempts)
-				c.log.Error("error re-establishing WebSocket connection", slog.Any("error", err))
-				_ = c.close(fmt.Errorf("rta: reconnect: %w", err))
-				return
-			}
-			_ = conn.Close(websocket.StatusGoingAway, "resubscribe interrupted")
-			c.log.Info("resubscribe interrupted; reconnecting again")
-			continue
+		if !c.resubscribe(subscriptions) {
+			return struct{}{}, nil
 		}
-		return
+		return struct{}{}, errConnectionInterrupted
+	}, backoff.WithBackOff(c.dialer.backoff()), backoff.WithMaxElapsedTime(0), backoff.WithNotify(func(_ error, sleep time.Duration) {
+		interruptedAttempts++
+		c.log.Info("resubscribe interrupted; reconnecting again",
+			slog.Int("attempt", interruptedAttempts), slog.Duration("sleep", sleep),
+		)
+	}))
+	// Close may have run while a handshake was re-tracking a subscription or
+	// while the retry loop was waiting. Finish deactivating anything it missed.
+	if c.ctx.Err() != nil {
+		c.deactivateAll(c.takeSubscriptionsForReconnect())
 	}
 }
 
-// maxResubscribeAttempts is the maximum number of interrupted resubscribe
-// rounds before the Conn is closed.
-const maxResubscribeAttempts = 4
+// deactivateAll reports the Conn's close cause to subscriptions the reconnect
+// still held when the Conn closed underneath it.
+func (c *Conn) deactivateAll(subscriptions []*Subscription) {
+	cause := context.Cause(c.ctx)
+	for _, subscription := range subscriptions {
+		subscription.deactivate(cause)
+	}
+}
 
 // resubscribe re-establishes all subscriptions inherited from the previous
 // WebSocket connection. Each re-subscribe attempt has a timeout of 15 seconds.
