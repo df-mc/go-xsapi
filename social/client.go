@@ -47,7 +47,7 @@ type Client struct {
 
 	subscriptionMu       sync.RWMutex
 	subscription         *rta.Subscription
-	subscriptionHandlers []SubscriptionHandler
+	subscriptionHandlers []*handlerRegistration
 }
 
 // Close closes the Client with a context of 15 seconds timeout.
