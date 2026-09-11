@@ -138,7 +138,6 @@ func (c *Conn) runReconnect(done chan struct{}) {
 			}
 			return
 		}
-		_ = conn.Close(websocket.StatusGoingAway, "resubscribe interrupted")
 		sleep := c.dialer.backoff(interruptedAttempts)
 		interruptedAttempts++
 		c.log.Info("resubscribe interrupted; reconnecting again",
