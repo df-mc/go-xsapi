@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"github.com/coder/websocket"
 )
 
@@ -102,18 +103,18 @@ func (c *Conn) runReconnect(done chan struct{}) {
 	c.log.Info("re-establishing WebSocket connection...")
 
 	interruptedAttempts := 0
-	for {
+	_, _ = backoff.Retry(c.ctx, func() (struct{}, error) {
 		subscriptions := c.takeSubscriptionsForReconnect()
 		if len(subscriptions) == 0 {
 			_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
-			return
+			return struct{}{}, nil
 		}
 		conn, err := c.dialer.reconnect(c.ctx)
 		if err != nil {
 			// Only a closed Conn stops the dialer. Close has already run its
 			// deactivation over the tracked set, so finish it for the ones we hold.
 			c.deactivateAll(subscriptions)
-			return
+			return struct{}{}, nil
 		}
 		// Publish under connMu with a ctx check so a dial that lands as Close
 		// runs cannot slip in after Close swept c.conn: either Close sees this
@@ -123,7 +124,7 @@ func (c *Conn) runReconnect(done chan struct{}) {
 			c.connMu.Unlock()
 			_ = conn.Close(websocket.StatusGoingAway, "connection closed")
 			c.deactivateAll(subscriptions)
-			return
+			return struct{}{}, nil
 		}
 		c.conn = conn
 		c.connMu.Unlock()
@@ -131,24 +132,19 @@ func (c *Conn) runReconnect(done chan struct{}) {
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 		if !c.resubscribe(subscriptions) {
-			// A handshake that landed after Close ran its deactivation loop
-			// re-tracked an active subscription on a closed Conn; finish it here.
-			if c.ctx.Err() != nil {
-				c.deactivateAll(c.takeSubscriptionsForReconnect())
-			}
-			return
+			return struct{}{}, nil
 		}
-		sleep := c.dialer.backoff(interruptedAttempts)
+		return struct{}{}, errConnectionInterrupted
+	}, backoff.WithBackOff(c.dialer.backoff()), backoff.WithMaxElapsedTime(0), backoff.WithNotify(func(_ error, sleep time.Duration) {
 		interruptedAttempts++
 		c.log.Info("resubscribe interrupted; reconnecting again",
 			slog.Int("attempt", interruptedAttempts), slog.Duration("sleep", sleep),
 		)
-		select {
-		case <-time.After(sleep):
-		case <-c.ctx.Done():
-			c.deactivateAll(c.takeSubscriptionsForReconnect())
-			return
-		}
+	}))
+	// Close may have run while a handshake was re-tracking a subscription or
+	// while the retry loop was waiting. Finish deactivating anything it missed.
+	if c.ctx.Err() != nil {
+		c.deactivateAll(c.takeSubscriptionsForReconnect())
 	}
 }
 

@@ -3,13 +3,13 @@ package rta
 import (
 	"context"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"github.com/coder/websocket"
 )
 
@@ -45,8 +45,8 @@ func newConn(c *websocket.Conn, d *dialer) *Conn {
 type dialer struct {
 	log     *slog.Logger
 	options *websocket.DialOptions
-	// backoff returns the wait before reconnect attempt n. Tests shorten it.
-	backoff func(attempt int) time.Duration
+	// backoff creates a separate retry schedule for each reconnect loop.
+	backoff func() backoff.BackOff
 }
 
 func newDialer(client *http.Client, log *slog.Logger) *dialer {
@@ -64,7 +64,7 @@ func newDialer(client *http.Client, log *slog.Logger) *dialer {
 }
 
 // reconnectBackoff is the backoff schedule new dialers use; tests shorten it.
-var reconnectBackoff = backoffDuration
+var reconnectBackoff = newReconnectBackoff
 
 // dial establishes a new WebSocket connection.
 func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
@@ -82,13 +82,17 @@ func (d *dialer) dial(ctx context.Context) (*websocket.Conn, error) {
 // outlast any fixed attempt budget, and a Conn that gave up would strand every
 // subscription until the caller noticed, so only ctx ends the retries.
 func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
-	for attempt := 0; ; attempt++ {
+	attempt := 0
+	return backoff.Retry(ctx, func() (*websocket.Conn, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, backoff.Permanent(err)
+		}
 		c, err := d.dial(ctx)
 		if err == nil {
 			d.log.Debug("reconnected to RTA service", slog.Int("attempt", attempt))
-			return c, nil
 		}
-		sleep := d.backoff(attempt)
+		return c, err
+	}, backoff.WithBackOff(d.backoff()), backoff.WithMaxElapsedTime(0), backoff.WithNotify(func(err error, sleep time.Duration) {
 		// The first failure is news; a long outage should not be an Error stream.
 		level := slog.LevelWarn
 		if attempt == 0 {
@@ -97,27 +101,21 @@ func (d *dialer) reconnect(ctx context.Context) (*websocket.Conn, error) {
 		d.log.Log(ctx, level, "error re-establishing WebSocket connection",
 			slog.Any("error", err), slog.Int("attempt", attempt), slog.Duration("sleep", sleep),
 		)
-		select {
-		case <-time.After(sleep):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+		attempt++
+	}))
+}
+
+// newReconnectBackoff preserves waits of 1, 2, 4, 8, 16, 32, then 60 seconds,
+// plus up to 50% jitter. A 20% spread around 1.25 times each base interval
+// produces the same range. Each retry loop must own its mutable schedule.
+func newReconnectBackoff() backoff.BackOff {
+	return &backoff.ExponentialBackOff{
+		InitialInterval:     1250 * time.Millisecond,
+		RandomizationFactor: 0.2,
+		Multiplier:          2,
+		MaxInterval:         75 * time.Second,
 	}
 }
-
-// backoffDuration returns the wait before reconnect attempt n: one second
-// doubling per attempt up to maxReconnectBackoff, plus up to 50% jitter.
-func backoffDuration(attempt int) time.Duration {
-	base := min(time.Second<<min(attempt, maxBackoffShift), maxReconnectBackoff)
-	jitter := time.Duration(rand.Int63n(int64(base / 2)))
-	return base + jitter
-}
-
-const (
-	maxReconnectBackoff = time.Minute
-	// maxBackoffShift bounds the doubling before the cap so the shift never overflows.
-	maxBackoffShift = 6
-)
 
 // subprotocol is the subprotocol used with connectURL, to establish a websocket connection.
 const subprotocol = "rta.xboxlive.com.V2"
