@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -547,11 +549,68 @@ func TestCloseRacingReconnectLeavesNoOpenSocket(t *testing.T) {
 	waitAtomicUint32(t, &srv.closeCount, srv.dialCount.Load(), "closed socket count")
 }
 
-// shortBackoff makes reconnect attempts immediate for the rest of the test.
+// TestCloseCancelsLongReconnectBackoff checks that both retry loops allow a
+// delay beyond backoff's default elapsed-time limit and stop promptly on Close.
+func TestCloseCancelsLongReconnectBackoff(t *testing.T) {
+	for _, duringResubscribe := range []bool{false, true} {
+		name := "dial"
+		if duringResubscribe {
+			name = "resubscribe"
+		}
+		t.Run(name, func(t *testing.T) {
+			old := reconnectBackoff
+			reconnectBackoff = func() backoff.BackOff { return backoff.NewConstantBackOff(time.Hour) }
+			t.Cleanup(func() { reconnectBackoff = old })
+			srv := newConnTestServer(t)
+			defer srv.Close()
+			conn := srv.Dial(t)
+			defer conn.Close()
+			sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := conn.Subscribe(ctx, sub); err != nil {
+				t.Fatal(err)
+			}
+			if duringResubscribe {
+				srv.closeSubscribe(2)
+			} else {
+				srv.rejectDials.Store(true)
+			}
+			done := make(chan struct{})
+			go func() {
+				conn.reconnect()
+				close(done)
+			}()
+			if duringResubscribe {
+				waitAtomicUint32(t, &srv.subscribeCount, 2, "subscribe count")
+			} else {
+				waitAtomicUint32(t, &srv.rejectedDials, 1, "rejected dial count")
+			}
+			select {
+			case <-done:
+				t.Fatal("reconnect stopped instead of waiting for Close")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Close did not cancel the reconnect wait")
+			}
+			if sub.Active() {
+				t.Fatal("subscription is active after Close")
+			}
+		})
+	}
+}
+
+// shortBackoff makes reconnect attempts wait one millisecond for the test.
 func shortBackoff(t *testing.T) {
 	t.Helper()
 	old := reconnectBackoff
-	reconnectBackoff = func(int) time.Duration { return time.Millisecond }
+	reconnectBackoff = func() backoff.BackOff { return backoff.NewConstantBackOff(time.Millisecond) }
 	t.Cleanup(func() { reconnectBackoff = old })
 }
 
