@@ -160,7 +160,9 @@ type notificationKey struct {
 
 // notification is the struct that contains all fields that are essential to represent
 // a notification. All types that implement Notification must embed this struct.
-type notification[A any] struct {
+type notification[A, O any] struct {
+	// Options contains the options specific to this notification type.
+	Options O `json:"NotificationOptions"`
 	// Actions lists all actions available to interact with this notification.
 	// If some actions don't fit into Actions, OtherActionCount becomes non-zero.
 	Actions []A
@@ -194,24 +196,24 @@ type notification[A any] struct {
 }
 
 // SubscriptionID implements [Notification.SubscriptionID].
-func (n *notification[A]) SubscriptionID() string {
+func (n *notification[A, O]) SubscriptionID() string {
 	return n.ID
 }
 
 // SubscriptionCategory implements [Notification.SubscriptionCategory].
-func (n *notification[A]) SubscriptionCategory() string {
+func (n *notification[A, O]) SubscriptionCategory() string {
 	return n.Category
 }
 
 // SubscriptionType implements [Notification.SubscriptionType].
-func (n *notification[A]) SubscriptionType() string {
+func (n *notification[A, O]) SubscriptionType() string {
 	return n.Type
 }
 
 // UnmarshalJSON decodes the given JSON data into n with patches
 // to support decoding payload received from WebSocket service.
-func (n *notification[A]) UnmarshalJSON(b []byte) error {
-	type Alias notification[A]
+func (n *notification[A, O]) UnmarshalJSON(b []byte) error {
+	type Alias notification[A, O]
 	data := struct {
 		*Alias
 

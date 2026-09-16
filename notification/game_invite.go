@@ -14,10 +14,7 @@ type (
 	// to a game. The caller can join the multiplayer session by using the HandleID
 	// contained in its Actions.
 	GameInvite struct {
-		notification[GameInviteAction]
-		// Options contains options for launching/activating a title with the
-		// invitation.
-		Options GameInviteOptions `json:"NotificationOptions"`
+		notification[GameInviteAction, GameInviteOptions]
 	}
 
 	// GameInviteAction represents an action that can be taken on a GameInvite
@@ -31,7 +28,7 @@ type (
 
 	// GameInviteOptions represents the options for a GameInvite notification.
 	GameInviteOptions struct {
-		// Location describes the title ta which the invite could be accepted.
+		// Location describes the title at which the invite could be accepted.
 		// To accept invitations for a specific title only, filter [Location.ID]
 		// by the title ID.
 		Location Location
