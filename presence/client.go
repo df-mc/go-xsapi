@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
@@ -27,7 +27,8 @@ func New(client *http.Client, userInfo xsts.UserInfo) *Client {
 type Client struct {
 	client        *http.Client
 	userInfo      xsts.UserInfo
-	shouldCleanup atomic.Bool
+	lifecycleMu   sync.Mutex
+	shouldCleanup bool
 }
 
 // Current returns the caller's current presence. Unlike [PresenceByXUID],
@@ -107,8 +108,10 @@ func (c *Client) Close() error {
 // In most cases, [github.com/df-mc/go-xsapi.Client.CloseContext] should be preferred
 // over calling this method directly.
 func (c *Client) CloseContext(ctx context.Context) error {
-	if c.shouldCleanup.Load() {
-		return c.Remove(ctx)
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.shouldCleanup {
+		return c.remove(ctx)
 	}
 	return nil
 }
@@ -149,6 +152,13 @@ const (
 // immediately, rather than waiting for it to expire on the server.
 // It is safe to call this method even if the user doesn't have any active presence.
 func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	return c.remove(ctx, opts...)
+}
+
+// remove clears the current presence while lifecycleMu is held.
+func (c *Client) remove(ctx context.Context, opts ...internal.RequestOption) error {
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
@@ -164,7 +174,7 @@ func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) err
 	)); err != nil {
 		return err
 	}
-	c.shouldCleanup.Store(false)
+	c.shouldCleanup = false
 	return nil
 }
 
@@ -208,6 +218,8 @@ func (c *Client) SetCloaked(ctx context.Context, v bool, opts ...internal.Reques
 
 // Update updates the presence of the authenticated user's current title.
 func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (*UpdateResult, error) {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
@@ -230,7 +242,7 @@ func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...inter
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
-		c.shouldCleanup.Store(true)
+		c.shouldCleanup = true
 		return &UpdateResult{
 			HeartbeatAfter: heartbeatAfter(resp.Header.Get("X-Heartbeat-After")),
 		}, nil
