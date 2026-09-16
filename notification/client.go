@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,7 +59,7 @@ func (c *Client) Inbox(ctx context.Context, filter InboxFilter, opts ...internal
 	q.Set("subscriptionType", strings.Join(filter.SubscriptionTypes, ","))
 	requestURL.RawQuery = q.Encode()
 
-	req, err := internal.NewRequest(ctx, http.MethodGet, requestURL.String(), nil, append(opts, contractVersion))
+	req, err := internal.NewRequest(ctx, http.MethodGet, requestURL.String(), nil, append(slices.Clip(opts), contractVersion))
 	if err != nil {
 		return nil, fmt.Errorf("make request: %w", err)
 	}
@@ -155,7 +156,10 @@ func (c *Client) Update(ctx context.Context, notifications []Notification, typ s
 		Items:      items,
 		Timestamp:  timestamp,
 		UpdateType: typ,
-	}, append(opts, contractVersion))
+	}, append(slices.Clip(opts),
+		contractVersion,
+		internal.RequestHeader("Content-Type", "application/json"),
+	))
 	if err != nil {
 		return fmt.Errorf("make request: %w", err)
 	}
