@@ -170,7 +170,7 @@ func TestSession(t *testing.T) {
 func subscribeSocial(t testing.TB, client *xsapi.Client) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second*15)
 	defer cancel()
-	if err := client.Social().Subscribe(ctx, socialSubscriptionHandler{t}); err != nil {
+	if _, err := client.Social().Subscribe(ctx, socialSubscriptionHandler{t}); err != nil {
 		t.Fatalf("error subscribing with social: %s", err)
 	}
 

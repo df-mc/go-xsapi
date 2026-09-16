@@ -18,8 +18,8 @@ import (
 func TestSubscribeWithoutRTAFails(t *testing.T) {
 	client := New(http.DefaultClient, nil, xsts.UserInfo{XUID: "1"}, nil)
 
-	err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
-	if !errors.Is(err, rta.ErrUnavailable) {
+	cleanup, err := client.Subscribe(context.Background(), NopSubscriptionHandler{})
+	if cleanup != nil || !errors.Is(err, rta.ErrUnavailable) {
 		t.Fatalf("Subscribe error = %v, want %v", err, rta.ErrUnavailable)
 	}
 }
@@ -31,7 +31,7 @@ func TestSubscriptionHandlerAllowsNonComparableHandlers(t *testing.T) {
 		data:  []string{"non-comparable"},
 	}
 	c := &Client{
-		subscriptionHandlers: []SubscriptionHandler{handler},
+		subscriptionHandlers: []*handlerRegistration{{handler}},
 	}
 	h := &subscriptionHandler{
 		Client: c,
@@ -57,7 +57,7 @@ func TestSubscriptionHandlerIgnoresUserUnsubscribe(t *testing.T) {
 		data:  []string{"non-comparable"},
 	}
 	c := &Client{
-		subscriptionHandlers: []SubscriptionHandler{handler},
+		subscriptionHandlers: []*handlerRegistration{{handler}},
 	}
 	h := &subscriptionHandler{
 		Client: c,
@@ -80,7 +80,7 @@ func TestSubscriptionHandlerNotifiesSubscriptionLost(t *testing.T) {
 		data:  []string{"non-comparable"},
 	}
 	c := &Client{
-		subscriptionHandlers: []SubscriptionHandler{handler},
+		subscriptionHandlers: []*handlerRegistration{{handler}},
 	}
 	h := &subscriptionHandler{
 		Client: c,
@@ -112,4 +112,18 @@ func (h nonComparableSocialHandler) HandleIncomingFriendRequestCountChange(int) 
 
 func (h nonComparableSocialHandler) HandleSubscriptionLost() {
 	h.calls <- "lost"
+}
+
+// interfaceSocialHandler tests handlers with a slice or map stored in an interface.
+type interfaceSocialHandler struct {
+	NopSubscriptionHandler
+	data any
+}
+
+func TestSubscribeRejectsNilHandler(t *testing.T) {
+	c := New(http.DefaultClient, nil, xsts.UserInfo{XUID: "1"}, nil)
+	cleanup, err := c.Subscribe(t.Context(), nil)
+	if err == nil || cleanup != nil {
+		t.Fatalf("Subscribe(nil) returned cleanup=%v, error=%v", cleanup != nil, err)
+	}
 }
