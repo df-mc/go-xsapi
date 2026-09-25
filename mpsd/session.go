@@ -271,15 +271,30 @@ func (sessionContext) Value(any) any {
 // In most cases, callers do not need to call Sync explicitly, as the cache
 // is kept up-to-date automatically though RTA subscription.
 // The request uses the current ETag to perform a conditional GET when possible.
+//
+// If MPSD reports that the session no longer exists, the Session is closed
+// and an error wrapping [net.ErrClosed] is returned.
 func (s *Session) Sync(ctx context.Context) error {
+	deleted, err := s.syncRemote(ctx)
+	if deleted {
+		// markDeleted takes closeMu, which CloseContext holds while waiting
+		// for syncMu, so it must run after syncRemote releases syncMu.
+		s.markDeleted()
+	}
+	return err
+}
+
+// syncRemote performs the conditional GET for Sync while holding syncMu.
+// deleted reports that MPSD no longer has the session.
+func (s *Session) syncRemote(ctx context.Context) (deleted bool, err error) {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 
 	select {
 	case <-s.closed:
-		return net.ErrClosed
+		return false, net.ErrClosed
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	default:
 		s.cacheMu.RLock()
 		etag := s.etag
@@ -291,22 +306,24 @@ func (s *Session) Sync(ctx context.Context) error {
 			internal.ContractVersion(contractVersion),
 		})
 		if err != nil {
-			return fmt.Errorf("make request: %w", err)
+			return false, fmt.Errorf("make request: %w", err)
 		}
 
 		resp, err := s.client.client.Do(req)
 		if err != nil {
-			return err
+			return false, err
 		}
 		defer resp.Body.Close()
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			return s.sync(resp)
+			return false, s.sync(resp)
 		case http.StatusNotModified:
-			return nil
+			return false, nil
+		case http.StatusNotFound:
+			return true, fmt.Errorf("%w: %w", internal.UnexpectedStatusCode(resp), net.ErrClosed)
 		default:
-			return internal.UnexpectedStatusCode(resp)
+			return false, internal.UnexpectedStatusCode(resp)
 		}
 	}
 }
