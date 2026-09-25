@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 	"github.com/google/uuid"
@@ -212,12 +214,49 @@ func (c *Client) SetCloaked(ctx context.Context, v bool, opts ...internal.Reques
 	case http.StatusOK:
 		return nil
 	default:
-		return responseError(resp)
+		return internal.UnexpectedStatusCode(resp)
 	}
 }
 
 // Update updates the presence of the authenticated user's current title.
+//
+// Throttled or unavailable responses are retried after the server's
+// Retry-After delay, up to updateMaxAttempts requests and within ctx. The
+// lifecycle lock is held per request, not across waits, so Close is not
+// blocked by a retry.
 func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (*UpdateResult, error) {
+	result, err := backoff.Retry(ctx, func() (*UpdateResult, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, backoff.Permanent(err)
+		}
+		return c.update(ctx, request, opts)
+	}, backoff.WithMaxTries(updateMaxAttempts), backoff.WithMaxElapsedTime(0))
+	// Keep Update's error contract: the final request error, or the caller's
+	// context error if cancellation interrupted a retry wait.
+	if retryErr := backoff.AsRetryError(err); retryErr != nil {
+		switch retryErr.Cause {
+		case backoff.ErrPermanent, backoff.ErrExhausted:
+			err = retryErr.LastErr
+		default:
+			err = retryErr.Cause
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
+		}
+	}
+	return result, err
+}
+
+const (
+	// updateMaxAttempts bounds how many times Update sends its request.
+	updateMaxAttempts = 3
+	// updateRetryDelay is used when a retryable response has no Retry-After.
+	updateRetryDelay = 5 * time.Second
+)
+
+// update sends one presence update. 429 and 503 responses are retryable;
+// every other failure is permanent.
+func (c *Client) update(ctx context.Context, request TitleRequest, opts []internal.RequestOption) (*UpdateResult, error) {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 	requestURL := endpoint.JoinPath(
@@ -226,18 +265,18 @@ func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...inter
 		"/devices/current/titles/current",
 	).String()
 
-	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL, request, append(opts,
+	req, err := internal.WithJSONBody(ctx, http.MethodPost, requestURL, request, append(slices.Clone(opts),
 		contractVersion,
 		internal.RequestHeader("Cache-Control", "no-cache"),
 		internal.RequestHeader("Content-Type", "application/json"),
 		internal.DefaultLanguage,
 	))
 	if err != nil {
-		return nil, err
+		return nil, backoff.Permanent(err)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, backoff.Permanent(err)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
@@ -246,8 +285,14 @@ func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...inter
 		return &UpdateResult{
 			HeartbeatAfter: heartbeatAfter(resp.Header.Get("X-Heartbeat-After")),
 		}, nil
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		delay := internal.ParseRetryAfter(resp.Header.Get("Retry-After"))
+		if delay <= 0 {
+			delay = updateRetryDelay
+		}
+		return nil, backoff.RetryAfter(delay, internal.UnexpectedStatusCode(resp))
 	default:
-		return nil, responseError(resp)
+		return nil, backoff.Permanent(internal.UnexpectedStatusCode(resp))
 	}
 }
 
