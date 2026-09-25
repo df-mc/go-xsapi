@@ -441,6 +441,72 @@ func TestSessionSyncNotFoundDuringCloseDoesNotDeadlock(t *testing.T) {
 	}
 }
 
+func TestSessionSyncNotFoundKeepsSessionRevivedByLaterUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	getDone := make(chan struct{})
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			defer close(getDone)
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     http.StatusText(http.StatusNotFound),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}
+		header := make(http.Header)
+		header.Set("ETag", `"revived"`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"properties":{"custom":{"property":"revived"}}}`))),
+			Header:     header,
+			Request:    req,
+		}, nil
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: client,
+		ref:    ref,
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	// Hold closeMu so the deletion decision waits until the update below has
+	// succeeded after the Not Found response.
+	session.closeMu.Lock()
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- session.Sync(context.Background()) }()
+	<-getDone
+	if err := session.SetCustomProperties(context.Background(), json.RawMessage(`{"property":"revived"}`)); err != nil {
+		t.Fatalf("SetCustomProperties returned error: %v", err)
+	}
+	session.closeMu.Unlock()
+
+	if err := <-syncDone; err == nil || errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Sync error = %v, want the Not Found error without %v", err, net.ErrClosed)
+	}
+	if err := session.Context().Err(); err != nil {
+		t.Fatalf("session closed after a later update revived it: %v", err)
+	}
+	if got := string(session.Properties().Custom); got != `{"property":"revived"}` {
+		t.Fatalf("custom properties = %s, want the revived state", got)
+	}
+	if _, ok := client.sessions[ref.URL().String()]; !ok {
+		t.Fatal("revived session was unregistered from RTA updates")
+	}
+}
+
 func TestSessionCloseContextClosesHandleWithoutClearingSyncedState(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),

@@ -59,6 +59,10 @@ type Session struct {
 	// syncMu serializes remote operations that refresh or mutate the cached
 	// session state so stale responses cannot overwrite newer session data.
 	syncMu sync.Mutex
+	// syncs counts responses applied to the cache. Sync compares it to tell
+	// whether a later update revived the session after a Not Found response.
+	// Guarded by syncMu.
+	syncs uint64
 
 	// h is the Handler registered to this Session to receive updates from RTA.
 	h Handler
@@ -275,26 +279,37 @@ func (sessionContext) Value(any) any {
 // If MPSD reports that the session no longer exists, the Session is closed
 // and an error wrapping [net.ErrClosed] is returned.
 func (s *Session) Sync(ctx context.Context) error {
-	deleted, err := s.syncRemote(ctx)
-	if deleted {
-		// markDeleted takes closeMu, which CloseContext holds while waiting
-		// for syncMu, so it must run after syncRemote releases syncMu.
-		s.markDeleted()
+	syncs, deleted, err := s.syncRemote(ctx)
+	if !deleted {
+		return err
 	}
-	return err
+	// CloseContext holds closeMu while waiting for syncMu, so the deletion
+	// takes closeMu first, after syncRemote has released syncMu.
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	if s.syncs != syncs {
+		// An update succeeded after the Not Found response, so the session
+		// exists again and the handle stays usable.
+		return err
+	}
+	s.markDeletedLocked()
+	return fmt.Errorf("%w: %w", err, net.ErrClosed)
 }
 
 // syncRemote performs the conditional GET for Sync while holding syncMu.
-// deleted reports that MPSD no longer has the session.
-func (s *Session) syncRemote(ctx context.Context) (deleted bool, err error) {
+// deleted reports that MPSD no longer had the session, and syncs is the
+// cache generation at that response.
+func (s *Session) syncRemote(ctx context.Context) (syncs uint64, deleted bool, err error) {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 
 	select {
 	case <-s.closed:
-		return false, net.ErrClosed
+		return 0, false, net.ErrClosed
 	case <-ctx.Done():
-		return false, ctx.Err()
+		return 0, false, ctx.Err()
 	default:
 		s.cacheMu.RLock()
 		etag := s.etag
@@ -306,24 +321,24 @@ func (s *Session) syncRemote(ctx context.Context) (deleted bool, err error) {
 			internal.ContractVersion(contractVersion),
 		})
 		if err != nil {
-			return false, fmt.Errorf("make request: %w", err)
+			return 0, false, fmt.Errorf("make request: %w", err)
 		}
 
 		resp, err := s.client.client.Do(req)
 		if err != nil {
-			return false, err
+			return 0, false, err
 		}
 		defer resp.Body.Close()
 
 		switch resp.StatusCode {
 		case http.StatusOK:
-			return false, s.sync(resp)
+			return 0, false, s.sync(resp)
 		case http.StatusNotModified:
-			return false, nil
+			return 0, false, nil
 		case http.StatusNotFound:
-			return true, fmt.Errorf("%w: %w", internal.UnexpectedStatusCode(resp), net.ErrClosed)
+			return s.syncs, true, internal.UnexpectedStatusCode(resp)
 		default:
-			return false, internal.UnexpectedStatusCode(resp)
+			return 0, false, internal.UnexpectedStatusCode(resp)
 		}
 	}
 }
@@ -348,6 +363,7 @@ func (s *Session) sync(resp *http.Response) error {
 		return fmt.Errorf("decode response body: %w", err)
 	}
 	s.cache = d
+	s.syncs++
 	if e := resp.Header.Get("ETag"); e != "" {
 		s.etag = e // Update the last observed ETag.
 	}
