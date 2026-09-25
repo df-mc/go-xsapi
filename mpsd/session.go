@@ -195,12 +195,9 @@ func (s *Session) update(ctx context.Context, changes SessionDescription, opts [
 	}
 }
 
-// markDeletedLocked finalizes the local Session after MPSD reports that the
-// remote session no longer exists.
-//
-// It clears the cached session data and ETag, unregisters the Session from its
-// parent Client so it no longer receives RTA updates, and closes s.closed so
-// future operations fail as if the Session had been closed.
+// markDeleted finalizes the local Session after a missing-session response.
+// It clears the cache, unregisters the Session from RTA updates, and closes
+// the Session context.
 func (s *Session) markDeleted() {
 	s.closeMu.Lock()
 	defer s.closeMu.Unlock()
@@ -276,8 +273,8 @@ func (sessionContext) Value(any) any {
 // is kept up-to-date automatically though RTA subscription.
 // The request uses the current ETag to perform a conditional GET when possible.
 //
-// If MPSD reports that the session no longer exists, the Session is closed
-// and an error wrapping [net.ErrClosed] is returned.
+// A 204 or 404 response to the GET closes the Session and returns an error
+// wrapping [net.ErrClosed].
 func (s *Session) Sync(ctx context.Context) error {
 	syncs, deleted, err := s.syncRemote(ctx)
 	if !deleted {
@@ -335,7 +332,7 @@ func (s *Session) syncRemote(ctx context.Context) (syncs uint64, deleted bool, e
 			return 0, false, s.sync(resp)
 		case http.StatusNotModified:
 			return 0, false, nil
-		case http.StatusNotFound:
+		case http.StatusNoContent, http.StatusNotFound:
 			return s.syncs, true, internal.UnexpectedStatusCode(resp)
 		default:
 			return 0, false, internal.UnexpectedStatusCode(resp)

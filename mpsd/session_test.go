@@ -334,52 +334,56 @@ func TestSessionSetCustomPropertiesMarksDeletedOnNoContent(t *testing.T) {
 	}
 }
 
-func TestSessionSyncMarksDeletedOnNotFound(t *testing.T) {
-	ref := SessionReference{
-		ServiceConfigID: uuid.New(),
-		TemplateName:    "template",
-		Name:            "SESSION",
-	}
+func TestSessionSyncMarksDeletedWhenMissing(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ref := SessionReference{
+				ServiceConfigID: uuid.New(),
+				TemplateName:    "template",
+				Name:            "SESSION",
+			}
 
-	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.Method != http.MethodGet {
-			t.Fatalf("request method = %s, want GET", req.Method)
-		}
-		return &http.Response{
-			StatusCode: http.StatusNotFound,
-			Status:     http.StatusText(http.StatusNotFound),
-			Body:       io.NopCloser(bytes.NewReader(nil)),
-			Header:     make(http.Header),
-			Request:    req,
-		}, nil
-	})}
+			httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodGet {
+					t.Fatalf("request method = %s, want GET", req.Method)
+				}
+				return &http.Response{
+					StatusCode: status,
+					Status:     http.StatusText(status),
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})}
 
-	client := &Client{
-		client:   httpClient,
-		sessions: map[string]*Session{},
-	}
-	session := &Session{
-		client: client,
-		ref:    ref,
-		etag:   `"old-etag"`,
-		cache: SessionDescription{
-			Properties: &SessionProperties{Custom: json.RawMessage(`{"property":"old"}`)},
-		},
-		closed: make(chan struct{}),
-	}
-	client.sessions[ref.URL().String()] = session
+			client := &Client{
+				client:   httpClient,
+				sessions: map[string]*Session{},
+			}
+			session := &Session{
+				client: client,
+				ref:    ref,
+				etag:   `"old-etag"`,
+				cache: SessionDescription{
+					Properties: &SessionProperties{Custom: json.RawMessage(`{"property":"old"}`)},
+				},
+				closed: make(chan struct{}),
+			}
+			client.sessions[ref.URL().String()] = session
 
-	if err := session.Sync(context.Background()); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("Sync error = %v, want wrapping %v", err, net.ErrClosed)
-	}
-	if err := session.Context().Err(); err != context.Canceled {
-		t.Fatalf("session context err = %v, want %v", err, context.Canceled)
-	}
-	if session.cache.Properties != nil || session.etag != "" {
-		t.Fatalf("cache not cleared after delete: etag=%q cache=%+v", session.etag, session.cache)
-	}
-	if _, ok := client.sessions[ref.URL().String()]; ok {
-		t.Fatal("deleted session still registered for RTA updates")
+			if err := session.Sync(context.Background()); !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("Sync error = %v, want wrapping %v", err, net.ErrClosed)
+			}
+			if err := session.Context().Err(); err != context.Canceled {
+				t.Fatalf("session context err = %v, want %v", err, context.Canceled)
+			}
+			if session.cache.Properties != nil || session.etag != "" {
+				t.Fatalf("cache not cleared after delete: etag=%q cache=%+v", session.etag, session.cache)
+			}
+			if _, ok := client.sessions[ref.URL().String()]; ok {
+				t.Fatal("deleted session still registered for RTA updates")
+			}
+		})
 	}
 }
 
