@@ -239,3 +239,26 @@ func TestUpdateRetryWaitHonoursContextAndClose(t *testing.T) {
 		}
 	})
 }
+
+// A retry waiting when presence is removed must not recreate it afterward.
+func TestUpdateRetryStopsAfterClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		httpClient, calls := statusSequence(t, 429)
+		client := New(httpClient, xsts.UserInfo{XUID: "1234"})
+		done := make(chan error, 1)
+		go func() {
+			_, err := client.Update(t.Context(), TitleRequest{State: StateActive})
+			done <- err
+		}()
+		synctest.Wait()
+		if err := client.CloseContext(t.Context()); err != nil {
+			t.Fatalf("CloseContext during retry wait: %v", err)
+		}
+		if err := <-done; !errors.Is(err, errUpdateStopped) {
+			t.Fatalf("Update error = %v, want stopped update", err)
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("POST requests = %d, want 1", got)
+		}
+	})
+}

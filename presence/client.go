@@ -27,10 +27,11 @@ func New(client *http.Client, userInfo xsts.UserInfo) *Client {
 
 // Client implements API client for Xbox Live Presence API.
 type Client struct {
-	client        *http.Client
-	userInfo      xsts.UserInfo
-	lifecycleMu   sync.Mutex
-	shouldCleanup bool
+	client           *http.Client
+	userInfo         xsts.UserInfo
+	lifecycleMu      sync.Mutex
+	lifecycleVersion uint64
+	shouldCleanup    bool
 }
 
 // Current returns the caller's current presence. Unlike [PresenceByXUID],
@@ -112,6 +113,7 @@ func (c *Client) Close() error {
 func (c *Client) CloseContext(ctx context.Context) error {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
+	c.lifecycleVersion++
 	if c.shouldCleanup {
 		return c.remove(ctx)
 	}
@@ -156,6 +158,7 @@ const (
 func (c *Client) Remove(ctx context.Context, opts ...internal.RequestOption) error {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
+	c.lifecycleVersion++
 	return c.remove(ctx, opts...)
 }
 
@@ -223,13 +226,13 @@ func (c *Client) SetCloaked(ctx context.Context, v bool, opts ...internal.Reques
 // Throttled or unavailable responses are retried after the server's
 // Retry-After delay, up to updateMaxAttempts requests and within ctx. The
 // lifecycle lock is held per request, not across waits, so Close is not
-// blocked by a retry.
+// blocked by a retry. A pending retry stops if Remove or CloseContext is called.
 func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...internal.RequestOption) (*UpdateResult, error) {
+	c.lifecycleMu.Lock()
+	version := c.lifecycleVersion
+	c.lifecycleMu.Unlock()
 	result, err := backoff.Retry(ctx, func() (*UpdateResult, error) {
-		if err := ctx.Err(); err != nil {
-			return nil, backoff.Permanent(err)
-		}
-		return c.update(ctx, request, opts)
+		return c.update(ctx, version, request, opts)
 	}, backoff.WithMaxTries(updateMaxAttempts), backoff.WithMaxElapsedTime(0))
 	// Keep Update's error contract: the final request error, or the caller's
 	// context error if cancellation interrupted a retry wait.
@@ -254,11 +257,16 @@ const (
 	updateRetryDelay = 5 * time.Second
 )
 
+var errUpdateStopped = errors.New("xsapi/presence: update stopped by a newer remove or close call")
+
 // update sends one presence update. 429 and 503 responses are retryable;
 // every other failure is permanent.
-func (c *Client) update(ctx context.Context, request TitleRequest, opts []internal.RequestOption) (*UpdateResult, error) {
+func (c *Client) update(ctx context.Context, version uint64, request TitleRequest, opts []internal.RequestOption) (*UpdateResult, error) {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
+	if version != c.lifecycleVersion {
+		return nil, backoff.Permanent(errUpdateStopped)
+	}
 	requestURL := endpoint.JoinPath(
 		"users",
 		"xuid("+c.userInfo.XUID+")",
