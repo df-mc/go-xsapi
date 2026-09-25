@@ -334,6 +334,183 @@ func TestSessionSetCustomPropertiesMarksDeletedOnNoContent(t *testing.T) {
 	}
 }
 
+func TestSessionSyncMarksDeletedWhenMissing(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ref := SessionReference{
+				ServiceConfigID: uuid.New(),
+				TemplateName:    "template",
+				Name:            "SESSION",
+			}
+
+			httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodGet {
+					t.Fatalf("request method = %s, want GET", req.Method)
+				}
+				return &http.Response{
+					StatusCode: status,
+					Status:     http.StatusText(status),
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})}
+
+			client := &Client{
+				client:   httpClient,
+				sessions: map[string]*Session{},
+			}
+			session := &Session{
+				client: client,
+				ref:    ref,
+				etag:   `"old-etag"`,
+				cache: SessionDescription{
+					Properties: &SessionProperties{Custom: json.RawMessage(`{"property":"old"}`)},
+				},
+				closed: make(chan struct{}),
+			}
+			client.sessions[ref.URL().String()] = session
+
+			if err := session.Sync(context.Background()); !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("Sync error = %v, want wrapping %v", err, net.ErrClosed)
+			}
+			if err := session.Context().Err(); err != context.Canceled {
+				t.Fatalf("session context err = %v, want %v", err, context.Canceled)
+			}
+			if session.cache.Properties != nil || session.etag != "" {
+				t.Fatalf("cache not cleared after delete: etag=%q cache=%+v", session.etag, session.cache)
+			}
+			if _, ok := client.sessions[ref.URL().String()]; ok {
+				t.Fatal("deleted session still registered for RTA updates")
+			}
+		})
+	}
+}
+
+func TestSessionSyncNotFoundDuringCloseDoesNotDeadlock(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	getStarted := make(chan struct{})
+	releaseGet := make(chan struct{})
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		status := http.StatusNotFound
+		if req.Method == http.MethodGet {
+			close(getStarted)
+			<-releaseGet
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     http.StatusText(status),
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	session := &Session{
+		client: &Client{
+			client:   httpClient,
+			sessions: map[string]*Session{},
+		},
+		ref:    ref,
+		closed: make(chan struct{}),
+	}
+
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- session.Sync(context.Background()) }()
+	<-getStarted
+
+	// CloseContext takes closeMu and then waits for syncMu held by Sync.
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- session.CloseContext(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	close(releaseGet)
+
+	select {
+	case <-syncDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sync deadlocked with a concurrent CloseContext")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CloseContext deadlocked with a concurrent Sync")
+	}
+	if err := session.Context().Err(); err != context.Canceled {
+		t.Fatalf("session context err = %v, want %v", err, context.Canceled)
+	}
+}
+
+func TestSessionSyncNotFoundKeepsSessionRevivedByLaterUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	getDone := make(chan struct{})
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			defer close(getDone)
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     http.StatusText(http.StatusNotFound),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}
+		header := make(http.Header)
+		header.Set("ETag", `"revived"`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"properties":{"custom":{"property":"revived"}}}`))),
+			Header:     header,
+			Request:    req,
+		}, nil
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: client,
+		ref:    ref,
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	// Hold closeMu so the deletion decision waits until the update below has
+	// succeeded after the Not Found response.
+	session.closeMu.Lock()
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- session.Sync(context.Background()) }()
+	<-getDone
+	if err := session.SetCustomProperties(context.Background(), json.RawMessage(`{"property":"revived"}`)); err != nil {
+		t.Fatalf("SetCustomProperties returned error: %v", err)
+	}
+	session.closeMu.Unlock()
+
+	if err := <-syncDone; err == nil || errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Sync error = %v, want the Not Found error without %v", err, net.ErrClosed)
+	}
+	if err := session.Context().Err(); err != nil {
+		t.Fatalf("session closed after a later update revived it: %v", err)
+	}
+	if got := string(session.Properties().Custom); got != `{"property":"revived"}` {
+		t.Fatalf("custom properties = %s, want the revived state", got)
+	}
+	if _, ok := client.sessions[ref.URL().String()]; !ok {
+		t.Fatal("revived session was unregistered from RTA updates")
+	}
+}
+
 func TestSessionCloseContextClosesHandleWithoutClearingSyncedState(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),
