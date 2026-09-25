@@ -3,6 +3,7 @@ package mpsd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
@@ -292,7 +293,7 @@ func (s *Session) Sync(ctx context.Context) error {
 		return err
 	}
 	s.markDeletedLocked()
-	return fmt.Errorf("%w: %w", err, net.ErrClosed)
+	return errors.Join(err, net.ErrClosed)
 }
 
 // syncRemote performs the conditional GET for Sync while holding syncMu.
