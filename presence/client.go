@@ -212,7 +212,7 @@ func (c *Client) SetCloaked(ctx context.Context, v bool, opts ...internal.Reques
 	case http.StatusOK:
 		return nil
 	default:
-		return internal.UnexpectedStatusCode(resp)
+		return responseError(resp)
 	}
 }
 
@@ -247,7 +247,7 @@ func (c *Client) Update(ctx context.Context, request TitleRequest, opts ...inter
 			HeartbeatAfter: heartbeatAfter(resp.Header.Get("X-Heartbeat-After")),
 		}, nil
 	default:
-		return nil, internal.UnexpectedStatusCode(resp)
+		return nil, responseError(resp)
 	}
 }
 

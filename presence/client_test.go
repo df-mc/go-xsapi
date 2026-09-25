@@ -2,6 +2,7 @@ package presence
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -159,5 +160,29 @@ func TestUpdateReturnsResult(t *testing.T) {
 				t.Fatalf("heartbeat = %v, want %v", result.HeartbeatAfter, tt.heartbeat)
 			}
 		})
+	}
+}
+
+// A throttled update must tell the caller how long to wait before retrying.
+func TestUpdateReturnsRetryAfter(t *testing.T) {
+	client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Retry-After", "90")
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header:     header,
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})}, xsts.UserInfo{XUID: "1234"})
+
+	_, err := client.Update(context.Background(), TitleRequest{State: StateActive})
+	var responseErr *ResponseError
+	if !errors.As(err, &responseErr) {
+		t.Fatalf("Update error = %T: %v, want *ResponseError", err, err)
+	}
+	if responseErr.StatusCode != http.StatusTooManyRequests || responseErr.RetryAfter != 90*time.Second {
+		t.Fatalf("response error = %+v, want 429 with 90s retry", responseErr)
 	}
 }

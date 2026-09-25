@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/df-mc/go-xsapi/v2/internal"
 )
 
 const (
@@ -98,7 +99,7 @@ func (e *ResponseError) Is(target error) bool {
 func responseError(resp *http.Response) error {
 	responseErr := &ResponseError{
 		StatusCode: resp.StatusCode,
-		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		RetryAfter: internal.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
 	if resp.Request != nil {
 		responseErr.Method = resp.Request.Method
@@ -130,26 +131,4 @@ func responseError(resp *http.Response) error {
 	}
 	responseErr.Body = strings.ToValidUTF8(string(body), "")
 	return responseErr
-}
-
-// parseRetryAfter parses Retry-After header values in either seconds or HTTP-date form.
-func parseRetryAfter(value string) time.Duration {
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		return time.Duration(seconds) * time.Second
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	delay := time.Until(when)
-	if delay < 0 {
-		return 0
-	}
-	return delay
 }

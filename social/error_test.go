@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
@@ -304,7 +305,7 @@ func TestResponseErrorPreservesMetadataWhenBodyReadFails(t *testing.T) {
 }
 
 func TestParseRetryAfterHTTPDate(t *testing.T) {
-	delay := parseRetryAfter(time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
+	delay := internal.ParseRetryAfter(time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
 	if delay <= 0 || delay > time.Hour {
 		t.Fatalf("delay = %s, want within the next hour", delay)
 	}

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // XBLRelyingParty is the relying party used for various Xbox Live services.
@@ -32,6 +34,25 @@ func WithJSONBody(ctx context.Context, method, u string, reqBody any, opts []Req
 		return nil, fmt.Errorf("encode request body: %w", err)
 	}
 	return NewRequest(ctx, method, u, buf, opts)
+}
+
+// ParseRetryAfter parses a Retry-After header value in either seconds or
+// HTTP-date form, returning zero when it is absent, invalid or in the past.
+func ParseRetryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	return max(time.Until(when), 0)
 }
 
 // UnexpectedStatusCode returns an error describing an unexpected HTTP status code,
