@@ -1,13 +1,16 @@
 package social
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
+
+	"github.com/df-mc/go-xsapi/v2/internal"
 )
 
 const (
@@ -15,6 +18,8 @@ const (
 	socialCodeRestricted         = 1011 // Observed for forbidden relationship operations.
 	socialCodeRestrictedPrivacy  = 1049 // Observed for target-user privacy restrictions.
 	socialCodeBulkOperationLimit = 1050 // Observed when a bulk relationship request contains too many users.
+
+	maxResponseErrorBody = 512 // Bytes of an uncoded error body kept in ResponseError.Body.
 )
 
 var (
@@ -46,6 +51,9 @@ type ResponseError struct {
 	Source string
 	// RetryAfter is the server-requested delay before retrying, if present.
 	RetryAfter time.Duration
+	// Body is the start of the response body when it carried no service error
+	// code, so otherwise opaque failures can still be diagnosed.
+	Body string
 }
 
 // Error implements error by formatting e as a Social API response failure.
@@ -60,10 +68,14 @@ func (e *ResponseError) Error() string {
 	if e.Code != 0 {
 		return fmt.Sprintf("%sxsapi/social: request failed: status=%d code=%d", prefix, e.StatusCode, e.Code)
 	}
+	msg := fmt.Sprintf("%sxsapi/social: request failed: status=%d", prefix, e.StatusCode)
 	if e.RetryAfter > 0 {
-		return fmt.Sprintf("%sxsapi/social: request failed: status=%d retry_after=%s", prefix, e.StatusCode, e.RetryAfter)
+		msg += fmt.Sprintf(" retry_after=%s", e.RetryAfter)
 	}
-	return fmt.Sprintf("%sxsapi/social: request failed: status=%d", prefix, e.StatusCode)
+	if e.Body != "" {
+		msg += fmt.Sprintf(" body=%q", e.Body)
+	}
+	return msg
 }
 
 // Is implements errors.Is matching for Social API error categories.
@@ -87,7 +99,7 @@ func (e *ResponseError) Is(target error) bool {
 func responseError(resp *http.Response) error {
 	responseErr := &ResponseError{
 		StatusCode: resp.StatusCode,
-		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		RetryAfter: internal.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
 	if resp.Request != nil {
 		responseErr.Method = resp.Request.Method
@@ -107,32 +119,16 @@ func responseError(resp *http.Response) error {
 		Description string `json:"description"`
 		Source      string `json:"source"`
 	}
-	if err := json.Unmarshal(body, &data); err == nil {
+	if err := json.Unmarshal(body, &data); err == nil && data.Code != 0 {
 		responseErr.Code = data.Code
 		responseErr.Description = data.Description
 		responseErr.Source = data.Source
+		return responseErr
 	}
+	body = bytes.TrimSpace(body)
+	if len(body) > maxResponseErrorBody {
+		body = body[:maxResponseErrorBody]
+	}
+	responseErr.Body = strings.ToValidUTF8(string(body), "")
 	return responseErr
-}
-
-// parseRetryAfter parses Retry-After header values in either seconds or HTTP-date form.
-func parseRetryAfter(value string) time.Duration {
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		return time.Duration(seconds) * time.Second
-	}
-	when, err := http.ParseTime(value)
-	if err != nil {
-		return 0
-	}
-	delay := time.Until(when)
-	if delay < 0 {
-		return 0
-	}
-	return delay
 }
