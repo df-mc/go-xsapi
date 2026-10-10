@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/achievements"
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
 	"github.com/df-mc/go-xsapi/v2/rta"
@@ -74,6 +75,38 @@ func TestClientConfigNewDisabledRTADoesNotDial(t *testing.T) {
 	}
 	if client.RTA() != nil {
 		t.Fatal("disabled client has an RTA connection")
+	}
+}
+
+// TestClientAchievementsUsesAuthenticatedTransport checks the client set wiring through NSAL.
+func TestClientAchievementsUsesAuthenticatedTransport(t *testing.T) {
+	token := testXSTSToken(time.Now().Add(time.Hour))
+	token.DisplayClaims.UserInfo[0].XUID = "123"
+	src := &recordingTokenSource{token: token, proofKey: mustGenerateECDSAKey(t)}
+	var calls int
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "title.mgt.xboxlive.com":
+			return nsalTitleDataResponse("*.xboxlive.com", "http://xboxlive.com"), nil
+		case "achievements.xboxlive.com":
+			calls++
+			if req.URL.Path != "/users/xuid(123)/achievements" || req.Header.Get("Authorization") == "" {
+				t.Fatalf("unexpected achievement request: %s, authorization=%q", req.URL, req.Header.Get("Authorization"))
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"achievements":[{"id":"1"}]}`))}, nil
+		default:
+			t.Fatalf("unexpected endpoint: %s", req.URL)
+			return nil, nil
+		}
+	})}
+	client, err := (ClientConfig{HTTPClient: httpClient, RTAMode: RTADisabled}).New(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	got, err := client.Achievements().All(context.Background(), achievements.Filter{TitleID: 42})
+	if err != nil || len(got) != 1 || calls != 1 {
+		t.Fatalf("All = %+v, error=%v, requests=%d", got, err, calls)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/achievements"
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/notification"
@@ -101,6 +102,7 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	c.social = social.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	c.notification = notification.New(c.HTTPClient(), c.UserInfo(), c.Log())
+	c.achievements = achievements.New(c.HTTPClient(), c.UserInfo())
 	return c, nil
 }
 
@@ -187,6 +189,7 @@ type Client struct {
 	social       *social.Client
 	presence     *presence.Client
 	notification *notification.Client
+	achievements *achievements.Client
 
 	closeMu  sync.Mutex
 	closed   atomic.Bool
@@ -299,6 +302,11 @@ func (c *Client) Notification() *notification.Client {
 // Presence returns the API client for the Xbox Live Presence API.
 func (c *Client) Presence() *presence.Client {
 	return c.presence
+}
+
+// Achievements returns the API client for the Xbox Live Achievements API.
+func (c *Client) Achievements() *achievements.Client {
+	return c.achievements
 }
 
 // RTA returns the connection to Xbox Live RTA (Real-Time Activity) services.
