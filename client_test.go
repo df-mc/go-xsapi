@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/achievements"
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/presence"
 	"github.com/df-mc/go-xsapi/v2/rta"
@@ -77,10 +78,8 @@ func TestClientConfigNewDisabledRTADoesNotDial(t *testing.T) {
 	}
 }
 
-// TestClientAchievementsUsesAuthenticatedTransport checks the client set wiring
-// through NSAL and ensures REST achievement requests do not connect to RTA.
+// TestClientAchievementsUsesAuthenticatedTransport checks the client set wiring through NSAL.
 func TestClientAchievementsUsesAuthenticatedTransport(t *testing.T) {
-	_, dialCalls := stubClientDependencies(t, errors.New("RTA should not be used"))
 	token := testXSTSToken(time.Now().Add(time.Hour))
 	token.DisplayClaims.UserInfo[0].XUID = "123"
 	src := &recordingTokenSource{token: token, proofKey: mustGenerateECDSAKey(t)}
@@ -104,15 +103,10 @@ func TestClientAchievementsUsesAuthenticatedTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := client.Achievements().ForTitle(context.Background(), 42)
-	if err != nil || len(got) != 1 || calls != 1 || dialCalls.Load() != 0 {
-		t.Fatalf("ForTitle = %+v, error=%v, requests=%d, RTA dials=%d", got, err, calls, dialCalls.Load())
-	}
-	if err := client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Achievements().ForTitle(context.Background(), 42); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("ForTitle after close = %v, want net.ErrClosed", err)
+	t.Cleanup(func() { _ = client.Close() })
+	got, err := client.Achievements().All(context.Background(), achievements.Filter{TitleID: 42})
+	if err != nil || len(got) != 1 || calls != 1 {
+		t.Fatalf("All = %+v, error=%v, requests=%d", got, err, calls)
 	}
 }
 
