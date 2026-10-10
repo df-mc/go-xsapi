@@ -77,6 +77,45 @@ func TestClientConfigNewDisabledRTADoesNotDial(t *testing.T) {
 	}
 }
 
+// TestClientAchievementsUsesAuthenticatedTransport checks the client set wiring
+// through NSAL and ensures REST achievement requests do not connect to RTA.
+func TestClientAchievementsUsesAuthenticatedTransport(t *testing.T) {
+	_, dialCalls := stubClientDependencies(t, errors.New("RTA should not be used"))
+	token := testXSTSToken(time.Now().Add(time.Hour))
+	token.DisplayClaims.UserInfo[0].XUID = "123"
+	src := &recordingTokenSource{token: token, proofKey: mustGenerateECDSAKey(t)}
+	var calls int
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "title.mgt.xboxlive.com":
+			return nsalTitleDataResponse("*.xboxlive.com", "http://xboxlive.com"), nil
+		case "achievements.xboxlive.com":
+			calls++
+			if req.URL.Path != "/users/xuid(123)/achievements" || req.Header.Get("Authorization") == "" {
+				t.Fatalf("unexpected achievement request: %s, authorization=%q", req.URL, req.Header.Get("Authorization"))
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"achievements":[{"id":"1"}]}`))}, nil
+		default:
+			t.Fatalf("unexpected endpoint: %s", req.URL)
+			return nil, nil
+		}
+	})}
+	client, err := (ClientConfig{HTTPClient: httpClient, RTAMode: RTADisabled}).New(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Achievements().ForTitle(context.Background(), 42)
+	if err != nil || len(got) != 1 || calls != 1 || dialCalls.Load() != 0 {
+		t.Fatalf("ForTitle = %+v, error=%v, requests=%d, RTA dials=%d", got, err, calls, dialCalls.Load())
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Achievements().ForTitle(context.Background(), 42); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("ForTitle after close = %v, want net.ErrClosed", err)
+	}
+}
+
 func TestLazyRTAOperationDialsOnDemand(t *testing.T) {
 	dialErr := errors.New("dial failed")
 	_, dialCalls := stubClientDependencies(t, dialErr)
