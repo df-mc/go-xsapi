@@ -262,14 +262,19 @@ func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
 	return nsal.WithoutAuthHeaders(req, headers...)
 }
 
+// nsalContext gives token and NSAL requests made while authenticating a request
+// the configured client. They must never use the authenticated client: a token
+// renewal would re-enter the token source that is renewing.
 func (c *Client) nsalContext(ctx context.Context) context.Context {
 	if client, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && client != nil {
+		if _, authenticated := client.Transport.(*Client); !authenticated {
+			return ctx
+		}
+	}
+	if c.config.HTTPClient == nil {
 		return ctx
 	}
-	if c.client == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, xal.HTTPClient, c.client)
+	return context.WithValue(ctx, xal.HTTPClient, c.config.HTTPClient)
 }
 
 // Log returns the [slog.Logger] configured via [ClientConfig.Logger].

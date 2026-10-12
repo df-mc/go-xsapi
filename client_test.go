@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/df-mc/go-xsapi/v2/presence"
 	"github.com/df-mc/go-xsapi/v2/rta"
 	"github.com/df-mc/go-xsapi/v2/social"
+	"github.com/df-mc/go-xsapi/v2/xal"
 	"github.com/df-mc/go-xsapi/v2/xal/nsal"
 	"github.com/df-mc/go-xsapi/v2/xal/xasd"
 	"github.com/df-mc/go-xsapi/v2/xal/xasu"
@@ -428,4 +430,87 @@ type closingBody struct {
 func (b *closingBody) Close() error {
 	b.closed.Store(true)
 	return b.ReadCloser.Close()
+}
+
+// A token source that renews over the context client while holding its lock,
+// as sisu does, must not be routed back through the authenticated client.
+func TestClientRoundTripTokenRenewalDoesNotReenterTokenSource(t *testing.T) {
+	src := &renewingTokenSource{token: testXSTSToken(time.Now().Add(time.Hour)), proofKey: mustGenerateECDSAKey(t)}
+	var renewals atomic.Int32
+	configuredClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "title.mgt.xboxlive.com":
+			return nsalTitleDataResponse("*.xboxlive.com", "http://xboxlive.com"), nil
+		case "device.auth.xboxlive.com":
+			renewals.Add(1)
+			if got := req.Header.Get("Authorization"); got != "" {
+				t.Errorf("renewal request carries Authorization %q", got)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		case "profile.xboxlive.com":
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		default:
+			t.Errorf("unexpected request URL: %s", req.URL)
+			return nil, errors.New("unexpected request")
+		}
+	})}
+	client := &Client{config: ClientConfig{HTTPClient: configuredClient}, src: src}
+	client.client = new(http.Client)
+	*client.client = *configuredClient
+	client.client.Transport = client
+	client.transport = &nsal.Transport{Base: client.baseTransport(), Resolver: nsal.NewResolver(src)}
+
+	done := make(chan error, 1)
+	go func() {
+		resp, err := client.HTTPClient().Get("https://profile.xboxlive.com/users/me/profile/settings")
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request deadlocked: token renewal re-entered the token source")
+	}
+	if got := renewals.Load(); got != 1 {
+		t.Fatalf("renewal requests = %d, want 1", got)
+	}
+}
+
+// renewingTokenSource renews once over the context client while holding mu.
+type renewingTokenSource struct {
+	mu       sync.Mutex
+	renewed  bool
+	token    *xsts.Token
+	proofKey *ecdsa.PrivateKey
+}
+
+func (src *renewingTokenSource) XSTSToken(ctx context.Context, _ string) (*xsts.Token, error) {
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if !src.renewed {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://device.auth.xboxlive.com/device/authenticate", nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := xal.ContextClient(ctx).Do(req)
+		if err != nil {
+			return nil, err
+		}
+		_ = resp.Body.Close()
+		src.renewed = true
+	}
+	return src.token, nil
+}
+
+func (*renewingTokenSource) DeviceToken(context.Context) (*xasd.Token, error) {
+	return nil, errors.New("unexpected device token request")
+}
+
+func (src *renewingTokenSource) ProofKey() *ecdsa.PrivateKey {
+	return src.proofKey
 }
