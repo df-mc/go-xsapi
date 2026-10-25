@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 
 	"github.com/df-mc/go-xsapi/v2/internal"
 )
@@ -32,8 +33,10 @@ func (c *Client) Unfollow(ctx context.Context, xuid string, opts ...internal.Req
 	return c.deleteRelationship(ctx, xuid, "follows", opts)
 }
 
-// RemoveMutualFollow removes the mutual follow relationship with the user
-// identified by XUID using the people endpoint.
+// RemoveMutualFollow removes the caller's follow of the user identified by
+// XUID using the legacy people endpoint. Xbox Live keeps the user's follow of
+// the caller, so to end a friendship in both directions use [Client.RemoveFriend]
+// and [Client.RemoveFollower] instead.
 func (c *Client) RemoveMutualFollow(ctx context.Context, xuid string, opts ...internal.RequestOption) error {
 	requestURL := socialEndpoint.JoinPath(
 		"/users/me/people/xuid(" + xuid + ")",
@@ -96,11 +99,11 @@ func (c *Client) deleteRelationship(ctx context.Context, xuid, relationship stri
 }
 
 // AddFriends creates or accepts friend relationships with all users
-// identified by the given XUIDs in a single request, and returns the XUIDs
-// that Xbox Live reports as updated. It behaves like [Client.AddFriend] for
-// each user, but a single bulk call avoids per-user rate limits when
-// accepting many pending requests at once.
-func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
+// identified by the given XUIDs in a single request, and reports which users
+// Xbox Live updated. It behaves like [Client.AddFriend] for each user, but a
+// single bulk call avoids per-user rate limits when accepting many pending
+// requests at once.
+func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) (BulkFriendsResult, error) {
 	requestURL := socialEndpoint.JoinPath(
 		"/bulk/users/me/people/friends/v2",
 	)
@@ -117,29 +120,14 @@ func (c *Client) AddFriends(ctx context.Context, xuids []string, opts ...interna
 		internal.DefaultLanguage,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("make request: %w", err)
+		return BulkFriendsResult{}, fmt.Errorf("make request: %w", err)
 	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated:
-		var result bulkFriendsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nil, fmt.Errorf("decode response body: %w", err)
-		}
-		return result.UpdatedPeople, nil
-	default:
-		return nil, responseError(resp)
-	}
+	return c.doBulkFriends(req, http.StatusOK, http.StatusCreated)
 }
 
 // RemoveFriends removes or denies friend relationships with all users identified
-// by XUIDs.
-func (c *Client) RemoveFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) ([]string, error) {
+// by XUIDs, and reports which users Xbox Live updated.
+func (c *Client) RemoveFriends(ctx context.Context, xuids []string, opts ...internal.RequestOption) (BulkFriendsResult, error) {
 	requestURL := socialEndpoint.JoinPath(
 		"/bulk/users/me/people/friends/v2",
 	)
@@ -157,24 +145,9 @@ func (c *Client) RemoveFriends(ctx context.Context, xuids []string, opts ...inte
 		internal.DefaultLanguage,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("make request: %w", err)
+		return BulkFriendsResult{}, fmt.Errorf("make request: %w", err)
 	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		var result bulkFriendsResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nil, fmt.Errorf("decode response body: %w", err)
-		}
-		return result.UpdatedPeople, nil
-	default:
-		return nil, responseError(resp)
-	}
+	return c.doBulkFriends(req, http.StatusOK)
 }
 
 type (
@@ -185,15 +158,32 @@ type (
 		XUIDs []string `json:"xuids"`
 	}
 
-	// bulkFriendsResponse is the response body returned by the bulk friends
-	// endpoint.
-	bulkFriendsResponse struct {
-		// UpdatedPeople lists the XUIDs whose relationships were updated by the request.
-		UpdatedPeople []string `json:"updatedPeople"`
-		// FailedToUpdate lists the XUIDs whose relationships couldn't be updated by the request.
-		FailedToUpdate []string `json:"failedToUpdate"`
+	// BulkFriendsResult is the per-user outcome of [Client.AddFriends] or
+	// [Client.RemoveFriends]. A successful response may still list failed users.
+	BulkFriendsResult struct {
+		// Updated lists the XUIDs whose relationships were updated by the request.
+		Updated []string `json:"updatedPeople"`
+		// Failed lists the XUIDs whose relationships couldn't be updated by the request.
+		Failed []string `json:"failedToUpdate"`
 	}
 )
+
+// doBulkFriends sends a bulk friend mutation and decodes its per-user result.
+func (c *Client) doBulkFriends(req *http.Request, successCodes ...int) (BulkFriendsResult, error) {
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return BulkFriendsResult{}, err
+	}
+	defer resp.Body.Close()
+	if !slices.Contains(successCodes, resp.StatusCode) {
+		return BulkFriendsResult{}, responseError(resp)
+	}
+	var result BulkFriendsResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return BulkFriendsResult{}, fmt.Errorf("decode response body: %w", err)
+	}
+	return result, nil
+}
 
 // doRelationship sends a relationship mutation request and converts non-success
 // responses into ResponseError values.

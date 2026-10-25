@@ -244,10 +244,13 @@ func sessionConnectionCurrent(s *Session, connectionID uuid.UUID) bool {
 }
 
 // handleSessionClosure handles closure of a multiplayer session.
-// It releases the multiplayer session from the client so it can no
-// longer receive notifications from the RTA subscription.
+// It releases this Session from the client so it can no longer receive RTA
+// notifications, without unregistering a newer Session at the same reference.
 func (c *Client) handleSessionClose(s *Session) {
 	c.sessionsMu.Lock()
-	delete(c.sessions, s.ref.URL().String())
+	key := s.ref.URL().String()
+	if c.sessions[key] == s {
+		delete(c.sessions, key)
+	}
 	c.sessionsMu.Unlock()
 }

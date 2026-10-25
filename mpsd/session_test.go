@@ -334,6 +334,204 @@ func TestSessionSetCustomPropertiesMarksDeletedOnNoContent(t *testing.T) {
 	}
 }
 
+func TestSessionSyncMarksDeletedWhenMissing(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ref := SessionReference{
+				ServiceConfigID: uuid.New(),
+				TemplateName:    "template",
+				Name:            "SESSION",
+			}
+
+			httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodGet {
+					t.Fatalf("request method = %s, want GET", req.Method)
+				}
+				return &http.Response{
+					StatusCode: status,
+					Status:     http.StatusText(status),
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})}
+
+			client := &Client{
+				client:   httpClient,
+				sessions: map[string]*Session{},
+			}
+			session := &Session{
+				client: client,
+				ref:    ref,
+				etag:   `"old-etag"`,
+				cache: SessionDescription{
+					Properties: &SessionProperties{Custom: json.RawMessage(`{"property":"old"}`)},
+				},
+				closed: make(chan struct{}),
+			}
+			client.sessions[ref.URL().String()] = session
+
+			if err := session.Sync(context.Background()); !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("Sync error = %v, want wrapping %v", err, net.ErrClosed)
+			}
+			if err := session.Context().Err(); err != context.Canceled {
+				t.Fatalf("session context err = %v, want %v", err, context.Canceled)
+			}
+			if session.cache.Properties != nil || session.etag != "" {
+				t.Fatalf("cache not cleared after delete: etag=%q cache=%+v", session.etag, session.cache)
+			}
+			if _, ok := client.sessions[ref.URL().String()]; ok {
+				t.Fatal("deleted session still registered for RTA updates")
+			}
+		})
+	}
+}
+
+func TestSessionSyncNotFoundDuringCloseDoesNotDeadlock(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	getStarted := make(chan struct{})
+	releaseGet := make(chan struct{})
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		status := http.StatusNotFound
+		if req.Method == http.MethodGet {
+			close(getStarted)
+			<-releaseGet
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     http.StatusText(status),
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	session := &Session{
+		client: &Client{
+			client:   httpClient,
+			sessions: map[string]*Session{},
+		},
+		ref:    ref,
+		closed: make(chan struct{}),
+	}
+
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- session.Sync(context.Background()) }()
+	<-getStarted
+
+	// CloseContext takes closeMu and then waits for syncMu held by Sync.
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- session.CloseContext(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	close(releaseGet)
+
+	select {
+	case <-syncDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sync deadlocked with a concurrent CloseContext")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CloseContext deadlocked with a concurrent Sync")
+	}
+	if err := session.Context().Err(); err != context.Canceled {
+		t.Fatalf("session context err = %v, want %v", err, context.Canceled)
+	}
+}
+
+func TestSessionSyncNotFoundPreventsLaterUpdate(t *testing.T) {
+	ref := SessionReference{
+		ServiceConfigID: uuid.New(),
+		TemplateName:    "template",
+		Name:            "SESSION",
+	}
+
+	getStarted := make(chan struct{})
+	releaseGet := make(chan struct{})
+	var puts atomic.Int32
+	httpClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			close(getStarted)
+			<-releaseGet
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     http.StatusText(http.StatusNotFound),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}
+		puts.Add(1)
+		return nil, fmt.Errorf("unexpected %s request", req.Method)
+	})}
+
+	client := &Client{
+		client:   httpClient,
+		sessions: map[string]*Session{},
+	}
+	session := &Session{
+		client: client,
+		ref:    ref,
+		closed: make(chan struct{}),
+	}
+	client.sessions[ref.URL().String()] = session
+
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- session.Sync(context.Background()) }()
+	<-getStarted
+	updateDone := make(chan error, 1)
+	go func() {
+		updateDone <- session.SetCustomProperties(context.Background(), json.RawMessage(`{"property":"new"}`))
+	}()
+	close(releaseGet)
+
+	if err := <-syncDone; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Sync error = %v, want %v", err, net.ErrClosed)
+	}
+	if err := <-updateDone; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("SetCustomProperties error = %v, want %v", err, net.ErrClosed)
+	}
+	if got := puts.Load(); got != 0 {
+		t.Fatalf("PUT requests after Not Found = %d, want 0", got)
+	}
+	if err := session.Context().Err(); err != context.Canceled {
+		t.Fatalf("session context err = %v, want %v", err, context.Canceled)
+	}
+}
+
+func TestSessionSyncNotFoundKeepsReplacementRegistered(t *testing.T) {
+	ref := SessionReference{ServiceConfigID: uuid.New(), TemplateName: "template", Name: "SESSION"}
+	client := &Client{sessions: map[string]*Session{}}
+	client.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Status:     http.StatusText(http.StatusNotFound),
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	old := &Session{client: client, ref: ref, closed: make(chan struct{})}
+	replacement := &Session{client: client, ref: ref, closed: make(chan struct{})}
+	client.sessions[ref.URL().String()] = replacement
+
+	if err := old.Sync(context.Background()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("old Sync error = %v, want %v", err, net.ErrClosed)
+	}
+	if got := client.sessions[ref.URL().String()]; got != replacement {
+		t.Fatalf("registered session = %p, want replacement %p", got, replacement)
+	}
+	if err := replacement.Context().Err(); err != nil {
+		t.Fatalf("replacement closed with old handle: %v", err)
+	}
+}
+
 func TestSessionCloseContextClosesHandleWithoutClearingSyncedState(t *testing.T) {
 	ref := SessionReference{
 		ServiceConfigID: uuid.New(),

@@ -3,6 +3,7 @@ module github.com/df-mc/go-xsapi/v2
 go 1.25.0
 
 require (
+	github.com/cenkalti/backoff/v7 v7.0.0
 	github.com/coder/websocket v1.8.14
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0

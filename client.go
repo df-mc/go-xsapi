@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/achievements"
 	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/mpsd"
 	"github.com/df-mc/go-xsapi/v2/notification"
@@ -101,6 +102,7 @@ func (config ClientConfig) New(ctx context.Context, src TokenSource) (*Client, e
 	c.social = social.New(c.HTTPClient(), r, c.UserInfo(), c.Log().With("src", "social"))
 	c.presence = presence.New(c.HTTPClient(), c.UserInfo())
 	c.notification = notification.New(c.HTTPClient(), c.UserInfo(), c.Log())
+	c.achievements = achievements.New(c.HTTPClient(), c.UserInfo())
 	return c, nil
 }
 
@@ -187,6 +189,7 @@ type Client struct {
 	social       *social.Client
 	presence     *presence.Client
 	notification *notification.Client
+	achievements *achievements.Client
 
 	closeMu  sync.Mutex
 	closed   atomic.Bool
@@ -259,14 +262,19 @@ func WithoutAuthHeaders(req *http.Request, headers ...string) *http.Request {
 	return nsal.WithoutAuthHeaders(req, headers...)
 }
 
+// nsalContext gives token and NSAL requests made while authenticating a request
+// the configured client. They must never use the authenticated client: a token
+// renewal would re-enter the token source that is renewing.
 func (c *Client) nsalContext(ctx context.Context) context.Context {
 	if client, ok := ctx.Value(xal.HTTPClient).(*http.Client); ok && client != nil {
+		if _, authenticated := client.Transport.(*Client); !authenticated {
+			return ctx
+		}
+	}
+	if c.config.HTTPClient == nil {
 		return ctx
 	}
-	if c.client == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, xal.HTTPClient, c.client)
+	return context.WithValue(ctx, xal.HTTPClient, c.config.HTTPClient)
 }
 
 // Log returns the [slog.Logger] configured via [ClientConfig.Logger].
@@ -299,6 +307,11 @@ func (c *Client) Notification() *notification.Client {
 // Presence returns the API client for the Xbox Live Presence API.
 func (c *Client) Presence() *presence.Client {
 	return c.presence
+}
+
+// Achievements returns the API client for the Xbox Live Achievements API.
+func (c *Client) Achievements() *achievements.Client {
+	return c.achievements
 }
 
 // RTA returns the connection to Xbox Live RTA (Real-Time Activity) services.

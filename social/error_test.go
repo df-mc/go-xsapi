@@ -3,12 +3,14 @@ package social
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/df-mc/go-xsapi/v2/internal"
 	"github.com/df-mc/go-xsapi/v2/xal/xsts"
 )
 
@@ -209,6 +211,75 @@ func TestAddFriendsReturnsBulkOperationLimit(t *testing.T) {
 	}
 }
 
+// Uncoded error bodies must survive into the error, or opaque 400s cannot be diagnosed.
+func TestResponseErrorKeepsUncodedBody(t *testing.T) {
+	long := strings.Repeat("x", maxResponseErrorBody+100)
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "plain text", body: "  Bad Request\n", want: "Bad Request"},
+		{name: "json without code", body: `{"message":"nope"}`, want: `{"message":"nope"}`},
+		{name: "truncated", body: long, want: long[:maxResponseErrorBody]},
+		{name: "coded", body: `{"code":1028,"description":"full"}`, want: ""},
+		{name: "empty", body: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "https://social.xboxlive.com/bulk/users/me/people/friends/v2?method=add", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = responseError(response(req, http.StatusBadRequest, tt.body))
+			var responseErr *ResponseError
+			if !errors.As(err, &responseErr) {
+				t.Fatalf("responseError = %T: %v, want *ResponseError", err, err)
+			}
+			if responseErr.Body != tt.want {
+				t.Fatalf("Body = %q, want %q", responseErr.Body, tt.want)
+			}
+			if tt.want != "" && !strings.Contains(err.Error(), fmt.Sprintf("body=%q", tt.want)) {
+				t.Fatalf("Error() = %q, want it to include the body", err.Error())
+			}
+		})
+	}
+}
+
+// A successful bulk response can still reject some users; callers need that list.
+func TestBulkFriendsReturnFailedUsers(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		call  func(*Client) (BulkFriendsResult, error)
+	}{
+		{name: "add", query: "method=add", call: func(c *Client) (BulkFriendsResult, error) {
+			return c.AddFriends(context.Background(), []string{"1", "2"})
+		}},
+		{name: "remove", query: "deleteRelationships=friends&method=remove", call: func(c *Client) (BulkFriendsResult, error) {
+			return c.RemoveFriends(context.Background(), []string{"1", "2"})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := New(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodPost || req.URL.Path != "/bulk/users/me/people/friends/v2" || req.URL.RawQuery != tt.query {
+					t.Fatalf("request = %s %s, want POST bulk friends with %s", req.Method, req.URL, tt.query)
+				}
+				return response(req, http.StatusOK, `{"updatedPeople":["1"],"failedToUpdate":["2"]}`), nil
+			})}, nil, xsts.UserInfo{}, nil)
+
+			result, err := tt.call(client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(result.Updated, ",") != "1" || strings.Join(result.Failed, ",") != "2" {
+				t.Fatalf("result = %+v, want updated [1] failed [2]", result)
+			}
+		})
+	}
+}
+
 func TestResponseErrorPreservesMetadataWhenBodyReadFails(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "https://peoplehub.xboxlive.com/users/me/people/social", nil)
 	if err != nil {
@@ -234,7 +305,7 @@ func TestResponseErrorPreservesMetadataWhenBodyReadFails(t *testing.T) {
 }
 
 func TestParseRetryAfterHTTPDate(t *testing.T) {
-	delay := parseRetryAfter(time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
+	delay := internal.ParseRetryAfter(time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
 	if delay <= 0 || delay > time.Hour {
 		t.Fatalf("delay = %s, want within the next hour", delay)
 	}
