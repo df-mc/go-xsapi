@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -107,14 +108,6 @@ func (c *Conn) connectionLost(conn *websocket.Conn) {
 	}
 }
 
-// startReconnect begins a background reconnect if one is not already running.
-func (c *Conn) startReconnect() {
-	done, ok := c.beginReconnect()
-	if ok {
-		go c.runReconnect(done)
-	}
-}
-
 // reconnect re-establishes the WebSocket connection. Only one reconnect may
 // run at a time. Concurrent calls after the first are no-ops. It keeps retrying
 // until the connection is back or the Conn is closed.
@@ -145,8 +138,12 @@ func (c *Conn) restore() {
 	c.log.Info("re-establishing WebSocket connection...")
 
 	interruptedAttempts := 0
+	// pending holds subscriptions interrupted on an earlier attempt. They stay
+	// out of the ID map, where their old IDs could collide with new ones.
+	var pending []*Subscription
 	_, _ = backoff.Retry(c.ctx, func() (struct{}, error) {
-		subscriptions := c.takeSubscriptionsForReconnect()
+		subscriptions := slices.Concat(pending, c.takeSubscriptionsForReconnect())
+		pending = nil
 		if len(subscriptions) == 0 {
 			_ = c.closeWebSocket(websocket.StatusNormalClosure, "no active subscriptions")
 			return struct{}{}, nil
@@ -178,7 +175,8 @@ func (c *Conn) restore() {
 		go c.read(conn)
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
-		if !c.resubscribe(subscriptions) {
+		pending = c.resubscribe(conn, subscriptions)
+		if len(pending) == 0 {
 			return struct{}{}, nil
 		}
 		// Drop the socket so the next attempt cannot reuse one that went silent.
@@ -193,7 +191,7 @@ func (c *Conn) restore() {
 	// Close may have run while a handshake was re-tracking a subscription or
 	// while the retry loop was waiting. Finish deactivating anything it missed.
 	if c.ctx.Err() != nil {
-		c.deactivateAll(c.takeSubscriptionsForReconnect())
+		c.deactivateAll(slices.Concat(pending, c.takeSubscriptionsForReconnect()))
 	}
 }
 
@@ -207,13 +205,13 @@ func (c *Conn) deactivateAll(subscriptions []*Subscription) {
 }
 
 // resubscribe re-establishes all subscriptions inherited from the previous
-// WebSocket connection. Each re-subscribe attempt has a timeout of 15 seconds.
+// WebSocket connection on conn. Each re-subscribe attempt has a timeout of 15 seconds.
 // Terminal subscription failures are reported via [SubscriptionHandler.HandleError].
-// It reports whether any subscription was interrupted by a lost or silent
-// connection and should be retried by another reconnect attempt.
-func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
+// It returns the untracked subscriptions that a lost or silent conn interrupted,
+// for another reconnect attempt to retry.
+func (c *Conn) resubscribe(conn *websocket.Conn, subscriptions []*Subscription) (interrupted []*Subscription) {
 	var successCount atomic.Int32
-	var interruptedSubscription atomic.Bool
+	var interruptedMu sync.Mutex
 	var wg sync.WaitGroup
 	for _, subscription := range subscriptions {
 		wg.Go(func() {
@@ -228,11 +226,12 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 			_, err := c.subscribe(ctx, subscription)
 			subscription.opMu.Unlock()
 			if err != nil {
-				// A handshake timeout means the new socket went silent, not that
-				// the service rejected the subscription.
-				if err == errConnectionInterrupted || (err == context.DeadlineExceeded && c.ctx.Err() == nil) {
-					c.trackSubscription(subscription)
-					interruptedSubscription.Store(true)
+				// A handshake timeout is a silent socket only if it also stops
+				// answering pings; otherwise the service ignored this subscription.
+				if err == errConnectionInterrupted || (err == context.DeadlineExceeded && c.ctx.Err() == nil && c.silent(conn)) {
+					interruptedMu.Lock()
+					interrupted = append(interrupted, subscription)
+					interruptedMu.Unlock()
 					log.Error("resubscribe interrupted", slog.Any("error", err))
 					return
 				}
@@ -257,5 +256,12 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 		slog.Int("success", int(successCount.Load())),
 		slog.Int("total", len(subscriptions)),
 	)
-	return interruptedSubscription.Load()
+	return interrupted
+}
+
+// silent reports whether conn fails to answer a ping within the ping timeout.
+func (c *Conn) silent(conn *websocket.Conn) bool {
+	ctx, cancel := context.WithTimeout(c.ctx, c.dialer.pingTimeout)
+	defer cancel()
+	return conn.Ping(ctx) != nil
 }

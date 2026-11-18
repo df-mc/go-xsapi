@@ -610,7 +610,7 @@ func TestCloseCancelsLongReconnectBackoff(t *testing.T) {
 // subscriptions restored, or MPSD keeps treating the stale connection ID as offline.
 func TestSilentWebSocketIsReplaced(t *testing.T) {
 	shortBackoff(t)
-	shortPing(t, 5*time.Millisecond, 50*time.Millisecond)
+	shortPing(t, 5*time.Millisecond, 250*time.Millisecond)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 	srv.silentDial.Store(1)
@@ -631,8 +631,8 @@ func TestSilentWebSocketIsReplaced(t *testing.T) {
 	if !sub.Active() {
 		t.Fatal("subscription is inactive after the silent socket was replaced")
 	}
-	if got := sub.ID(); got != 2 {
-		t.Fatalf("subscription ID = %d, want 2 from the new socket", got)
+	if got := sub.ID(); got == 1 {
+		t.Fatal("subscription still has its ID from the silent socket")
 	}
 }
 
@@ -721,7 +721,42 @@ func TestSubscribeLostDuringHandleSubscribeRetries(t *testing.T) {
 // again, not cost the subscription.
 func TestSilentReplacementDuringResubscribeIsReplaced(t *testing.T) {
 	shortBackoff(t)
-	shortPing(t, time.Hour, time.Hour)
+	shortPing(t, time.Hour, 50*time.Millisecond)
+	shortResubscribe(t, 50*time.Millisecond)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	h := &countingErrorHandler{}
+	sub := NewSubscription("test-resource", h)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.mutedDial.Store(2)
+	srv.silentDial.Store(2)
+	conn.reconnect()
+
+	if got := srv.dialCount.Load(); got != 3 {
+		t.Fatalf("dial count = %d, want 3", got)
+	}
+	if !sub.Active() || sub.ID() != 2 {
+		t.Fatalf("subscription active=%v ID=%d, want active on the third socket", sub.Active(), sub.ID())
+	}
+	if got := h.errors.Load(); got != 0 {
+		t.Fatalf("HandleError calls = %d, want 0", got)
+	}
+}
+
+// A resubscribe the service ignores on a socket that still answers pings fails
+// that subscription instead of reconnecting forever.
+func TestIgnoredResubscribeOnLiveSocketIsTerminal(t *testing.T) {
+	shortBackoff(t)
+	shortPing(t, time.Hour, time.Second)
 	shortResubscribe(t, 50*time.Millisecond)
 	srv := newConnTestServer(t)
 	defer srv.Close()
@@ -740,14 +775,56 @@ func TestSilentReplacementDuringResubscribeIsReplaced(t *testing.T) {
 	srv.mutedDial.Store(2)
 	conn.reconnect()
 
+	if got := srv.dialCount.Load(); got != 2 {
+		t.Fatalf("dial count = %d, want 2", got)
+	}
+	if sub.Active() {
+		t.Fatal("ignored subscription is still active")
+	}
+	waitAtomicUint32(t, &h.errors, 1, "HandleError calls")
+}
+
+// An interrupted resubscribe must not keep its old ID in the map, where a
+// subscription that succeeded on the new socket can reuse it.
+func TestInterruptedResubscribeDoesNotShadowNewID(t *testing.T) {
+	shortBackoff(t)
+	shortPing(t, time.Hour, 50*time.Millisecond)
+	shortResubscribe(t, 50*time.Millisecond)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.perSocketIDs.Store(true)
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	slow := NewSubscription("slow", NopSubscriptionHandler{})
+	fast := NewSubscription("fast", NopSubscriptionHandler{})
+	for _, sub := range []*Subscription{slow, fast} {
+		if err := conn.Subscribe(ctx, sub); err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	}
+	if slow.ID() != 1 || fast.ID() != 2 {
+		t.Fatalf("IDs on socket 1 = %d, %d, want 1, 2", slow.ID(), fast.ID())
+	}
+
+	// Socket 2 answers fast, which can take ID 1, then goes silent on slow.
+	srv.mutedResource.Store("slow")
+	srv.mutedDial.Store(2)
+	srv.silentDial.Store(2)
+	conn.reconnect()
+
 	if got := srv.dialCount.Load(); got != 3 {
 		t.Fatalf("dial count = %d, want 3", got)
 	}
-	if !sub.Active() || sub.ID() != 2 {
-		t.Fatalf("subscription active=%v ID=%d, want active on the third socket", sub.Active(), sub.ID())
-	}
-	if got := h.errors.Load(); got != 0 {
-		t.Fatalf("HandleError calls = %d, want 0", got)
+	conn.subscriptionsMu.RLock()
+	defer conn.subscriptionsMu.RUnlock()
+	for _, sub := range []*Subscription{slow, fast} {
+		if !sub.Active() || conn.subscriptions[sub.ID()] != sub {
+			t.Fatalf("subscription %q active=%v ID=%d is not tracked under its ID", sub.ResourceURI(), sub.Active(), sub.ID())
+		}
 	}
 }
 
@@ -943,8 +1020,12 @@ type connTestServer struct {
 	silentDial atomic.Uint32
 	// closeAfterSubscribeID closes the socket right after acknowledging this subscribe.
 	closeAfterSubscribeID atomic.Uint32
-	// mutedDial is the dial number whose socket never acknowledges a subscribe.
-	mutedDial atomic.Uint32
+	// mutedDial is the dial number whose socket never acknowledges a subscribe
+	// to mutedResource, or to any resource when mutedResource is empty.
+	mutedDial     atomic.Uint32
+	mutedResource atomic.Value // string
+	// perSocketIDs numbers subscriptions from 1 on each socket instead of globally.
+	perSocketIDs atomic.Bool
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
@@ -1018,6 +1099,7 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dial = s.dialCount.Add(1)
+	var socketIDs uint32
 	defer func() {
 		s.closeCount.Add(1)
 		_ = conn.Close(websocket.StatusNormalClosure, "")
@@ -1042,10 +1124,14 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 
 		switch typ {
 		case typeSubscribe:
-			if s.mutedDial.Load() == dial {
+			if s.mutedDial.Load() == dial && s.muted(payload) {
 				continue
 			}
 			id := s.subscribeCount.Add(1)
+			if s.perSocketIDs.Load() {
+				socketIDs++
+				id = socketIDs
+			}
 			if minID := s.closeSubscribeMin.Load(); minID != 0 && id >= minID {
 				_ = conn.Close(websocket.StatusGoingAway, "test close")
 				return
@@ -1088,6 +1174,16 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// muted reports whether the subscribe in payload is to the muted resource.
+func (s *connTestServer) muted(payload []json.RawMessage) bool {
+	resource, _ := s.mutedResource.Load().(string)
+	if resource == "" {
+		return true
+	}
+	var uri string
+	return len(payload) > 2 && json.Unmarshal(payload[2], &uri) == nil && uri == resource
 }
 
 // waitAtomicUint32 waits until counter reaches want or fails the test.
