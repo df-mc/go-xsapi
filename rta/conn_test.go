@@ -850,6 +850,7 @@ func TestSubscribeOnLostSocketWaitsForLaterAttempt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	a := newBlockingSubscribeHandler(2)
+	t.Cleanup(a.release)
 	subA := NewSubscription("a", a)
 	if err := conn.Subscribe(ctx, subA); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
@@ -858,13 +859,24 @@ func TestSubscribeOnLostSocketWaitsForLaterAttempt(t *testing.T) {
 	// Socket 2 acknowledges A's resubscribe (ID 2), then X (ID 3), then closes.
 	srv.closeAfterSubscribeID.Store(3)
 	go conn.reconnect()
-	<-a.entered
+	select {
+	case <-a.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("A's resubscribe callback did not run")
+	}
 
 	x := newBlockingSubscribeHandler(1)
+	t.Cleanup(x.release)
 	subX := NewSubscription("x", x)
 	errs := make(chan error, 1)
 	go func() { errs <- conn.Subscribe(ctx, subX) }()
-	<-x.entered
+	select {
+	case <-x.entered:
+	case err := <-errs:
+		t.Fatalf("Subscribe returned before its callback ran: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("X's callback did not run")
+	}
 	waitFor(t, func() bool {
 		conn.reconnectMu.Lock()
 		defer conn.reconnectMu.Unlock()
@@ -873,9 +885,9 @@ func TestSubscribeOnLostSocketWaitsForLaterAttempt(t *testing.T) {
 
 	// The reconnect runs again for socket 2 and holds its dial while X finishes.
 	srv.rejectDials.Store(true)
-	close(a.unblock)
+	a.release()
 	waitAtomicUint32(t, &srv.rejectedDials, 1, "rejected dials")
-	close(x.unblock)
+	x.release()
 	waitFor(t, func() bool {
 		conn.subscriptionsMu.RLock()
 		defer conn.subscriptionsMu.RUnlock()
@@ -883,8 +895,13 @@ func TestSubscribeOnLostSocketWaitsForLaterAttempt(t *testing.T) {
 	}, "X to be tracked or rejected")
 	srv.rejectDials.Store(false)
 
-	if err := <-errs; err != nil {
-		t.Fatalf("Subscribe returned error: %v", err)
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe did not return")
 	}
 	if err := conn.wait(ctx); err != nil {
 		t.Fatalf("wait returned error: %v", err)
@@ -899,6 +916,132 @@ func TestSubscribeOnLostSocketWaitsForLaterAttempt(t *testing.T) {
 			t.Fatalf("subscription %q active=%v ID=%d is not tracked under its ID", sub.ResourceURI(), sub.Active(), sub.ID())
 		}
 	}
+}
+
+// A subscription removed while the reconnect holds it for a retry must stay removed.
+func TestUnsubscribedWhileHeldIsNotRestored(t *testing.T) {
+	shortBackoff(t)
+	shortPing(t, time.Hour, 100*time.Millisecond)
+	shortResubscribe(t, 250*time.Millisecond)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", NopSubscriptionHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.mutedDial.Store(2)
+	srv.silentDial.Store(2)
+	done := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(done)
+	}()
+	waitAtomicUint32(t, &srv.dialCount, 2, "dial count")
+	srv.rejectDials.Store(true)
+	// The silent socket interrupted the resubscribe; the reconnect now holds sub.
+	waitAtomicUint32(t, &srv.rejectedDials, 1, "rejected dials")
+	// What a concurrent Unsubscribe does once it finds the socket closed.
+	sub.opMu.Lock()
+	sub.setUnsubscribing(true)
+	sub.deactivate(ErrUnsubscribed)
+	sub.opMu.Unlock()
+	subscribes := srv.subscribeCount.Load()
+	srv.rejectDials.Store(false)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect did not finish")
+	}
+	if sub.Active() {
+		t.Fatal("unsubscribed subscription was restored")
+	}
+	if got := srv.subscribeCount.Load(); got != subscribes {
+		t.Fatalf("subscribe count = %d, want %d", got, subscribes)
+	}
+}
+
+// Handshakes that time out together share one liveness ping, since a peer may
+// answer only the latest of several outstanding pings.
+func TestTimedOutResubscribesShareOnePing(t *testing.T) {
+	shortBackoff(t)
+	shortPing(t, time.Hour, 100*time.Millisecond)
+	shortResubscribe(t, 250*time.Millisecond)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, uri := range []string{"a", "b"} {
+		if err := conn.Subscribe(ctx, NewSubscription(uri, NopSubscriptionHandler{})); err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	}
+
+	srv.mutedDial.Store(2)
+	srv.silentDial.Store(2)
+	reconnectWithin(t, conn)
+	if got := srv.pingCount.Load(); got != 1 {
+		t.Fatalf("ping count = %d, want 1", got)
+	}
+}
+
+// A service that keeps dropping each socket right after its resubscribes
+// succeed must be paced by backoff, not redialed at once.
+func TestLostReplacementRoundsBackOff(t *testing.T) {
+	var waits atomic.Uint32
+	old := reconnectBackoff
+	reconnectBackoff = func() backoff.BackOff { return countingBackOff{&waits} }
+	t.Cleanup(func() { reconnectBackoff = old })
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	sub := NewSubscription("test-resource", slowSubscribeHandler{})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.closeAfterSubscribeMin.Store(2)
+	go conn.reconnect()
+	waitAtomicUint32(t, &srv.dialCount, 4, "dial count")
+	srv.closeAfterSubscribeMin.Store(0)
+	if waits.Load() == 0 {
+		t.Fatal("reconnect rounds did not back off")
+	}
+}
+
+// countingBackOff counts waits and returns a millisecond each.
+type countingBackOff struct{ calls *atomic.Uint32 }
+
+func (b countingBackOff) NextBackOff() time.Duration {
+	b.calls.Add(1)
+	return time.Millisecond
+}
+
+func (countingBackOff) Reset() {}
+
+// slowSubscribeHandler holds each callback long enough for a socket closed
+// right after the acknowledgment to be reported lost first.
+type slowSubscribeHandler struct{ NopSubscriptionHandler }
+
+func (slowSubscribeHandler) HandleSubscribe(json.RawMessage) error {
+	time.Sleep(20 * time.Millisecond)
+	return nil
 }
 
 // A socket that answers pings must stay in use.
@@ -1067,6 +1210,7 @@ type blockingSubscribeHandler struct {
 	calls   atomic.Int32
 	entered chan struct{}
 	unblock chan struct{}
+	once    sync.Once
 }
 
 func newBlockingSubscribeHandler(blockAt int32) *blockingSubscribeHandler {
@@ -1075,6 +1219,11 @@ func newBlockingSubscribeHandler(blockAt int32) *blockingSubscribeHandler {
 		entered: make(chan struct{}),
 		unblock: make(chan struct{}),
 	}
+}
+
+// release unblocks the handler; it is safe to call more than once.
+func (h *blockingSubscribeHandler) release() {
+	h.once.Do(func() { close(h.unblock) })
 }
 
 func (h *blockingSubscribeHandler) HandleSubscribe(json.RawMessage) error {
@@ -1101,8 +1250,10 @@ type connTestServer struct {
 	rejectedDials atomic.Uint32
 	// silentDial is the dial number whose socket stays open but never answers pings.
 	silentDial atomic.Uint32
-	// closeAfterSubscribeID closes the socket right after acknowledging this subscribe.
-	closeAfterSubscribeID atomic.Uint32
+	// closeAfterSubscribeID closes the socket right after acknowledging this subscribe,
+	// and closeAfterSubscribeMin after acknowledging any subscribe from that ID on.
+	closeAfterSubscribeID  atomic.Uint32
+	closeAfterSubscribeMin atomic.Uint32
 	// mutedDial is the dial number whose socket never acknowledges a subscribe
 	// to mutedResource, or to any resource when mutedResource is empty.
 	mutedDial     atomic.Uint32
@@ -1234,7 +1385,7 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 			}); err != nil {
 				return
 			}
-			if s.closeAfterSubscribeID.Load() == id {
+			if minID := s.closeAfterSubscribeMin.Load(); s.closeAfterSubscribeID.Load() == id || (minID != 0 && id >= minID) {
 				_ = conn.Close(websocket.StatusGoingAway, "test close")
 				return
 			}

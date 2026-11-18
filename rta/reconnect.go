@@ -125,12 +125,21 @@ func (c *Conn) reconnect() {
 // outage nor a socket that keeps dropping mid-handshake ends the attempt: the
 // subscriptions stay owned by the reconnect until it lands or the Conn closes.
 func (c *Conn) runReconnect(done chan struct{}) {
+	// rounds paces a service that keeps dropping sockets right after resubscribes succeed.
+	rounds := c.dialer.backoff()
 	for {
 		c.restore()
 		if !c.finishReconnect(done) {
 			return
 		}
-		c.log.Info("replacement WebSocket was lost while resubscribing")
+		sleep := rounds.NextBackOff()
+		c.log.Info("replacement WebSocket was lost while resubscribing", slog.Duration("sleep", sleep))
+		timer := time.NewTimer(sleep)
+		select {
+		case <-timer.C:
+		case <-c.ctx.Done():
+			timer.Stop()
+		}
 	}
 }
 
@@ -216,6 +225,8 @@ func (c *Conn) resubscribe(conn *websocket.Conn, subscriptions []*Subscription) 
 	var successCount atomic.Int32
 	var interruptedMu sync.Mutex
 	var wg sync.WaitGroup
+	// One ping answers for every timed-out handshake; a peer may answer only the latest of several.
+	silent := sync.OnceValue(func() bool { return c.silent(conn) })
 	for _, subscription := range subscriptions {
 		wg.Go(func() {
 			log := c.log.With(slog.Group("subscription",
@@ -226,12 +237,17 @@ func (c *Conn) resubscribe(conn *websocket.Conn, subscriptions []*Subscription) 
 			ctx, cancel := context.WithTimeout(c.ctx, c.dialer.resubscribeTimeout)
 			defer cancel()
 			subscription.opMu.Lock()
+			if !subscription.shouldResubscribe() {
+				// Unsubscribe removed it while the reconnect held it.
+				subscription.opMu.Unlock()
+				return
+			}
 			_, err := c.subscribe(ctx, subscription)
 			subscription.opMu.Unlock()
 			if err != nil {
 				// A handshake timeout is a silent socket only if it also stops
 				// answering pings; otherwise the service ignored this subscription.
-				if err == errConnectionInterrupted || (err == context.DeadlineExceeded && c.ctx.Err() == nil && c.silent(conn)) {
+				if err == errConnectionInterrupted || (err == context.DeadlineExceeded && c.ctx.Err() == nil && silent()) {
 					interruptedMu.Lock()
 					interrupted = append(interrupted, subscription)
 					interruptedMu.Unlock()

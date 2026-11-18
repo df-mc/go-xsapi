@@ -143,14 +143,20 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 }
 
 // trackOn tracks sub unless conn was lost, which a reconnect may have seen
-// before sub was tracked.
+// before sub was tracked, or the Conn was closed, whose sweep may have run.
 func (c *Conn) trackOn(conn *websocket.Conn, sub *Subscription) bool {
 	c.reconnectMu.Lock()
 	defer c.reconnectMu.Unlock()
 	if c.lostConn == conn || !c.isCurrentConn(conn) {
 		return false
 	}
-	c.trackSubscription(sub)
+	c.subscriptionsMu.Lock()
+	defer c.subscriptionsMu.Unlock()
+	// close cancels ctx before it sweeps, so a live ctx here means the sweep will see sub.
+	if c.ctx.Err() != nil {
+		return false
+	}
+	c.subscriptions[sub.ID()] = sub
 	return true
 }
 
@@ -557,6 +563,11 @@ func (c *Conn) probe(conn *websocket.Conn, done <-chan struct{}) {
 		}
 		if c.ctx.Err() != nil {
 			return
+		}
+		select {
+		case <-done:
+			return // read already failed and handles the loss
+		default:
 		}
 		if c.isCurrentConn(conn) {
 			c.log.Warn("RTA WebSocket did not answer ping; reconnecting", slog.Any("error", err))
