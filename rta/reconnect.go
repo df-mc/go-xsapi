@@ -134,12 +134,7 @@ func (c *Conn) runReconnect(done chan struct{}) {
 		}
 		sleep := rounds.NextBackOff()
 		c.log.Info("replacement WebSocket was lost while resubscribing", slog.Duration("sleep", sleep))
-		timer := time.NewTimer(sleep)
-		select {
-		case <-timer.C:
-		case <-c.ctx.Done():
-			timer.Stop()
-		}
+		_ = c.sleep(context.Background(), sleep)
 	}
 }
 

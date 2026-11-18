@@ -940,13 +940,12 @@ func TestUnsubscribedWhileHeldIsNotRestored(t *testing.T) {
 
 	srv.mutedDial.Store(2)
 	srv.silentDial.Store(2)
+	srv.rejectDialsFrom.Store(3)
 	done := make(chan struct{})
 	go func() {
 		conn.reconnect()
 		close(done)
 	}()
-	waitAtomicUint32(t, &srv.dialCount, 2, "dial count")
-	srv.rejectDials.Store(true)
 	// The silent socket interrupted the resubscribe; the reconnect now holds sub.
 	waitAtomicUint32(t, &srv.rejectedDials, 1, "rejected dials")
 	// What a concurrent Unsubscribe does once it finds the socket closed.
@@ -955,7 +954,7 @@ func TestUnsubscribedWhileHeldIsNotRestored(t *testing.T) {
 	sub.deactivate(ErrUnsubscribed)
 	sub.opMu.Unlock()
 	subscribes := srv.subscribeCount.Load()
-	srv.rejectDials.Store(false)
+	srv.rejectDialsFrom.Store(0)
 
 	select {
 	case <-done:
@@ -1010,7 +1009,9 @@ func TestLostReplacementRoundsBackOff(t *testing.T) {
 	conn := srv.Dial(t)
 	defer conn.Close()
 
-	sub := NewSubscription("test-resource", &lossWaitingHandler{conn: conn})
+	h := &lossWaitingHandler{conn: conn, from: 2}
+	h.waiting.Store(true)
+	sub := NewSubscription("test-resource", h)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := conn.Subscribe(ctx, sub); err != nil {
@@ -1036,22 +1037,25 @@ func (b countingBackOff) NextBackOff() time.Duration {
 
 func (countingBackOff) Reset() {}
 
-// lossWaitingHandler holds each resubscribe callback until the socket it came
-// on is recorded lost, so the loss always lands while the reconnect holds the gate.
+// lossWaitingHandler holds each callback from call from on until the socket it
+// came on is recorded lost or dropped, so the loss lands before it returns.
 type lossWaitingHandler struct {
 	NopSubscriptionHandler
-	conn  *Conn
-	calls atomic.Int32
+	conn    *Conn
+	from    int32 // first call that waits
+	calls   atomic.Int32
+	waiting atomic.Bool
 }
 
 func (h *lossWaitingHandler) HandleSubscribe(json.RawMessage) error {
-	if h.calls.Add(1) == 1 {
+	if h.calls.Add(1) < h.from || !h.waiting.Load() {
 		return nil
 	}
+	socket := h.conn.currentConn()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		h.conn.reconnectMu.Lock()
-		lost := h.conn.lostConn != nil && h.conn.isCurrentConn(h.conn.lostConn)
+		lost := h.conn.lostConn == socket || !h.conn.isCurrentConn(socket)
 		h.conn.reconnectMu.Unlock()
 		if lost {
 			return nil
@@ -1059,6 +1063,44 @@ func (h *lossWaitingHandler) HandleSubscribe(json.RawMessage) error {
 		time.Sleep(time.Millisecond)
 	}
 	return nil
+}
+
+// A first subscribe whose socket keeps closing right after the ACK must retry
+// on a backoff schedule, not redial at once while holding subscriptionOpMu.
+func TestSubscribeLostAfterEveryAckBacksOff(t *testing.T) {
+	var waits atomic.Uint32
+	old := reconnectBackoff
+	reconnectBackoff = func() backoff.BackOff { return countingBackOff{&waits} }
+	t.Cleanup(func() { reconnectBackoff = old })
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.closeAfterSubscribeMin.Store(1)
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	h := &lossWaitingHandler{conn: conn, from: 1}
+	h.waiting.Store(true)
+	sub := NewSubscription("test-resource", h)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errs := make(chan error, 1)
+	go func() { errs <- conn.Subscribe(ctx, sub) }()
+
+	waitAtomicUint32(t, &srv.subscribeCount, 3, "subscribe count")
+	srv.closeAfterSubscribeMin.Store(0)
+	h.waiting.Store(false)
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("Subscribe returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not return")
+	}
+	if waits.Load() == 0 {
+		t.Fatal("Subscribe retried without backing off")
+	}
 }
 
 // A socket that answers pings must stay in use.
@@ -1262,9 +1304,12 @@ type connTestServer struct {
 	closeSubscribeMin atomic.Uint32
 	closeUnsubscribe  atomic.Bool
 	closeAfterUnsub   atomic.Bool
-	// rejectDials refuses WebSocket upgrades, simulating a service outage.
-	rejectDials   atomic.Bool
-	rejectedDials atomic.Uint32
+	// rejectDials refuses WebSocket upgrades, simulating a service outage, as
+	// does rejectDialsFrom for every upgrade attempt from that number on.
+	rejectDials     atomic.Bool
+	rejectDialsFrom atomic.Uint32
+	dialAttempts    atomic.Uint32
+	rejectedDials   atomic.Uint32
 	// silentDial is the dial number whose socket stays open but never answers pings.
 	silentDial atomic.Uint32
 	// closeAfterSubscribeID closes the socket right after acknowledging this subscribe,
@@ -1335,7 +1380,8 @@ func (s *connTestServer) closeAfterUnsubscribeResponse() {
 }
 
 func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
-	if s.rejectDials.Load() {
+	attempt := s.dialAttempts.Add(1)
+	if from := s.rejectDialsFrom.Load(); s.rejectDials.Load() || (from != 0 && attempt >= from) {
 		s.rejectedDials.Add(1)
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return

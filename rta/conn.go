@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cenkalti/backoff/v7"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -116,6 +117,7 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 	}
 	c.subscriptionOpMu.Lock()
 	defer c.subscriptionOpMu.Unlock()
+	var retry backoff.BackOff // paces retries when each socket is lost under the callback
 	for {
 		sub.opMu.Lock()
 		if sub.Active() {
@@ -127,6 +129,12 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 		if err == nil && !c.trackOn(conn, sub) {
 			// conn was lost while HandleSubscribe ran, so a reconnect could not see sub.
 			sub.deactivate(nil)
+			if retry == nil {
+				retry = c.dialer.backoff()
+			}
+			if err := c.sleep(ctx, retry.NextBackOff()); err != nil {
+				return err
+			}
 			err = errConnectionInterrupted
 		}
 		if err == errConnectionInterrupted {
@@ -140,6 +148,20 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 			return err
 		}
 		return nil
+	}
+}
+
+// sleep waits for d, or returns early when ctx is done or the Conn is closed.
+func (c *Conn) sleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.ctx.Done():
+		return context.Cause(c.ctx)
 	}
 }
 
@@ -428,7 +450,8 @@ type SubscriptionHandler interface {
 
 	// HandleSubscribe is called with the custom data of each successful
 	// subscribe, including resubscribes after a reconnect. It must not call
-	// Subscribe or Unsubscribe on the same Conn, which wait for it to return.
+	// Subscribe or Unsubscribe on the same Conn, or wait on a lock that a
+	// caller of them holds: they can wait for a reconnect that runs it.
 	HandleSubscribe(custom json.RawMessage) error
 	// HandleResync is called when a Resync message is received from the RTA service
 	// and the resource targeted by the Subscription may have been changed.
