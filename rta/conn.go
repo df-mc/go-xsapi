@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v7"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -48,10 +47,7 @@ type Conn struct {
 	// reconnectDone is a channel that is closed when the reconnect is complete.
 	// It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
-	// lostConn is the current socket after it failed, until a reconnect takes it.
-	lostConn *websocket.Conn
-	pingMu   sync.Mutex // keeps one ping outstanding
-	// reconnectMu guards reconnectDone and lostConn from concurrent read/write access.
+	// reconnectMu guards reconnectDone from concurrent read/write access.
 	reconnectMu sync.Mutex
 
 	// once ensures that the Conn is closed only once.
@@ -117,26 +113,14 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 	}
 	c.subscriptionOpMu.Lock()
 	defer c.subscriptionOpMu.Unlock()
-	var retry backoff.BackOff // paces retries when each socket is lost under the callback
 	for {
 		sub.opMu.Lock()
 		if sub.Active() {
 			sub.opMu.Unlock()
 			return nil
 		}
-		conn, err := c.subscribe(ctx, sub)
+		err := c.subscribe(ctx, sub)
 		sub.opMu.Unlock()
-		if err == nil && !c.trackOn(conn, sub) {
-			// conn was lost while HandleSubscribe ran, so a reconnect could not see sub.
-			sub.deactivate(nil)
-			if retry == nil {
-				retry = c.dialer.backoff()
-			}
-			if err := c.sleep(ctx, retry.NextBackOff()); err != nil {
-				return err
-			}
-			err = errConnectionInterrupted
-		}
 		if err == errConnectionInterrupted {
 			if err := c.wait(ctx); err != nil {
 				return err
@@ -147,80 +131,48 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 			sub.deactivate(err)
 			return err
 		}
+		c.trackSubscription(sub)
 		return nil
 	}
-}
-
-// sleep waits for d, or returns early when ctx is done or the Conn is closed.
-func (c *Conn) sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-c.ctx.Done():
-		return context.Cause(c.ctx)
-	}
-}
-
-// trackOn tracks sub unless conn was lost, which a reconnect may have seen
-// before sub was tracked, or the Conn was closed, whose sweep may have run.
-func (c *Conn) trackOn(conn *websocket.Conn, sub *Subscription) bool {
-	c.reconnectMu.Lock()
-	defer c.reconnectMu.Unlock()
-	if c.lostConn == conn || !c.isCurrentConn(conn) {
-		return false
-	}
-	c.subscriptionsMu.Lock()
-	defer c.subscriptionsMu.Unlock()
-	// close cancels ctx before it sweeps, so a live ctx here means the sweep will see sub.
-	if c.ctx.Err() != nil {
-		return false
-	}
-	c.subscriptions[sub.ID()] = sub
-	return true
 }
 
 // subscribe performs a sequenced call to subscribe to the given resource URI using
-// the provided [context.Context], and returns the socket it subscribed on. The
-// caller is responsible for registering the Subscription in the Conn's
-// subscriptions map using [Subscription.ID].
+// the provided [context.Context]. The caller is responsible for registering the
+// returned [Subscription] in the Conn's subscriptions map using [Subscription.ID].
 //
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
-func (c *Conn) subscribe(ctx context.Context, sub *Subscription) (*websocket.Conn, error) {
-	h, conn, err := c.call(ctx, nil, operationSubscribe, []any{sub.ResourceURI()})
+func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
+	h, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	switch h.status {
 	case StatusOK:
 		if len(h.payload) < 2 {
-			return nil, &OutOfRangeError{
+			return &OutOfRangeError{
 				Payload: h.payload,
 				Index:   1,
 			}
 		}
 		var id uint32
 		if err := json.Unmarshal(h.payload[0], &id); err != nil {
-			return nil, fmt.Errorf("decode subscription ID: %w", err)
+			return fmt.Errorf("decode subscription ID: %w", err)
 		}
 		custom := slices.Clone(h.payload[1])
 		sub.activate(id, custom)
 		if err := sub.handler().HandleSubscribe(custom); err != nil {
 			// This resource has failed to understand this subscription.
-			if err2 := c.unsubscribe(ctx, conn, id); err2 != nil {
+			if err2 := c.unsubscribe(ctx, id); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
 			}
-			return nil, err
+			return err
 		}
-		return conn, nil
+		return nil
 	default:
-		return nil, unexpectedStatusCode(h.status, h.payload)
+		return unexpectedStatusCode(h.status, h.payload)
 	}
 }
 
@@ -234,31 +186,18 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
-	// Check for a reconnect again under the locks: one that started after wait
-	// may hold sub for a retry while another subscription reuses its old ID.
-	for {
-		if err := c.wait(ctx); err != nil {
-			return err
-		}
-		c.subscriptionOpMu.Lock()
-		sub.opMu.Lock()
-		if !c.reconnecting() {
-			break
-		}
-		sub.opMu.Unlock()
-		c.subscriptionOpMu.Unlock()
+	if err := c.wait(ctx); err != nil {
+		return err
 	}
+	c.subscriptionOpMu.Lock()
 	defer c.subscriptionOpMu.Unlock()
+	sub.opMu.Lock()
 	if !sub.Active() {
 		sub.opMu.Unlock()
 		return nil
 	}
 	sub.setUnsubscribing(true)
-	// Bind to the socket seen under the locks: sub's ID means nothing on a later one.
-	err := errConnectionInterrupted
-	if conn := c.currentConn(); conn != nil {
-		err = c.unsubscribe(ctx, conn, sub.ID())
-	}
+	err := c.unsubscribe(ctx, sub.ID())
 	if err != nil && !errors.Is(err, errConnectionInterrupted) {
 		sub.setUnsubscribing(false)
 		sub.opMu.Unlock()
@@ -276,8 +215,8 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 // the RTA subscription is unsubscribed by the user.
 var ErrUnsubscribed = errors.New("rta: subscription removed from RTA connection")
 
-func (c *Conn) unsubscribe(ctx context.Context, conn *websocket.Conn, id uint32) error {
-	h, _, err := c.call(ctx, conn, operationUnsubscribe, []any{id})
+func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
+	h, err := c.call(ctx, operationUnsubscribe, []any{id})
 	if err != nil {
 		return err
 	}
@@ -290,44 +229,39 @@ func (c *Conn) unsubscribe(ctx context.Context, conn *websocket.Conn, id uint32)
 // call sends a sequenced message to the server and blocks using the given
 // [context.Context] until the server responds with a matching sequence number.
 // The response is then decoded into a response and returned. The caller is
-// responsible for checking its status code. A nil conn uses or dials the
-// current socket; otherwise call fails as interrupted unless conn is current.
-func (c *Conn) call(ctx context.Context, conn *websocket.Conn, op uint8, payload []any) (*response, *websocket.Conn, error) {
+// responsible for checking its status code.
+func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := c.ctx.Err(); err != nil {
-		return nil, nil, context.Cause(c.ctx)
+		return nil, context.Cause(c.ctx)
 	}
 
-	if conn == nil {
-		var err error
-		if conn, err = c.ensureWebSocket(ctx); err != nil {
-			return nil, nil, err
-		}
-	} else if !c.isCurrentConn(conn) {
-		return nil, nil, errConnectionInterrupted
+	conn, err := c.ensureWebSocket(ctx)
+	if err != nil {
+		return nil, err
 	}
 	seq := c.sequences[op].Add(1)
 	ch := c.expect(conn, op, seq)
 	if err := c.write(conn, operationToType(op), append([]any{seq}, payload...)); err != nil {
 		c.release(op, seq)
 		c.drainExpected(conn)
-		c.connectionLost(conn)
-		return nil, nil, errConnectionInterrupted
+		c.startReconnect()
+		return nil, errConnectionInterrupted
 	}
 	select {
 	case result, ok := <-ch:
 		if !ok {
-			return nil, nil, errConnectionInterrupted
+			return nil, errConnectionInterrupted
 		}
-		return result, conn, nil
+		return result, nil
 	case <-ctx.Done():
 		c.release(op, seq)
-		return nil, nil, ctx.Err()
+		return nil, ctx.Err()
 	case <-c.ctx.Done():
 		c.release(op, seq)
-		return nil, nil, context.Cause(c.ctx)
+		return nil, context.Cause(c.ctx)
 	}
 }
 
@@ -448,10 +382,6 @@ type SubscriptionHandler interface {
 	// removes the caller.
 	HandleEvent(custom json.RawMessage)
 
-	// HandleSubscribe is called with the custom data of each successful
-	// subscribe, including resubscribes after a reconnect. It must not call
-	// Subscribe or Unsubscribe on the same Conn, or wait on a lock that a
-	// caller of them holds: they can wait for a reconnect that runs it.
 	HandleSubscribe(custom json.RawMessage) error
 	// HandleResync is called when a Resync message is received from the RTA service
 	// and the resource targeted by the Subscription may have been changed.
@@ -502,10 +432,7 @@ func (c *Conn) trackSubscription(sub *Subscription) {
 
 func (c *Conn) untrackSubscription(sub *Subscription) {
 	c.subscriptionsMu.Lock()
-	// A subscription held for a retry keeps an old ID that another may now use.
-	if c.subscriptions[sub.ID()] == sub {
-		delete(c.subscriptions, sub.ID())
-	}
+	delete(c.subscriptions, sub.ID())
 	c.subscriptionsMu.Unlock()
 }
 
@@ -521,13 +448,6 @@ func (c *Conn) closeWebSocket(status websocket.StatusCode, reason string) error 
 		return conn.Close(status, reason)
 	}
 	return nil
-}
-
-// currentConn returns the current socket, or nil if there is none.
-func (c *Conn) currentConn() *websocket.Conn {
-	c.connMu.RLock()
-	defer c.connMu.RUnlock()
-	return c.conn
 }
 
 // isCurrentConn reports whether conn is still the active WebSocket connection.
@@ -548,10 +468,6 @@ func (c *Conn) ensureWebSocket(ctx context.Context) (*websocket.Conn, error) {
 	defer c.connMu.Unlock()
 	if c.conn != nil {
 		return c.conn, nil
-	}
-	// close cancels ctx before it clears c.conn, so check again under connMu.
-	if err := c.ctx.Err(); err != nil {
-		return nil, context.Cause(c.ctx)
 	}
 	conn, err := c.dialer.dial(ctx)
 	if err != nil {
@@ -582,7 +498,7 @@ func (c *Conn) read(conn *websocket.Conn) {
 				return
 			}
 			c.log.Error("error reading from WebSocket connection", slog.Any("error", err))
-			c.connectionLost(conn)
+			c.startReconnect()
 			return
 		}
 		typ, err := readHeader(payload)
@@ -597,7 +513,7 @@ func (c *Conn) read(conn *websocket.Conn) {
 	}
 }
 
-// probe pings conn until it stops answering, then drops it so read reconnects.
+// probe pings conn until it stops answering, then closes it so read reconnects.
 // A socket can stay open but deliver nothing after its network path fails, and
 // MPSD treats session members that use its connection ID as offline.
 func (c *Conn) probe(conn *websocket.Conn, done <-chan struct{}) {
@@ -611,35 +527,24 @@ func (c *Conn) probe(conn *websocket.Conn, done <-chan struct{}) {
 			return
 		case <-ticker.C:
 		}
-		err := c.ping(conn)
+		ctx, cancel := context.WithTimeout(c.ctx, c.dialer.pingTimeout)
+		err := conn.Ping(ctx)
+		cancel()
 		if err == nil {
 			continue
-		}
-		if c.ctx.Err() != nil {
-			return
 		}
 		select {
 		case <-done:
 			return // read already failed and handles the loss
 		default:
 		}
-		if c.isCurrentConn(conn) {
-			c.log.Warn("RTA WebSocket did not answer ping; reconnecting", slog.Any("error", err))
+		if c.ctx.Err() != nil {
+			return
 		}
-		// Closing also frees the reader of a socket that a reconnect already replaced.
+		c.log.Warn("RTA WebSocket did not answer ping; reconnecting", slog.Any("error", err))
 		_ = conn.CloseNow()
 		return
 	}
-}
-
-// ping pings conn, one ping at a time per Conn, since a peer may answer only
-// the latest of several outstanding pings.
-func (c *Conn) ping(conn *websocket.Conn) error {
-	c.pingMu.Lock()
-	defer c.pingMu.Unlock()
-	ctx, cancel := context.WithTimeout(c.ctx, c.dialer.pingTimeout)
-	defer cancel()
-	return conn.Ping(ctx)
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.

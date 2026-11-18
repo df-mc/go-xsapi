@@ -49,8 +49,6 @@ type dialer struct {
 	backoff func() backoff.BackOff
 	// pingInterval and pingTimeout bound how long a silent socket stays in use.
 	pingInterval, pingTimeout time.Duration
-	// resubscribeTimeout bounds each resubscribe handshake on a new socket.
-	resubscribeTimeout time.Duration
 }
 
 func newDialer(client *http.Client, log *slog.Logger) *dialer {
@@ -63,18 +61,14 @@ func newDialer(client *http.Client, log *slog.Logger) *dialer {
 			Subprotocols: []string{subprotocol},
 			HTTPClient:   client,
 		},
-		backoff:            reconnectBackoff,
-		pingInterval:       pingInterval,
-		pingTimeout:        pingTimeout,
-		resubscribeTimeout: resubscribeTimeout,
+		backoff:      reconnectBackoff,
+		pingInterval: pingInterval,
+		pingTimeout:  pingTimeout,
 	}
 }
 
 // pingInterval and pingTimeout are the liveness settings new dialers use; tests shorten them.
 var pingInterval, pingTimeout = 30 * time.Second, 15 * time.Second
-
-// resubscribeTimeout is the resubscribe handshake limit new dialers use; tests shorten it.
-var resubscribeTimeout = 15 * time.Second
 
 // reconnectBackoff is the backoff schedule new dialers use; tests shorten it.
 var reconnectBackoff = newReconnectBackoff
