@@ -170,7 +170,7 @@ func (c *Conn) trackOn(conn *websocket.Conn, sub *Subscription) bool {
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
 func (c *Conn) subscribe(ctx context.Context, sub *Subscription) (*websocket.Conn, error) {
-	h, conn, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()})
+	h, conn, err := c.call(ctx, nil, operationSubscribe, []any{sub.ResourceURI()})
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) (*websocket.Con
 		sub.activate(id, custom)
 		if err := sub.handler().HandleSubscribe(custom); err != nil {
 			// This resource has failed to understand this subscription.
-			if err2 := c.unsubscribe(ctx, id); err2 != nil {
+			if err2 := c.unsubscribe(ctx, conn, id); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
 			}
 			return nil, err
@@ -232,7 +232,11 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 		return nil
 	}
 	sub.setUnsubscribing(true)
-	err := c.unsubscribe(ctx, sub.ID())
+	// Bind to the socket seen under the locks: sub's ID means nothing on a later one.
+	err := errConnectionInterrupted
+	if conn := c.currentConn(); conn != nil {
+		err = c.unsubscribe(ctx, conn, sub.ID())
+	}
 	if err != nil && !errors.Is(err, errConnectionInterrupted) {
 		sub.setUnsubscribing(false)
 		sub.opMu.Unlock()
@@ -250,8 +254,8 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 // the RTA subscription is unsubscribed by the user.
 var ErrUnsubscribed = errors.New("rta: subscription removed from RTA connection")
 
-func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
-	h, _, err := c.call(ctx, operationUnsubscribe, []any{id})
+func (c *Conn) unsubscribe(ctx context.Context, conn *websocket.Conn, id uint32) error {
+	h, _, err := c.call(ctx, conn, operationUnsubscribe, []any{id})
 	if err != nil {
 		return err
 	}
@@ -264,8 +268,9 @@ func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
 // call sends a sequenced message to the server and blocks using the given
 // [context.Context] until the server responds with a matching sequence number.
 // The response is then decoded into a response and returned. The caller is
-// responsible for checking its status code.
-func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, *websocket.Conn, error) {
+// responsible for checking its status code. A nil conn uses or dials the
+// current socket; otherwise call fails as interrupted unless conn is current.
+func (c *Conn) call(ctx context.Context, conn *websocket.Conn, op uint8, payload []any) (*response, *websocket.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -273,9 +278,13 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, *w
 		return nil, nil, context.Cause(c.ctx)
 	}
 
-	conn, err := c.ensureWebSocket(ctx)
-	if err != nil {
-		return nil, nil, err
+	if conn == nil {
+		var err error
+		if conn, err = c.ensureWebSocket(ctx); err != nil {
+			return nil, nil, err
+		}
+	} else if !c.isCurrentConn(conn) {
+		return nil, nil, errConnectionInterrupted
 	}
 	seq := c.sequences[op].Add(1)
 	ch := c.expect(conn, op, seq)
@@ -489,6 +498,13 @@ func (c *Conn) closeWebSocket(status websocket.StatusCode, reason string) error 
 		return conn.Close(status, reason)
 	}
 	return nil
+}
+
+// currentConn returns the current socket, or nil if there is none.
+func (c *Conn) currentConn() *websocket.Conn {
+	c.connMu.RLock()
+	defer c.connMu.RUnlock()
+	return c.conn
 }
 
 // isCurrentConn reports whether conn is still the active WebSocket connection.

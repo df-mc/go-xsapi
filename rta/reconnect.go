@@ -217,7 +217,8 @@ func (c *Conn) deactivateAll(subscriptions []*Subscription) {
 }
 
 // resubscribe re-establishes all subscriptions inherited from the previous
-// WebSocket connection on conn. Each re-subscribe attempt has a timeout of 15 seconds.
+// WebSocket connection on conn. Each re-subscribe attempt is bounded by the
+// dialer's resubscribeTimeout (15 seconds by default).
 // Terminal subscription failures are reported via [SubscriptionHandler.HandleError].
 // It returns the untracked subscriptions that a lost or silent conn interrupted,
 // for another reconnect attempt to retry.
