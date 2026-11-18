@@ -85,10 +85,12 @@ func (c *Conn) finishReconnect(done chan struct{}) (again bool) {
 
 // connectionLost reconnects after conn failed, unless a reconnect already replaced it.
 func (c *Conn) connectionLost(conn *websocket.Conn) {
+	// Check under reconnectMu so a stale socket cannot overwrite a newer loss.
+	c.reconnectMu.Lock()
 	if !c.isCurrentConn(conn) {
+		c.reconnectMu.Unlock()
 		return
 	}
-	c.reconnectMu.Lock()
 	c.lostConn = conn
 	c.reconnectMu.Unlock()
 	c.startReconnect()

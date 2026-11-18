@@ -535,10 +535,13 @@ func (c *Conn) probe(conn *websocket.Conn, done <-chan struct{}) {
 		if err == nil {
 			continue
 		}
-		if c.ctx.Err() != nil || !c.isCurrentConn(conn) {
+		if c.ctx.Err() != nil {
 			return
 		}
-		c.log.Warn("RTA WebSocket did not answer ping; reconnecting", slog.Any("error", err))
+		if c.isCurrentConn(conn) {
+			c.log.Warn("RTA WebSocket did not answer ping; reconnecting", slog.Any("error", err))
+		}
+		// Closing also frees the reader of a socket that a reconnect already replaced.
 		_ = conn.CloseNow()
 		return
 	}
