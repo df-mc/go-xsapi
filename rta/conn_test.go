@@ -610,7 +610,7 @@ func TestCloseCancelsLongReconnectBackoff(t *testing.T) {
 // subscriptions restored, or MPSD keeps treating the stale connection ID as offline.
 func TestSilentWebSocketIsReplaced(t *testing.T) {
 	shortBackoff(t)
-	shortPing(t)
+	shortPing(t, 5*time.Millisecond, 50*time.Millisecond)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 	srv.silentDial.Store(1)
@@ -661,7 +661,11 @@ func TestReplacementLostDuringResubscribeIsReplaced(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("resubscribe callback did not run")
 	}
-	waitLostConn(t, conn)
+	waitFor(t, func() bool {
+		conn.reconnectMu.Lock()
+		defer conn.reconnectMu.Unlock()
+		return conn.lostConn != nil && conn.isCurrentConn(conn.lostConn)
+	}, "the current socket to be recorded as lost")
 	close(h.unblock)
 
 	waitAtomicUint32(t, &srv.dialCount, 3, "dial count")
@@ -674,25 +678,92 @@ func TestReplacementLostDuringResubscribeIsReplaced(t *testing.T) {
 	}
 }
 
-// waitLostConn waits until the current socket is recorded as lost.
-func waitLostConn(t *testing.T, conn *Conn) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		conn.reconnectMu.Lock()
-		lost := conn.lostConn
-		conn.reconnectMu.Unlock()
-		if lost != nil && conn.isCurrentConn(lost) {
-			return
-		}
-		time.Sleep(time.Millisecond)
+// A socket lost while the first HandleSubscribe runs must not leave the
+// subscription active but untracked, where no reconnect restores it.
+func TestSubscribeLostDuringHandleSubscribeRetries(t *testing.T) {
+	srv := newConnTestServer(t)
+	defer srv.Close()
+	srv.closeAfterSubscribeID.Store(1)
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	h := newBlockingSubscribeHandler(1)
+	sub := NewSubscription("test-resource", h)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	errs := make(chan error, 1)
+	go func() { errs <- conn.Subscribe(ctx, sub) }()
+	select {
+	case <-h.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HandleSubscribe did not run")
 	}
-	t.Fatal("current socket was not recorded as lost")
+	// The reconnect found nothing tracked and dropped the socket.
+	waitFor(t, func() bool { return conn.isCurrentConn(nil) }, "the lost socket to be dropped")
+	close(h.unblock)
+
+	if err := <-errs; err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if !sub.Active() || sub.ID() != 2 {
+		t.Fatalf("subscription active=%v ID=%d, want active on the second socket", sub.Active(), sub.ID())
+	}
+	conn.subscriptionsMu.RLock()
+	_, tracked := conn.subscriptions[sub.ID()]
+	conn.subscriptionsMu.RUnlock()
+	if !tracked {
+		t.Fatal("subscription is not tracked, so a later reconnect would skip it")
+	}
+}
+
+// A replacement socket that never acknowledges resubscribes must be replaced
+// again, not cost the subscription.
+func TestSilentReplacementDuringResubscribeIsReplaced(t *testing.T) {
+	shortBackoff(t)
+	shortPing(t, time.Hour, time.Hour)
+	shortResubscribe(t, 50*time.Millisecond)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	h := &countingErrorHandler{}
+	sub := NewSubscription("test-resource", h)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.mutedDial.Store(2)
+	conn.reconnect()
+
+	if got := srv.dialCount.Load(); got != 3 {
+		t.Fatalf("dial count = %d, want 3", got)
+	}
+	if !sub.Active() || sub.ID() != 2 {
+		t.Fatalf("subscription active=%v ID=%d, want active on the third socket", sub.Active(), sub.ID())
+	}
+	if got := h.errors.Load(); got != 0 {
+		t.Fatalf("HandleError calls = %d, want 0", got)
+	}
+}
+
+type countingErrorHandler struct {
+	NopSubscriptionHandler
+	errors atomic.Uint32
+}
+
+func (h *countingErrorHandler) HandleError(error) {
+	h.errors.Add(1)
 }
 
 // A socket that answers pings must stay in use.
 func TestRespondingWebSocketIsKept(t *testing.T) {
-	shortPing(t)
+	// A long timeout keeps scheduler delays from failing a healthy pong.
+	shortPing(t, 5*time.Millisecond, time.Second)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
@@ -708,12 +779,32 @@ func TestRespondingWebSocketIsKept(t *testing.T) {
 	assertAtomicUint32Stays(t, &srv.dialCount, 1, "dial count")
 }
 
-// shortPing makes new dialers ping every 5 ms and give up after 20 ms.
-func shortPing(t *testing.T) {
+// shortPing makes new dialers ping every interval and give up after timeout.
+func shortPing(t *testing.T, interval, timeout time.Duration) {
 	t.Helper()
 	oldInterval, oldTimeout := pingInterval, pingTimeout
-	pingInterval, pingTimeout = 5*time.Millisecond, 20*time.Millisecond
+	pingInterval, pingTimeout = interval, timeout
 	t.Cleanup(func() { pingInterval, pingTimeout = oldInterval, oldTimeout })
+}
+
+// shortResubscribe makes new dialers give up a resubscribe handshake after timeout.
+func shortResubscribe(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	old := resubscribeTimeout
+	resubscribeTimeout = timeout
+	t.Cleanup(func() { resubscribeTimeout = old })
+}
+
+// waitFor waits until cond holds or fails the test.
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 type countingSubscribeHandler struct {
@@ -852,6 +943,8 @@ type connTestServer struct {
 	silentDial atomic.Uint32
 	// closeAfterSubscribeID closes the socket right after acknowledging this subscribe.
 	closeAfterSubscribeID atomic.Uint32
+	// mutedDial is the dial number whose socket never acknowledges a subscribe.
+	mutedDial atomic.Uint32
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
@@ -949,6 +1042,9 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 
 		switch typ {
 		case typeSubscribe:
+			if s.mutedDial.Load() == dial {
+				continue
+			}
 			id := s.subscribeCount.Add(1)
 			if minID := s.closeSubscribeMin.Load(); minID != 0 && id >= minID {
 				_ = conn.Close(websocket.StatusGoingAway, "test close")

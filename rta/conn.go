@@ -121,8 +121,13 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 			sub.opMu.Unlock()
 			return nil
 		}
-		err := c.subscribe(ctx, sub)
+		conn, err := c.subscribe(ctx, sub)
 		sub.opMu.Unlock()
+		if err == nil && !c.trackOn(conn, sub) {
+			// conn was lost while HandleSubscribe ran, so a reconnect could not see sub.
+			sub.deactivate(nil)
+			err = errConnectionInterrupted
+		}
 		if err == errConnectionInterrupted {
 			if err := c.wait(ctx); err != nil {
 				return err
@@ -133,35 +138,47 @@ func (c *Conn) Subscribe(ctx context.Context, sub *Subscription) error {
 			sub.deactivate(err)
 			return err
 		}
-		c.trackSubscription(sub)
 		return nil
 	}
 }
 
+// trackOn tracks sub unless conn was lost, which a reconnect may have seen
+// before sub was tracked.
+func (c *Conn) trackOn(conn *websocket.Conn, sub *Subscription) bool {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+	if c.lostConn == conn || !c.isCurrentConn(conn) {
+		return false
+	}
+	c.trackSubscription(sub)
+	return true
+}
+
 // subscribe performs a sequenced call to subscribe to the given resource URI using
-// the provided [context.Context]. The caller is responsible for registering the
-// returned [Subscription] in the Conn's subscriptions map using [Subscription.ID].
+// the provided [context.Context], and returns the socket it subscribed on. The
+// caller is responsible for registering the Subscription in the Conn's
+// subscriptions map using [Subscription.ID].
 //
 // This is separated from [Conn.Subscribe] because during reconnect, subscriptions
 // inherited from previous connection must be re-registered in the map without
 // duplicating the subscribe logic.
-func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
-	h, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()})
+func (c *Conn) subscribe(ctx context.Context, sub *Subscription) (*websocket.Conn, error) {
+	h, conn, err := c.call(ctx, operationSubscribe, []any{sub.ResourceURI()})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	switch h.status {
 	case StatusOK:
 		if len(h.payload) < 2 {
-			return &OutOfRangeError{
+			return nil, &OutOfRangeError{
 				Payload: h.payload,
 				Index:   1,
 			}
 		}
 		var id uint32
 		if err := json.Unmarshal(h.payload[0], &id); err != nil {
-			return fmt.Errorf("decode subscription ID: %w", err)
+			return nil, fmt.Errorf("decode subscription ID: %w", err)
 		}
 		custom := slices.Clone(h.payload[1])
 		sub.activate(id, custom)
@@ -170,11 +187,11 @@ func (c *Conn) subscribe(ctx context.Context, sub *Subscription) error {
 			if err2 := c.unsubscribe(ctx, id); err2 != nil {
 				err = errors.Join(err, fmt.Errorf("unsubscribe: %w", err2))
 			}
-			return err
+			return nil, err
 		}
-		return nil
+		return conn, nil
 	default:
-		return unexpectedStatusCode(h.status, h.payload)
+		return nil, unexpectedStatusCode(h.status, h.payload)
 	}
 }
 
@@ -218,7 +235,7 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 var ErrUnsubscribed = errors.New("rta: subscription removed from RTA connection")
 
 func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
-	h, err := c.call(ctx, operationUnsubscribe, []any{id})
+	h, _, err := c.call(ctx, operationUnsubscribe, []any{id})
 	if err != nil {
 		return err
 	}
@@ -232,17 +249,17 @@ func (c *Conn) unsubscribe(ctx context.Context, id uint32) error {
 // [context.Context] until the server responds with a matching sequence number.
 // The response is then decoded into a response and returned. The caller is
 // responsible for checking its status code.
-func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, error) {
+func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, *websocket.Conn, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := c.ctx.Err(); err != nil {
-		return nil, context.Cause(c.ctx)
+		return nil, nil, context.Cause(c.ctx)
 	}
 
 	conn, err := c.ensureWebSocket(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	seq := c.sequences[op].Add(1)
 	ch := c.expect(conn, op, seq)
@@ -250,20 +267,20 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 		c.release(op, seq)
 		c.drainExpected(conn)
 		c.connectionLost(conn)
-		return nil, errConnectionInterrupted
+		return nil, nil, errConnectionInterrupted
 	}
 	select {
 	case result, ok := <-ch:
 		if !ok {
-			return nil, errConnectionInterrupted
+			return nil, nil, errConnectionInterrupted
 		}
-		return result, nil
+		return result, conn, nil
 	case <-ctx.Done():
 		c.release(op, seq)
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	case <-c.ctx.Done():
 		c.release(op, seq)
-		return nil, context.Cause(c.ctx)
+		return nil, nil, context.Cause(c.ctx)
 	}
 }
 

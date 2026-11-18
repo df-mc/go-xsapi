@@ -51,11 +51,16 @@ func (c *Conn) takeSubscriptionsForReconnect() (resubscribe []*Subscription) {
 // beginReconnect starts a reconnect gate if none is already active. It reports
 // whether the caller owns running the reconnect.
 func (c *Conn) beginReconnect() (chan struct{}, bool) {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+	return c.beginReconnectLocked()
+}
+
+// beginReconnectLocked is beginReconnect with reconnectMu held.
+func (c *Conn) beginReconnectLocked() (chan struct{}, bool) {
 	if c.ctx.Err() != nil {
 		return nil, false
 	}
-	c.reconnectMu.Lock()
-	defer c.reconnectMu.Unlock()
 	if c.reconnectDone != nil {
 		return c.reconnectDone, false
 	}
@@ -92,8 +97,14 @@ func (c *Conn) connectionLost(conn *websocket.Conn) {
 		return
 	}
 	c.lostConn = conn
+	// Claim the gate in the same section: a running reconnect sees lostConn
+	// before it releases the gate, and a finished one cannot be followed by a
+	// redundant reconnect for this report.
+	done, ok := c.beginReconnectLocked()
 	c.reconnectMu.Unlock()
-	c.startReconnect()
+	if ok {
+		go c.runReconnect(done)
+	}
 }
 
 // startReconnect begins a background reconnect if one is not already running.
@@ -157,14 +168,21 @@ func (c *Conn) restore() {
 			c.deactivateAll(subscriptions)
 			return struct{}{}, nil
 		}
+		old := c.conn
 		c.conn = conn
 		c.connMu.Unlock()
+		if old != nil {
+			// Its reader may still be blocked; it returns once it sees it is not current.
+			_ = old.CloseNow()
+		}
 		go c.read(conn)
 
 		c.log.Info("resubscribing existing subscriptions...", slog.Int("count", len(subscriptions)))
 		if !c.resubscribe(subscriptions) {
 			return struct{}{}, nil
 		}
+		// Drop the socket so the next attempt cannot reuse one that went silent.
+		_ = conn.CloseNow()
 		return struct{}{}, errConnectionInterrupted
 	}, backoff.WithBackOff(c.dialer.backoff()), backoff.WithMaxElapsedTime(0), backoff.WithNotify(func(_ error, sleep time.Duration) {
 		interruptedAttempts++
@@ -191,8 +209,8 @@ func (c *Conn) deactivateAll(subscriptions []*Subscription) {
 // resubscribe re-establishes all subscriptions inherited from the previous
 // WebSocket connection. Each re-subscribe attempt has a timeout of 15 seconds.
 // Terminal subscription failures are reported via [SubscriptionHandler.HandleError].
-// It reports whether any subscription was interrupted by a lost connection and
-// should be retried by another reconnect attempt.
+// It reports whether any subscription was interrupted by a lost or silent
+// connection and should be retried by another reconnect attempt.
 func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 	var successCount atomic.Int32
 	var interruptedSubscription atomic.Bool
@@ -204,13 +222,15 @@ func (c *Conn) resubscribe(subscriptions []*Subscription) (interrupted bool) {
 				slog.String("resourceURI", subscription.ResourceURI()),
 			))
 
-			ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
+			ctx, cancel := context.WithTimeout(c.ctx, c.dialer.resubscribeTimeout)
 			defer cancel()
 			subscription.opMu.Lock()
-			err := c.subscribe(ctx, subscription)
+			_, err := c.subscribe(ctx, subscription)
 			subscription.opMu.Unlock()
 			if err != nil {
-				if err == errConnectionInterrupted {
+				// A handshake timeout means the new socket went silent, not that
+				// the service rejected the subscription.
+				if err == errConnectionInterrupted || (err == context.DeadlineExceeded && c.ctx.Err() == nil) {
 					c.trackSubscription(subscription)
 					interruptedSubscription.Store(true)
 					log.Error("resubscribe interrupted", slog.Any("error", err))
