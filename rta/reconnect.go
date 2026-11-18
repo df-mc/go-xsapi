@@ -75,12 +75,13 @@ func (c *Conn) beginReconnectLocked() (chan struct{}, bool) {
 // lost meanwhile, because that loss found the gate held and started nothing.
 func (c *Conn) finishReconnect(done chan struct{}) (again bool) {
 	c.reconnectMu.Lock()
-	lost := c.lostConn
-	c.lostConn = nil
-	if lost != nil && c.ctx.Err() == nil && c.isCurrentConn(lost) {
+	if lost := c.lostConn; lost != nil && c.ctx.Err() == nil && c.isCurrentConn(lost) {
+		// Keep the record until the next attempt replaces lost, so trackOn
+		// still rejects subscriptions made on it meanwhile.
 		c.reconnectMu.Unlock()
 		return true
 	}
+	c.lostConn = nil
 	if c.reconnectDone == done {
 		c.reconnectDone = nil
 	}
@@ -179,7 +180,9 @@ func (c *Conn) restore() {
 		if len(pending) == 0 {
 			return struct{}{}, nil
 		}
-		// Drop the socket so the next attempt cannot reuse one that went silent.
+		// Drop the socket so the next attempt cannot reuse one that went silent,
+		// and record it first so trackOn rejects subscriptions made on it.
+		c.connectionLost(conn)
 		_ = conn.CloseNow()
 		return struct{}{}, errConnectionInterrupted
 	}, backoff.WithBackOff(c.dialer.backoff()), backoff.WithMaxElapsedTime(0), backoff.WithNotify(func(_ error, sleep time.Duration) {

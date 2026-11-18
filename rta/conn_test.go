@@ -721,8 +721,8 @@ func TestSubscribeLostDuringHandleSubscribeRetries(t *testing.T) {
 // again, not cost the subscription.
 func TestSilentReplacementDuringResubscribeIsReplaced(t *testing.T) {
 	shortBackoff(t)
-	shortPing(t, time.Hour, 50*time.Millisecond)
-	shortResubscribe(t, 50*time.Millisecond)
+	shortPing(t, time.Hour, 100*time.Millisecond)
+	shortResubscribe(t, 250*time.Millisecond)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
@@ -739,7 +739,7 @@ func TestSilentReplacementDuringResubscribeIsReplaced(t *testing.T) {
 
 	srv.mutedDial.Store(2)
 	srv.silentDial.Store(2)
-	conn.reconnect()
+	reconnectWithin(t, conn)
 
 	if got := srv.dialCount.Load(); got != 3 {
 		t.Fatalf("dial count = %d, want 3", got)
@@ -773,7 +773,7 @@ func TestIgnoredResubscribeOnLiveSocketIsTerminal(t *testing.T) {
 	}
 
 	srv.mutedDial.Store(2)
-	conn.reconnect()
+	reconnectWithin(t, conn)
 
 	if got := srv.dialCount.Load(); got != 2 {
 		t.Fatalf("dial count = %d, want 2", got)
@@ -788,8 +788,8 @@ func TestIgnoredResubscribeOnLiveSocketIsTerminal(t *testing.T) {
 // subscription that succeeded on the new socket can reuse it.
 func TestInterruptedResubscribeDoesNotShadowNewID(t *testing.T) {
 	shortBackoff(t)
-	shortPing(t, time.Hour, 50*time.Millisecond)
-	shortResubscribe(t, 50*time.Millisecond)
+	shortPing(t, time.Hour, 100*time.Millisecond)
+	shortResubscribe(t, 250*time.Millisecond)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 	srv.perSocketIDs.Store(true)
@@ -814,7 +814,7 @@ func TestInterruptedResubscribeDoesNotShadowNewID(t *testing.T) {
 	srv.mutedResource.Store("slow")
 	srv.mutedDial.Store(2)
 	srv.silentDial.Store(2)
-	conn.reconnect()
+	reconnectWithin(t, conn)
 
 	if got := srv.dialCount.Load(); got != 3 {
 		t.Fatalf("dial count = %d, want 3", got)
@@ -837,10 +837,75 @@ func (h *countingErrorHandler) HandleError(error) {
 	h.errors.Add(1)
 }
 
+// A subscription made on a socket that a running reconnect already found lost
+// must wait for the replacement, even after that reconnect starts another attempt.
+func TestSubscribeOnLostSocketWaitsForLaterAttempt(t *testing.T) {
+	shortBackoff(t)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a := newBlockingSubscribeHandler(2)
+	subA := NewSubscription("a", a)
+	if err := conn.Subscribe(ctx, subA); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	// Socket 2 acknowledges A's resubscribe (ID 2), then X (ID 3), then closes.
+	srv.closeAfterSubscribeID.Store(3)
+	go conn.reconnect()
+	<-a.entered
+
+	x := newBlockingSubscribeHandler(1)
+	subX := NewSubscription("x", x)
+	errs := make(chan error, 1)
+	go func() { errs <- conn.Subscribe(ctx, subX) }()
+	<-x.entered
+	waitFor(t, func() bool {
+		conn.reconnectMu.Lock()
+		defer conn.reconnectMu.Unlock()
+		return conn.lostConn != nil && conn.isCurrentConn(conn.lostConn)
+	}, "socket 2 to be recorded as lost")
+
+	// The reconnect runs again for socket 2 and holds its dial while X finishes.
+	srv.rejectDials.Store(true)
+	close(a.unblock)
+	waitAtomicUint32(t, &srv.rejectedDials, 1, "rejected dials")
+	close(x.unblock)
+	waitFor(t, func() bool {
+		conn.subscriptionsMu.RLock()
+		defer conn.subscriptionsMu.RUnlock()
+		return conn.subscriptions[subX.ID()] == subX || !subX.Active()
+	}, "X to be tracked or rejected")
+	srv.rejectDials.Store(false)
+
+	if err := <-errs; err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+	if err := conn.wait(ctx); err != nil {
+		t.Fatalf("wait returned error: %v", err)
+	}
+	if subX.ID() <= 3 {
+		t.Fatalf("X ID = %d, want an ID from the socket after socket 2", subX.ID())
+	}
+	conn.subscriptionsMu.RLock()
+	defer conn.subscriptionsMu.RUnlock()
+	for _, sub := range []*Subscription{subA, subX} {
+		if !sub.Active() || conn.subscriptions[sub.ID()] != sub {
+			t.Fatalf("subscription %q active=%v ID=%d is not tracked under its ID", sub.ResourceURI(), sub.Active(), sub.ID())
+		}
+	}
+}
+
 // A socket that answers pings must stay in use.
 func TestRespondingWebSocketIsKept(t *testing.T) {
-	// A long timeout keeps scheduler delays from failing a healthy pong.
-	shortPing(t, 5*time.Millisecond, time.Second)
+	// The timeout leaves room for scheduler delays but is short enough that a
+	// socket ignoring pings is replaced before five pings arrive.
+	shortPing(t, 5*time.Millisecond, 250*time.Millisecond)
 	srv := newConnTestServer(t)
 	defer srv.Close()
 
@@ -853,7 +918,25 @@ func TestRespondingWebSocketIsKept(t *testing.T) {
 	if err := conn.Subscribe(ctx, sub); err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
 	}
-	assertAtomicUint32Stays(t, &srv.dialCount, 1, "dial count")
+	waitAtomicUint32(t, &srv.pingCount, 5, "ping count")
+	if got := srv.dialCount.Load(); got != 1 {
+		t.Fatalf("dial count = %d, want 1", got)
+	}
+}
+
+// reconnectWithin runs a reconnect and fails the test if it does not finish.
+func reconnectWithin(t *testing.T, conn *Conn) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		conn.reconnect()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconnect did not finish")
+	}
 }
 
 // shortPing makes new dialers ping every interval and give up after timeout.
@@ -1026,6 +1109,7 @@ type connTestServer struct {
 	mutedResource atomic.Value // string
 	// perSocketIDs numbers subscriptions from 1 on each socket instead of globally.
 	perSocketIDs atomic.Bool
+	pingCount    atomic.Uint32
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
@@ -1092,6 +1176,7 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		Subprotocols: []string{subprotocol},
 		OnPingReceived: func(context.Context, []byte) bool {
+			s.pingCount.Add(1)
 			return s.silentDial.Load() != dial
 		},
 	})

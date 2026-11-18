@@ -401,6 +401,9 @@ type SubscriptionHandler interface {
 	// removes the caller.
 	HandleEvent(custom json.RawMessage)
 
+	// HandleSubscribe is called with the custom data of each successful
+	// subscribe, including resubscribes after a reconnect. It must not call
+	// Subscribe or Unsubscribe on the same Conn, which wait for it to return.
 	HandleSubscribe(custom json.RawMessage) error
 	// HandleResync is called when a Resync message is received from the RTA service
 	// and the resource targeted by the Subscription may have been changed.
