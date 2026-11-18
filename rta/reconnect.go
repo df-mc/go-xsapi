@@ -64,14 +64,34 @@ func (c *Conn) beginReconnect() (chan struct{}, bool) {
 	return done, true
 }
 
-// finishReconnect clears and closes the reconnect gate for waiters.
-func (c *Conn) finishReconnect(done chan struct{}) {
+// finishReconnect clears and closes the reconnect gate for waiters. It instead
+// keeps the gate and reports true when the socket the reconnect installed was
+// lost meanwhile, because that loss found the gate held and started nothing.
+func (c *Conn) finishReconnect(done chan struct{}) (again bool) {
 	c.reconnectMu.Lock()
+	lost := c.lostConn
+	c.lostConn = nil
+	if lost != nil && c.ctx.Err() == nil && c.isCurrentConn(lost) {
+		c.reconnectMu.Unlock()
+		return true
+	}
 	if c.reconnectDone == done {
 		c.reconnectDone = nil
 	}
 	c.reconnectMu.Unlock()
 	close(done)
+	return false
+}
+
+// connectionLost reconnects after conn failed, unless a reconnect already replaced it.
+func (c *Conn) connectionLost(conn *websocket.Conn) {
+	if !c.isCurrentConn(conn) {
+		return
+	}
+	c.reconnectMu.Lock()
+	c.lostConn = conn
+	c.reconnectMu.Unlock()
+	c.startReconnect()
 }
 
 // startReconnect begins a background reconnect if one is not already running.
@@ -98,8 +118,17 @@ func (c *Conn) reconnect() {
 // outage nor a socket that keeps dropping mid-handshake ends the attempt: the
 // subscriptions stay owned by the reconnect until it lands or the Conn closes.
 func (c *Conn) runReconnect(done chan struct{}) {
-	defer c.finishReconnect(done)
+	for {
+		c.restore()
+		if !c.finishReconnect(done) {
+			return
+		}
+		c.log.Info("replacement WebSocket was lost while resubscribing")
+	}
+}
 
+// restore runs one reconnect attempt for runReconnect.
+func (c *Conn) restore() {
 	c.log.Info("re-establishing WebSocket connection...")
 
 	interruptedAttempts := 0

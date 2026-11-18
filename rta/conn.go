@@ -47,7 +47,9 @@ type Conn struct {
 	// reconnectDone is a channel that is closed when the reconnect is complete.
 	// It is nil when no reconnect is in progress.
 	reconnectDone chan struct{}
-	// reconnectMu guards reconnectDone from concurrent read/write access.
+	// lostConn is the current socket after it failed, until a reconnect takes it.
+	lostConn *websocket.Conn
+	// reconnectMu guards reconnectDone and lostConn from concurrent read/write access.
 	reconnectMu sync.Mutex
 
 	// once ensures that the Conn is closed only once.
@@ -247,7 +249,7 @@ func (c *Conn) call(ctx context.Context, op uint8, payload []any) (*response, er
 	if err := c.write(conn, operationToType(op), append([]any{seq}, payload...)); err != nil {
 		c.release(op, seq)
 		c.drainExpected(conn)
-		c.startReconnect()
+		c.connectionLost(conn)
 		return nil, errConnectionInterrupted
 	}
 	select {
@@ -498,7 +500,7 @@ func (c *Conn) read(conn *websocket.Conn) {
 				return
 			}
 			c.log.Error("error reading from WebSocket connection", slog.Any("error", err))
-			c.startReconnect()
+			c.connectionLost(conn)
 			return
 		}
 		typ, err := readHeader(payload)

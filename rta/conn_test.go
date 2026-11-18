@@ -636,6 +636,60 @@ func TestSilentWebSocketIsReplaced(t *testing.T) {
 	}
 }
 
+// A replacement socket lost while its resubscribe callback still runs must be
+// replaced again instead of staying current with no reader.
+func TestReplacementLostDuringResubscribeIsReplaced(t *testing.T) {
+	shortBackoff(t)
+	srv := newConnTestServer(t)
+	defer srv.Close()
+
+	conn := srv.Dial(t)
+	defer conn.Close()
+
+	h := newBlockingSubscribeHandler(2)
+	sub := NewSubscription("test-resource", h)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := conn.Subscribe(ctx, sub); err != nil {
+		t.Fatalf("Subscribe returned error: %v", err)
+	}
+
+	srv.closeAfterSubscribeID.Store(2)
+	go conn.reconnect()
+	select {
+	case <-h.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resubscribe callback did not run")
+	}
+	waitLostConn(t, conn)
+	close(h.unblock)
+
+	waitAtomicUint32(t, &srv.dialCount, 3, "dial count")
+	waitAtomicUint32(t, &srv.subscribeCount, 3, "subscribe count")
+	if err := conn.wait(ctx); err != nil {
+		t.Fatalf("wait returned error: %v", err)
+	}
+	if !sub.Active() || sub.ID() != 3 {
+		t.Fatalf("subscription active=%v ID=%d, want active on the third socket", sub.Active(), sub.ID())
+	}
+}
+
+// waitLostConn waits until the current socket is recorded as lost.
+func waitLostConn(t *testing.T, conn *Conn) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn.reconnectMu.Lock()
+		lost := conn.lostConn
+		conn.reconnectMu.Unlock()
+		if lost != nil && conn.isCurrentConn(lost) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("current socket was not recorded as lost")
+}
+
 // A socket that answers pings must stay in use.
 func TestRespondingWebSocketIsKept(t *testing.T) {
 	shortPing(t)
@@ -796,6 +850,8 @@ type connTestServer struct {
 	rejectedDials atomic.Uint32
 	// silentDial is the dial number whose socket stays open but never answers pings.
 	silentDial atomic.Uint32
+	// closeAfterSubscribeID closes the socket right after acknowledging this subscribe.
+	closeAfterSubscribeID atomic.Uint32
 }
 
 func newConnTestServer(t *testing.T) *connTestServer {
@@ -909,6 +965,10 @@ func (s *connTestServer) handle(w http.ResponseWriter, r *http.Request) {
 				id,
 				json.RawMessage(`{"ok":true}`),
 			}); err != nil {
+				return
+			}
+			if s.closeAfterSubscribeID.Load() == id {
+				_ = conn.Close(websocket.StatusGoingAway, "test close")
 				return
 			}
 		case typeUnsubscribe:
