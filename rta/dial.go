@@ -47,6 +47,8 @@ type dialer struct {
 	options *websocket.DialOptions
 	// backoff creates a separate retry schedule for each reconnect loop.
 	backoff func() backoff.BackOff
+	// pingInterval and pingTimeout bound how long a silent socket stays in use.
+	pingInterval, pingTimeout time.Duration
 }
 
 func newDialer(client *http.Client, log *slog.Logger) *dialer {
@@ -59,9 +61,14 @@ func newDialer(client *http.Client, log *slog.Logger) *dialer {
 			Subprotocols: []string{subprotocol},
 			HTTPClient:   client,
 		},
-		backoff: reconnectBackoff,
+		backoff:      reconnectBackoff,
+		pingInterval: pingInterval,
+		pingTimeout:  pingTimeout,
 	}
 }
+
+// pingInterval and pingTimeout are the liveness settings new dialers use; tests shorten them.
+var pingInterval, pingTimeout = 30 * time.Second, 15 * time.Second
 
 // reconnectBackoff is the backoff schedule new dialers use; tests shorten it.
 var reconnectBackoff = newReconnectBackoff
