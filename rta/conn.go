@@ -49,6 +49,7 @@ type Conn struct {
 	reconnectDone chan struct{}
 	// lostConn is the current socket after it failed, until a reconnect takes it.
 	lostConn *websocket.Conn
+	pingMu   sync.Mutex // keeps one ping outstanding
 	// reconnectMu guards reconnectDone and lostConn from concurrent read/write access.
 	reconnectMu sync.Mutex
 
@@ -211,12 +212,21 @@ func (c *Conn) Unsubscribe(ctx context.Context, sub *Subscription) error {
 	if sub == nil {
 		return errors.New("rta: nil subscription")
 	}
-	if err := c.wait(ctx); err != nil {
-		return err
+	// Check for a reconnect again under the locks: one that started after wait
+	// may hold sub for a retry while another subscription reuses its old ID.
+	for {
+		if err := c.wait(ctx); err != nil {
+			return err
+		}
+		c.subscriptionOpMu.Lock()
+		sub.opMu.Lock()
+		if !c.reconnecting() {
+			break
+		}
+		sub.opMu.Unlock()
+		c.subscriptionOpMu.Unlock()
 	}
-	c.subscriptionOpMu.Lock()
 	defer c.subscriptionOpMu.Unlock()
-	sub.opMu.Lock()
 	if !sub.Active() {
 		sub.opMu.Unlock()
 		return nil
@@ -460,7 +470,10 @@ func (c *Conn) trackSubscription(sub *Subscription) {
 
 func (c *Conn) untrackSubscription(sub *Subscription) {
 	c.subscriptionsMu.Lock()
-	delete(c.subscriptions, sub.ID())
+	// A subscription held for a retry keeps an old ID that another may now use.
+	if c.subscriptions[sub.ID()] == sub {
+		delete(c.subscriptions, sub.ID())
+	}
 	c.subscriptionsMu.Unlock()
 }
 
@@ -496,6 +509,10 @@ func (c *Conn) ensureWebSocket(ctx context.Context) (*websocket.Conn, error) {
 	defer c.connMu.Unlock()
 	if c.conn != nil {
 		return c.conn, nil
+	}
+	// close cancels ctx before it clears c.conn, so check again under connMu.
+	if err := c.ctx.Err(); err != nil {
+		return nil, context.Cause(c.ctx)
 	}
 	conn, err := c.dialer.dial(ctx)
 	if err != nil {
@@ -555,9 +572,7 @@ func (c *Conn) probe(conn *websocket.Conn, done <-chan struct{}) {
 			return
 		case <-ticker.C:
 		}
-		ctx, cancel := context.WithTimeout(c.ctx, c.dialer.pingTimeout)
-		err := conn.Ping(ctx)
-		cancel()
+		err := c.ping(conn)
 		if err == nil {
 			continue
 		}
@@ -576,6 +591,16 @@ func (c *Conn) probe(conn *websocket.Conn, done <-chan struct{}) {
 		_ = conn.CloseNow()
 		return
 	}
+}
+
+// ping pings conn, one ping at a time per Conn, since a peer may answer only
+// the latest of several outstanding pings.
+func (c *Conn) ping(conn *websocket.Conn) error {
+	c.pingMu.Lock()
+	defer c.pingMu.Unlock()
+	ctx, cancel := context.WithTimeout(c.ctx, c.dialer.pingTimeout)
+	defer cancel()
+	return conn.Ping(ctx)
 }
 
 // Close closes the websocket connection with websocket.StatusNormalClosure.

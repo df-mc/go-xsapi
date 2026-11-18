@@ -225,7 +225,7 @@ func (c *Conn) resubscribe(conn *websocket.Conn, subscriptions []*Subscription) 
 	var successCount atomic.Int32
 	var interruptedMu sync.Mutex
 	var wg sync.WaitGroup
-	// One ping answers for every timed-out handshake; a peer may answer only the latest of several.
+	// One ping answers for every handshake that timed out in this pass.
 	silent := sync.OnceValue(func() bool { return c.silent(conn) })
 	for _, subscription := range subscriptions {
 		wg.Go(func() {
@@ -280,7 +280,12 @@ func (c *Conn) resubscribe(conn *websocket.Conn, subscriptions []*Subscription) 
 
 // silent reports whether conn fails to answer a ping within the ping timeout.
 func (c *Conn) silent(conn *websocket.Conn) bool {
-	ctx, cancel := context.WithTimeout(c.ctx, c.dialer.pingTimeout)
-	defer cancel()
-	return conn.Ping(ctx) != nil
+	return c.ping(conn) != nil
+}
+
+// reconnecting reports whether a reconnect holds the gate.
+func (c *Conn) reconnecting() bool {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+	return c.reconnectDone != nil
 }

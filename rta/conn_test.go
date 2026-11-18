@@ -647,6 +647,7 @@ func TestReplacementLostDuringResubscribeIsReplaced(t *testing.T) {
 	defer conn.Close()
 
 	h := newBlockingSubscribeHandler(2)
+	t.Cleanup(h.release)
 	sub := NewSubscription("test-resource", h)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -666,7 +667,7 @@ func TestReplacementLostDuringResubscribeIsReplaced(t *testing.T) {
 		defer conn.reconnectMu.Unlock()
 		return conn.lostConn != nil && conn.isCurrentConn(conn.lostConn)
 	}, "the current socket to be recorded as lost")
-	close(h.unblock)
+	h.release()
 
 	waitAtomicUint32(t, &srv.dialCount, 3, "dial count")
 	waitAtomicUint32(t, &srv.subscribeCount, 3, "subscribe count")
@@ -689,6 +690,7 @@ func TestSubscribeLostDuringHandleSubscribeRetries(t *testing.T) {
 	defer conn.Close()
 
 	h := newBlockingSubscribeHandler(1)
+	t.Cleanup(h.release)
 	sub := NewSubscription("test-resource", h)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -701,7 +703,7 @@ func TestSubscribeLostDuringHandleSubscribeRetries(t *testing.T) {
 	}
 	// The reconnect found nothing tracked and dropped the socket.
 	waitFor(t, func() bool { return conn.isCurrentConn(nil) }, "the lost socket to be dropped")
-	close(h.unblock)
+	h.release()
 
 	if err := <-errs; err != nil {
 		t.Fatalf("Subscribe returned error: %v", err)
@@ -968,8 +970,7 @@ func TestUnsubscribedWhileHeldIsNotRestored(t *testing.T) {
 	}
 }
 
-// Handshakes that time out together share one liveness ping, since a peer may
-// answer only the latest of several outstanding pings.
+// Handshakes that time out together share one liveness ping.
 func TestTimedOutResubscribesShareOnePing(t *testing.T) {
 	shortBackoff(t)
 	shortPing(t, time.Hour, 100*time.Millisecond)
@@ -1009,7 +1010,7 @@ func TestLostReplacementRoundsBackOff(t *testing.T) {
 	conn := srv.Dial(t)
 	defer conn.Close()
 
-	sub := NewSubscription("test-resource", slowSubscribeHandler{})
+	sub := NewSubscription("test-resource", &lossWaitingHandler{conn: conn})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := conn.Subscribe(ctx, sub); err != nil {
@@ -1035,12 +1036,28 @@ func (b countingBackOff) NextBackOff() time.Duration {
 
 func (countingBackOff) Reset() {}
 
-// slowSubscribeHandler holds each callback long enough for a socket closed
-// right after the acknowledgment to be reported lost first.
-type slowSubscribeHandler struct{ NopSubscriptionHandler }
+// lossWaitingHandler holds each resubscribe callback until the socket it came
+// on is recorded lost, so the loss always lands while the reconnect holds the gate.
+type lossWaitingHandler struct {
+	NopSubscriptionHandler
+	conn  *Conn
+	calls atomic.Int32
+}
 
-func (slowSubscribeHandler) HandleSubscribe(json.RawMessage) error {
-	time.Sleep(20 * time.Millisecond)
+func (h *lossWaitingHandler) HandleSubscribe(json.RawMessage) error {
+	if h.calls.Add(1) == 1 {
+		return nil
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.conn.reconnectMu.Lock()
+		lost := h.conn.lostConn != nil && h.conn.isCurrentConn(h.conn.lostConn)
+		h.conn.reconnectMu.Unlock()
+		if lost {
+			return nil
+		}
+		time.Sleep(time.Millisecond)
+	}
 	return nil
 }
 
